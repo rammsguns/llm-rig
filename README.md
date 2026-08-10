@@ -131,3 +131,11 @@ curl -s http://127.0.0.1:8081/v1/models | jq -r '.data[].id'
 - Services: `sudo systemctl disable --now llama-swap` (and `litellm`, if present)
 - Ollama: weights were moved to `~/.ollama.removed-<date>` and
   `~/ollama-models.removed-<date>`, not deleted
+
+## License
+
+[MIT](LICENSE).
+
+Note that `10-os-tune.sh` takes `sudo` and changes system state — GPU power and
+persistence, CPU governor, transparent hugepages, and sysctls. Read it before running
+it, as you should with any script that asks for root. `19-os-revert.sh` undoes it.
