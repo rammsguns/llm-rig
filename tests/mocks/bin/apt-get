@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -uo pipefail
+printf 'apt-get %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+exit "${MOCK_APT_STATUS:-0}"

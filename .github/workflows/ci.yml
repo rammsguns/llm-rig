@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref; these are cheap checks and there is no
+# value in finishing a run for a commit that has already been replaced.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: syntax, shellcheck, fixture tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck --version
+
+      - name: Show environment
+        run: |
+          bash --version | head -1
+          # The suite must pass with no GPU present. Prove there isn't one, so a
+          # future runner image that happens to ship nvidia-smi can't mask a
+          # test that accidentally depends on real hardware.
+          if command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::warning::nvidia-smi present on runner; tests must still use mocks"
+          else
+            echo "no nvidia-smi on runner, as expected"
+          fi
+
+      - name: Run tests
+        run: ./tests/run.sh
+
+      - name: Assert the suite needs no network
+        # Re-run with DNS and outbound traffic unavailable to the test process.
+        # Anything that quietly reached the internet fails here rather than
+        # becoming a flaky test months later.
+        run: |
+          sudo unshare --net --map-root-user bash -c '
+            ip link set lo up 2>/dev/null || true
+            exec ./tests/run.sh --no-lint
+          '

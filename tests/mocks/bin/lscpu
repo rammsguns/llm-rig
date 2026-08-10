@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -uo pipefail
+printf 'lscpu %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+echo "# Core,Socket"
+for ((i=0; i<${MOCK_PHYS_CORES:-16}; i++)); do echo "$i,0"; done

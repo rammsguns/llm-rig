@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Mock curl. Serves responses from a routes table ($MOCK_ROUTES), so no test
+# ever touches the network.
+#
+# Route line (TSV):  <METHOD|*>  <url-substring>  <status>  <body|@file>
+# First match wins, so a test can register a specific route ahead of a general
+# one. An unmatched URL is a connection failure (exit 7), which is what the
+# scripts should see when a service is genuinely down.
+set -uo pipefail
+
+printf 'curl %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+
+URL=""; OUT=""; WRITE_FMT=""; METHOD="GET"; FAIL_ON_ERROR=0
+prev=""
+for a in "$@"; do
+  case "$prev" in
+    -o|--output)   OUT="$a"; prev=""; continue ;;
+    -w|--write-out) WRITE_FMT="$a"; prev=""; continue ;;
+    -X|--request)  METHOD="$a"; prev=""; continue ;;
+  esac
+  case "$a" in
+    http://*|https://*) [[ -z "$URL" ]] && URL="$a" ;;
+    -o|--output|-w|--write-out|-X|--request) prev="$a"; continue ;;
+    -f|--fail) FAIL_ON_ERROR=1 ;;
+    -sf|-sfL|-fsL|-fL) FAIL_ON_ERROR=1 ;;
+  esac
+  prev=""
+done
+
+# POST is implied by -d even without an explicit -X.
+if [[ "$METHOD" == "GET" ]]; then
+  for a in "$@"; do
+    case "$a" in -d|--data|--data-raw|--data-binary) METHOD="POST"; break ;; esac
+  done
+fi
+
+STATUS=""; BODY=""
+if [[ -f "${MOCK_ROUTES:-/nonexistent}" ]]; then
+  while IFS=$'\t' read -r r_method r_url r_status r_body; do
+    [[ -z "${r_url:-}" ]] && continue
+    [[ "$r_method" == "*" || "$r_method" == "$METHOD" ]] || continue
+    [[ "$URL" == *"$r_url"* ]] || continue
+    STATUS="$r_status"
+    if [[ "$r_body" == @* ]]; then
+      BODY="$(cat "${r_body#@}" 2>/dev/null)"
+    else
+      # Routes are single-line; \n in a route body becomes a real newline.
+      BODY="$(printf '%b' "$r_body")"
+    fi
+    break
+  done <"$MOCK_ROUTES"
+fi
+
+# No route: treat as "could not connect", curl's exit 7.
+if [[ -z "$STATUS" ]]; then
+  [[ -n "$WRITE_FMT" ]] && printf '%s' "${WRITE_FMT//'%{http_code}'/000}"
+  exit 7
+fi
+
+emit_body() {
+  if [[ -n "$OUT" ]]; then
+    printf '%s' "$BODY" >"$OUT"
+  else
+    printf '%s' "$BODY"
+  fi
+}
+
+# With -f, curl suppresses the body and exits 22 on HTTP >= 400.
+if (( FAIL_ON_ERROR )) && (( STATUS >= 400 )); then
+  [[ -n "$WRITE_FMT" ]] && printf '%s' "${WRITE_FMT//'%{http_code}'/$STATUS}"
+  exit 22
+fi
+
+emit_body
+[[ -n "$WRITE_FMT" ]] && printf '%s' "${WRITE_FMT//'%{http_code}'/$STATUS}"
+exit 0

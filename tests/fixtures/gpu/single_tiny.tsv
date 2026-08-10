@@ -1,0 +1,2 @@
+index	name	memory.total	memory.free	compute_cap	power.max_limit	power.min_limit	power.limit	temperature.gpu	clocks.max.sm	persistence_mode
+0	NVIDIA T600	4096	3800	7.5	40	25	40	35	1785	Enabled

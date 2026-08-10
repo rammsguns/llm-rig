@@ -1,0 +1,5 @@
+index	name	memory.total	memory.free	compute_cap	power.max_limit	power.min_limit	power.limit	temperature.gpu	clocks.max.sm	persistence_mode
+0	NVIDIA RTX A6000	49140	48000	8.6	300	100	300	41	2100	Enabled
+1	NVIDIA RTX A6000	49140	48000	8.6	300	100	300	41	2100	Enabled
+2	NVIDIA RTX A6000	49140	48000	8.6	300	100	300	41	2100	Enabled
+3	NVIDIA RTX A6000	49140	48000	8.6	300	100	300	41	2100	Enabled

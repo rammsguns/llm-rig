@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -uo pipefail
+printf 'cmake %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+for a in "$@"; do case "$a" in -B) mkdir -p build 2>/dev/null ;; esac; done
+exit "${MOCK_CMAKE_STATUS:-0}"

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Mock sudo. Logs the full command, then re-dispatches ONLY to other mocks so a
+# test can never execute a real privileged command. Anything not mocked is
+# recorded and reported as success.
+set -uo pipefail
+printf 'sudo %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in -u|-g|-p) shift 2 ;; *) shift ;; esac
+done
+[[ -n "${1:-}" ]] || exit 0
+if [[ -x "${MOCK_BIN:-}/$1" ]]; then exec "${MOCK_BIN}/$1" "${@:2}"; fi
+exit 0

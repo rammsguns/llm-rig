@@ -91,7 +91,10 @@ detect_hw() {
   GPU_CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | xargs)
   CUDA_ARCH=${GPU_CC/./}
 
-  RAM_GB=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)
+  # MEMINFO is a testing seam: /proc/meminfo cannot be shimmed onto PATH the way
+  # a command can, and CI runners have different RAM than any dev box, so the
+  # fixture tests need to be able to point this somewhere deterministic.
+  RAM_GB=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' "${MEMINFO:-/proc/meminfo}")
   PHYS_CORES=$(lscpu -p=Core,Socket | grep -v '^#' | sort -u | wc -l)
   THREADS=$(( PHYS_CORES > 1 ? PHYS_CORES - 1 : 1 ))
 

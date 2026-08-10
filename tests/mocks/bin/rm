@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Mock rm. Records every invocation, and physically deletes ONLY inside the
+# sandbox. A script that tries to delete outside it is recorded (so the test
+# fails loudly) but does no damage.
+set -uo pipefail
+printf 'rm %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+paths=(); for a in "$@"; do [[ "$a" == -* ]] || paths+=("$a"); done
+for p in "${paths[@]:-}"; do
+  [[ -n "$p" ]] || continue
+  abs="$p"; [[ "$abs" == /* ]] || abs="$PWD/$abs"
+  if [[ -n "${SANDBOX:-}" && "$abs" == "$SANDBOX"/* ]]; then
+    /bin/rm -rf -- "$abs" 2>/dev/null || true
+  else
+    printf 'rm REFUSED-OUTSIDE-SANDBOX %s\n' "$abs" >>"${MOCK_CALLS:-/dev/null}"
+  fi
+done
+exit 0

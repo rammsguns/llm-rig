@@ -108,6 +108,28 @@ is a deliberate prefix-cache decision, not just token thrift; see
 From another machine on the LAN, point `ANTHROPIC_BASE_URL` at this host's address
 instead of `127.0.0.1` (ufw restricts :8081 to the local subnet).
 
+## Tests
+
+```bash
+./tests/run.sh
+```
+
+That runs `bash -n` on every script, ShellCheck, and the fixture suites. It needs
+**no GPU, no sudo, no network, and no model downloads** — hardware and every external
+command are replaced by mocks under `tests/mocks/bin`, and GPU profiles are TSV fixtures
+in `tests/fixtures/gpu`.
+
+```bash
+./tests/run.sh detect      # only suites matching "detect"
+./tests/run.sh --no-lint   # skip syntax + ShellCheck
+```
+
+ShellCheck is skipped with a notice if it isn't installed locally; CI always enforces it
+at `--severity=warning`. Install it with `sudo apt-get install -y shellcheck`.
+
+Adding hardware to test against is a data file, not a code change — drop a new TSV in
+`tests/fixtures/gpu/`, or call `synth_gpu <free_mb> [count]` for an exact boundary value.
+
 ## Troubleshooting
 
 ```bash

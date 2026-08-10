@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Mock hf. Records the download and materialises plausible files so downstream
+# `find ... -name '*.gguf'` sees something.
+set -uo pipefail
+printf 'hf %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+[[ "${1:-}" == download ]] || exit 0
+include=""; local_dir=""; prev=""
+for a in "$@"; do
+  case "$prev" in --include) include="$a"; prev="" ; continue ;; --local-dir) local_dir="$a"; prev=""; continue ;; esac
+  case "$a" in --include|--local-dir) prev="$a" ;; esac
+done
+(( ${MOCK_HF_STATUS:-0} == 0 )) || exit "${MOCK_HF_STATUS}"
+[[ -n "$local_dir" ]] || exit 0
+mkdir -p "$local_dir"
+name="${include%\*}"; [[ -n "$name" ]] || name="model"
+if [[ "$include" == *'*' ]]; then
+  : >"$local_dir/${name}00001-of-00002.gguf"
+  : >"$local_dir/${name}00002-of-00002.gguf"
+else
+  : >"$local_dir/$include"
+fi
+exit 0
