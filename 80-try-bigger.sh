@@ -106,7 +106,7 @@ if [[ -z "$SEL" ]]; then
   elif (( ${#CAND[@]} > 1 )); then
     c_err "'$QUANT' is ambiguous -- it matches ${#CAND[@]} quants:"
     for c in "${CAND[@]}"; do
-      IFS=$'\t' read -r f b p <<< "$c"
+      IFS=$'\t' read -r f b _ <<< "$c"
       printf '       %-42s %sM\n' "$(basename "$f")" "$(( b/1024/1024 ))" >&2
     done
     die "Pass the exact suffix, e.g. the full name after the model name."
@@ -220,6 +220,8 @@ c_info "Benchmarking (cold prefill, then a cached repeat)"
 R1=$(bench_once "$PROMPT")
 R2=$(bench_once "$PROMPT Reply differently.")
 IFS='|' read -r PN PPS TPS <<< "$R1"
+# Only the prompt-processing rate of the second run is compared.
+# shellcheck disable=SC2034
 IFS='|' read -r PN2 PPS2 TPS2 <<< "$R2"
 
 # Coerce anything non-numeric (null, empty) to 0 before printf sees it.

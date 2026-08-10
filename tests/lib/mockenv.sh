@@ -40,6 +40,9 @@ mock_init() {
   export MOCK_NVLINK=0
   export MOCK_SERVICES_ACTIVE=""
   export MOCK_PHYS_CORES=16
+  # Keep the slow real-world waits short in tests.
+  export GPU_RELEASE_WAIT=2
+  export FORCE_PAUSE_SECS=0
   # Default to the machine this repo was tuned on, so a test that doesn't care
   # about RAM still gets a deterministic value rather than the CI runner's.
   ram_gb 125
@@ -72,7 +75,17 @@ synth_gpu() {
   export MOCK_GPU_FIXTURE="$f"
 }
 
-gpu_holders_are() { export MOCK_GPU_HOLDERS="$1"; }
+# VRAM holders that the driver releases once llama-swap is stopped -- the normal
+# case. Backed by a file so the systemctl mock can clear it, which is what real
+# hardware does and what keeps ensure_gpus_idle from burning its full 20s wait.
+gpu_holders_are() {
+  export MOCK_GPU_HOLDERS_FILE="$SANDBOX/gpu-holders"
+  printf '%s\n' "$1" >"$MOCK_GPU_HOLDERS_FILE"
+}
+
+# Holders that survive stopping llama-swap: a stray process, or another user's
+# job. ensure_gpus_idle must warn and carry on rather than hang.
+gpu_holders_stuck() { export MOCK_GPU_HOLDERS="$1"; }
 
 services_active() { export MOCK_SERVICES_ACTIVE="$*"; }
 

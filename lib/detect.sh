@@ -46,8 +46,10 @@ ensure_gpus_idle() {
     c_info "Stopping llama-swap so VRAM measurements reflect reality"
     sudo systemctl stop llama-swap
     LLAMA_SWAP_WAS_RUNNING=1
-    # Wait for the driver to actually release the allocation.
-    for _ in $(seq 1 20); do
+    # Wait for the driver to actually release the allocation. Overridable
+    # because a big model on a slow bus can take longer than the default, and
+    # because the fixture tests should not sit through it.
+    for _ in $(seq 1 "${GPU_RELEASE_WAIT:-20}"); do
       [[ -z "$(gpu_holders)" ]] && break
       sleep 1
     done

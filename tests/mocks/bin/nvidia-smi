@@ -38,6 +38,11 @@ done
 
 # Processes currently holding VRAM. Empty unless a test sets MOCK_GPU_HOLDERS.
 if [[ -n "$APPS_QUERY" ]]; then
+  # File-backed holders are released when llama-swap stops (see the systemctl
+  # mock); the env-var form models a process that will not let go.
+  if [[ -n "${MOCK_GPU_HOLDERS_FILE:-}" && -s "${MOCK_GPU_HOLDERS_FILE}" ]]; then
+    cat "$MOCK_GPU_HOLDERS_FILE"
+  fi
   [[ -n "${MOCK_GPU_HOLDERS:-}" ]] && printf '%s\n' "$MOCK_GPU_HOLDERS"
   exit 0
 fi

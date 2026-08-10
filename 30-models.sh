@@ -114,6 +114,9 @@ fetch() {
 # for a 64k context is useless for agent work.
 c_info "Weight budget: ${FIT_TOTAL_MB} MB split / ${FIT_SINGLE_MB} MB single-GPU"
 
+# SEARCH_n and Q_n are consumed below via indirect expansion (${!s_var}), which
+# ShellCheck cannot follow -- hence the disable rather than a real unused var.
+# shellcheck disable=SC2034
 if   (( FIT_TOTAL_MB < 9000 )); then
   SEARCH_1="Qwen3-Coder-30B-A3B-Instruct"; Q1="IQ3_XXS|Q3_K_S"
   SEARCH_2="Qwen3-4B";                     Q2="Q5_K_M"

@@ -9,6 +9,8 @@ REPO_ROOT="${REPO_ROOT:-$(cd "$TEST_ROOT/.." && pwd)}"
 source "$TEST_ROOT/lib/harness.sh"
 source "$TEST_ROOT/lib/mockenv.sh"
 
+# Read by run_suite in the sourced harness.
+# shellcheck disable=SC2034
 SUITE_NAME="lib/detect.sh"
 
 setup_test() { mock_init; }
@@ -139,6 +141,18 @@ test_ensure_gpus_idle_stops_llama_swap_when_holding_vram() {
   source "$REPO_ROOT/lib/detect.sh"
   ensure_gpus_idle
   assert_called 'systemctl stop llama-swap' "llama-swap stop"
+}
+
+test_ensure_gpus_idle_warns_when_something_will_not_let_go() {
+  # A stray process the service stop cannot clear. It must warn and return
+  # rather than hang or claim success.
+  use_gpu dual_a4000
+  gpu_holders_stuck "999, some-other-job, 8000 MiB"
+  services_active "llama-swap"
+  source "$REPO_ROOT/lib/detect.sh"
+  run ensure_gpus_idle
+  assert_ok "ensure_gpus_idle must not fail on a stuck holder" || return 1
+  assert_contains "$RUN_OUTPUT" "Still held after stopping llama-swap" "warning"
 }
 
 test_ensure_gpus_idle_is_a_noop_when_gpus_are_free() {
