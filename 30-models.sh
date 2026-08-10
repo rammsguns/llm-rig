@@ -113,38 +113,17 @@ export HF_HOME="${HF_HOME:-$MODELS_DIR/.hf}"
 # for a 64k context is useless for agent work.
 c_info "Weight budget: ${FIT_TOTAL_MB} MB split / ${FIT_SINGLE_MB} MB single-GPU"
 
-# SEARCH_n and Q_n are consumed below via indirect expansion (${!s_var}), which
-# ShellCheck cannot follow -- hence the disable rather than a real unused var.
-# shellcheck disable=SC2034
-if   (( FIT_TOTAL_MB < 9000 )); then
-  SEARCH_1="Qwen3-Coder-30B-A3B-Instruct"; Q1="IQ3_XXS|Q3_K_S"
-  SEARCH_2="Qwen3-4B";                     Q2="Q5_K_M"
-  SEARCH_3="Qwen3-1.7B";                   Q3="Q8_0"
-elif (( FIT_TOTAL_MB < 15000 )); then
-  SEARCH_1="Devstral-Small-2-24B-Instruct"; Q1="IQ4_XS|Q4_K_S"
-  SEARCH_2="Qwen3-Coder-30B-A3B-Instruct";  Q2="IQ3_M|Q3_K_M"
-  SEARCH_3="Qwen3-4B";                      Q3="Q5_K_M"
-elif (( FIT_TOTAL_MB < 26000 )); then
-  # MoE primary: only ~3B params active per token, so it's dramatically faster
-  # than a dense 27B at similar quality, and degrades gracefully under offload.
-  SEARCH_1="Qwen3-Coder-30B-A3B-Instruct";  Q1="Q4_K_M"
-  SEARCH_2="Devstral-Small-2-24B-Instruct"; Q2="Q4_K_M"
-  SEARCH_3="Qwen3.6-27B";                   Q3="Q4_K_M"
-elif (( FIT_TOTAL_MB < 45000 )); then
-  SEARCH_1="Qwen3-Coder-30B-A3B-Instruct";  Q1="Q6_K|Q5_K_M"
-  SEARCH_2="Qwen3.6-27B";                   Q2="Q5_K_M"
-  SEARCH_3="Devstral-Small-2-24B-Instruct"; Q3="Q5_K_M"
-else
-  SEARCH_1="Qwen3-Coder-Next";              Q1="Q4_K_M"
-  SEARCH_2="Qwen3-Coder-30B-A3B-Instruct";  Q2="Q6_K"
-  SEARCH_3="Qwen3.6-27B";                   Q3="Q5_K_M"
-fi
+# Tier selection lives in lib/models.sh so the specs report and this downloader
+# can never disagree about what the hardware should run.
+plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB"
+c_info "Tier: $PLAN_TIER"
+SEARCH_1="$PLAN_SEARCH_1"; Q1="$PLAN_Q_1"
+SEARCH_2="$PLAN_SEARCH_2"; Q2="$PLAN_Q_2"
+SEARCH_3="$PLAN_SEARCH_3"; Q3="$PLAN_Q_3"
 
-# Optional 4th pick: with a lot of system RAM, a MoE far larger than VRAM is
-# viable via --n-cpu-moe, because only the active experts need to be resident.
-if (( MOE_OFFLOAD_MB > 60000 )); then
-  c_info "${RAM_GB}GB RAM detected -- a large MoE with CPU expert offload is viable."
-  echo "     Add it later with:  PICK_1=<big-moe-repo> Q1=Q4_K_M ./30-models.sh" >&2
+if [[ -n "$PLAN_MOE_NOTE" ]]; then
+  c_info "${RAM_GB}GB RAM detected"
+  printf '     %s\n' "$PLAN_MOE_NOTE" >&2
 fi
 
 # Allow quant overrides too.

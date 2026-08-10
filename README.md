@@ -35,7 +35,7 @@ Ollama was evaluated and rejected; the reasoning is in
 chmod +x *.sh
 ./05-path-fix.sh         # puts ~/.local/bin on PATH permanently. do this FIRST
 source ~/.bashrc
-./00-specs.sh            # read-only. writes ~/llm-specs.txt
+./00-specs.sh            # read-only. writes ~/llm-specs.txt, prints the tier plan
 ./10-os-tune.sh          # sudo. GPU persistence, power, governor, THP, sysctls
 ./20-build-llamacpp.sh   # compiles for your compute capability. 5–20 min
 ./30-models.sh           # resolves + downloads 3 GGUFs matched to your budget

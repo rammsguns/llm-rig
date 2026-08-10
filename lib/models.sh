@@ -92,3 +92,78 @@ quant_include_pattern() {
   fi
   printf '%s' "$match"
 }
+
+# --- hardware tier -> concrete plan -----------------------------------------
+# Single source of truth for "what should this machine run". Both the specs
+# report and the downloader call this, so a recommendation can never disagree
+# with what actually gets fetched -- which is exactly what had drifted: the
+# report still advertised models that were never downloaded, and in two cases
+# never existed.
+#
+#   plan_for_budget <fit_total_mb> [moe_offload_mb]
+#
+# Sets PLAN_TIER, PLAN_SEARCH_{1,2,3}, PLAN_Q_{1,2,3}, PLAN_RUNTIME, PLAN_NOTE,
+# and PLAN_MOE_NOTE.
+#
+# Thresholds are on FIT_TOTAL_MB -- usable VRAM after the KV reserve -- not on
+# installed VRAM. Sizing off installed memory is what once recommended a 49 GB
+# model to a 31.7 GB machine.
+plan_for_budget() {
+  local fit_total="$1" moe_offload="${2:-0}"
+
+  if (( fit_total < 9000 )); then
+    PLAN_TIER="tiny"
+    PLAN_SEARCH_1="Qwen3-Coder-30B-A3B-Instruct"; PLAN_Q_1="IQ3_XXS|Q3_K_S"
+    PLAN_SEARCH_2="Qwen3-4B";                     PLAN_Q_2="Q5_K_M"
+    PLAN_SEARCH_3="Qwen3-1.7B";                   PLAN_Q_3="Q8_0"
+    PLAN_RUNTIME="llama.cpp + llama-swap. vLLM is not viable -- it needs the whole model resident."
+    PLAN_NOTE="Claude Code needs 32k context minimum, and the KV cache at that length
+  will take a large share of this card. The primary pick is a MoE precisely
+  because only ~3B params are active per token, so CPU expert offload stays
+  cheap when the weights do not fit."
+
+  elif (( fit_total < 15000 )); then
+    PLAN_TIER="16g"
+    PLAN_SEARCH_1="Devstral-Small-2-24B-Instruct"; PLAN_Q_1="IQ4_XS|Q4_K_S"
+    PLAN_SEARCH_2="Qwen3-Coder-30B-A3B-Instruct";  PLAN_Q_2="IQ3_M|Q3_K_M"
+    PLAN_SEARCH_3="Qwen3-4B";                      PLAN_Q_3="Q5_K_M"
+    PLAN_RUNTIME="llama.cpp + llama-swap. Quantize the KV cache to q8_0 -- that is what makes a long context fit."
+    PLAN_NOTE="A 24B dense model at IQ4 fits with room for a 32-64k KV cache."
+
+  elif (( fit_total < 26000 )); then
+    PLAN_TIER="24g"
+    PLAN_SEARCH_1="Qwen3-Coder-30B-A3B-Instruct";  PLAN_Q_1="Q4_K_M"
+    PLAN_SEARCH_2="Devstral-Small-2-24B-Instruct"; PLAN_Q_2="Q4_K_M"
+    PLAN_SEARCH_3="Qwen3.6-27B";                   PLAN_Q_3="Q4_K_M"
+    PLAN_RUNTIME="llama.cpp + llama-swap."
+    PLAN_NOTE="The sweet spot. The MoE primary activates ~3B params per token, so it
+  generates far faster than a dense model of similar size and degrades
+  gracefully under offload."
+
+  elif (( fit_total < 45000 )); then
+    PLAN_TIER="48g"
+    PLAN_SEARCH_1="Qwen3-Coder-30B-A3B-Instruct";  PLAN_Q_1="Q6_K|Q5_K_M"
+    PLAN_SEARCH_2="Qwen3.6-27B";                   PLAN_Q_2="Q5_K_M"
+    PLAN_SEARCH_3="Devstral-Small-2-24B-Instruct"; PLAN_Q_3="Q5_K_M"
+    PLAN_RUNTIME="llama.cpp + llama-swap now; vLLM is worth measuring once you settle on one model."
+    PLAN_NOTE="Enough headroom to spend it on quantization quality rather than more
+  parameters -- a higher quant of a right-sized model beats a squeezed larger one."
+
+  else
+    PLAN_TIER="big"
+    PLAN_SEARCH_1="Qwen3-Coder-Next";              PLAN_Q_1="Q4_K_M"
+    PLAN_SEARCH_2="Qwen3-Coder-30B-A3B-Instruct";  PLAN_Q_2="Q6_K"
+    PLAN_SEARCH_3="Qwen3.6-27B";                   PLAN_Q_3="Q5_K_M"
+    PLAN_RUNTIME="vLLM with prefix caching is worth evaluating at this scale; llama.cpp + llama-swap still works."
+    PLAN_NOTE="Large enough to run a frontier-class open model resident."
+  fi
+
+  # With plenty of system RAM, a MoE far larger than VRAM is viable via
+  # --n-cpu-moe, because only the active experts must be resident.
+  if (( moe_offload > 60000 )); then
+    PLAN_MOE_NOTE="~$(( moe_offload / 1024 )) GB of system RAM is available for MoE expert offload,
+  so a MoE well beyond VRAM is viable. Add one with:  PICK_1=<repo> Q1_OVERRIDE=Q4_K_M ./30-models.sh"
+  else
+    PLAN_MOE_NOTE=""
+  fi
+}
