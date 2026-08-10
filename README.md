@@ -42,7 +42,7 @@ source ~/.bashrc
 ./40-serve.sh            # llama-swap config + systemd + firewall
 ./50-claude-code.sh      # env file + TOOL CALLING SMOKE TEST (LiteLLM only if needed)
 ./60-bench.sh            # writes ~/llm-bench-<date>.txt
-./90-remove-ollama.sh    # LAST. refuses to run if the new stack is down
+./90-remove-ollama.sh    # LAST. runs a full tool-calling preflight; fails closed
 ```
 
 Then:
@@ -146,6 +146,27 @@ curl -s http://127.0.0.1:8081/v1/models | jq -r '.data[].id'
 | Context overflow errors | Intended. `--no-context-shift` fails loudly rather than silently dropping your oldest tokens. |
 | Model OOMs on load | Check `KV_RESERVE_MB` vs your `CTX` (see caveat above). |
 | Benchmarks look slow | Something else is holding VRAM — `60-bench.sh` frees the GPUs first, but a stray `llama-server` will skew results. |
+| `90-remove-ollama.sh` refuses to run | Working as intended. It now proves the replacement stack end to end before touching anything — see below. |
+
+### The Ollama removal preflight
+
+`90-remove-ollama.sh` removes your only other working runtime, so it fails **closed**. It
+resolves the endpoint Claude Code is actually configured against (parsed out of
+`claude-code-local.env`, falling back to native mode), then requires all three of:
+
+1. `/v1/models` returns at least one model;
+2. that model answers a `/v1/messages` request;
+3. the response to a tool-calling probe contains a `tool_use` block.
+
+Only then does it prompt. Nothing is stopped, removed, or moved until every check has
+passed — a failed preflight leaves Ollama completely untouched.
+
+The third check is the one that matters: an active `llama-swap` unit proves only that a
+router is listening, not that it can do the one thing Claude Code needs. A stack that
+fails it is almost always missing `--jinja`.
+
+`FORCE=1` overrides a failed preflight, after a warning and a five-second pause. Use it
+only if you know why the check is wrong.
 
 ## Rollback
 

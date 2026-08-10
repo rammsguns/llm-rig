@@ -4,15 +4,42 @@
 # roll back.
 set -uo pipefail
 source "$(dirname "$0")/lib/detect.sh"
+source "$(dirname "$0")/lib/preflight.sh"
 
-c_warn "This removes Ollama. Verify the new stack works first:"
-echo "     curl -s http://127.0.0.1:$PROXY_PORT/v1/models | jq -r '.data[].id'"
-echo
-if ! systemctl is-active --quiet llama-swap 2>/dev/null; then
-  c_err "llama-swap is not running. Refusing to remove your only working runtime."
-  echo "     Re-run ./40-serve.sh first, or pass FORCE=1 to override."
-  [[ "${FORCE:-0}" == 1 ]] || exit 1
+# Fail CLOSED. `systemctl is-active llama-swap` proves only that a router is
+# listening: it can serve zero models, hold a model that fails to load, or lack
+# tool calling entirely. Any of those means removing Ollama destroys the user's
+# only working runtime. Every check below runs BEFORE the first mutation.
+need jq || die "jq is required for the preflight checks:  sudo apt-get install -y jq"
+
+if preflight_verify_stack; then
+  PREFLIGHT_OK=1
+else
+  PREFLIGHT_OK=0
 fi
+
+if (( ! PREFLIGHT_OK )); then
+  echo >&2
+  c_err "Preflight FAILED -- refusing to remove your only working runtime."
+  echo "     Nothing has been changed. Ollama is untouched." >&2
+  echo >&2
+  if [[ "${FORCE:-0}" == 1 ]]; then
+    c_warn "FORCE=1 set: proceeding ANYWAY despite a failed preflight."
+    c_warn "If the replacement stack is broken you will have NO working local model."
+    c_warn "Ctrl-C now if that is not what you meant."
+    sleep "${FORCE_PAUSE_SECS:-5}"
+  else
+    echo "     Fix the stack and re-run, or override with FORCE=1 if you are certain." >&2
+    exit 1
+  fi
+fi
+
+echo >&2
+c_warn "This removes Ollama. Verified replacement:"
+echo "     endpoint: ${PREFLIGHT_ENDPOINT:-unverified}" >&2
+echo "     model:    ${PREFLIGHT_MODEL:-unverified}" >&2
+echo "     re-check: curl -s ${PREFLIGHT_ENDPOINT:-http://127.0.0.1:$LLAMA_PORT}/v1/models | jq -r '.data[].id'" >&2
+echo
 read -rp "Remove Ollama? [y/N] " ok
 [[ "${ok,,}" == y ]] || { c_warn "aborted"; exit 0; }
 
