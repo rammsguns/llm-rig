@@ -9,10 +9,37 @@
 #   ./tests/run.sh                 # everything
 #   ./tests/run.sh detect          # only suites matching "detect"
 #   ./tests/run.sh --no-lint       # skip syntax + ShellCheck
+#
+# This runner fails CLOSED. Finding nothing to run is an error, never a pass:
+# a runner that prints ALL PASSED after executing zero tests is worse than no
+# runner at all, because CI then certifies code that nothing checked. Every
+# discovery step below therefore distinguishes "ran and found nothing" from
+# "ran and found things", and treats the first as a failure.
 set -uo pipefail
 
-TEST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$TEST_ROOT/.." && pwd)"
+red()   { printf '\033[1;31m%s\033[0m' "$*"; }
+green() { printf '\033[1;32m%s\033[0m' "$*"; }
+yellow(){ printf '\033[1;33m%s\033[0m' "$*"; }
+bold()  { printf '\033[1m%s\033[0m' "$*"; }
+
+# Exit 2, distinct from 1: the tests did not fail, they never ran.
+fatal() {
+  printf '\n  %s %s\n\n' "$(red "FATAL")" "$*" >&2
+  exit 2
+}
+
+# --- locate the tree, fail closed -------------------------------------------
+# A failed `cd` used to leave these empty and the run continued regardless,
+# happily reporting "0 scripts parse" and exiting 0.
+TEST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" \
+  || fatal "cannot resolve the tests directory from ${BASH_SOURCE[0]}"
+[[ -n "$TEST_ROOT" && -d "$TEST_ROOT/cases" && -d "$TEST_ROOT/lib" ]] \
+  || fatal "'${TEST_ROOT:-<empty>}' is not the tests directory (expected cases/ and lib/ inside it)"
+
+REPO_ROOT="$(cd "$TEST_ROOT/.." 2>/dev/null && pwd)" \
+  || fatal "cannot resolve the repository root from $TEST_ROOT"
+[[ -n "$REPO_ROOT" && -d "$REPO_ROOT/lib" ]] \
+  || fatal "'${REPO_ROOT:-<empty>}' is not the repository root (expected lib/ inside it)"
 export TEST_ROOT REPO_ROOT
 
 RUN_LINT=1
@@ -21,22 +48,24 @@ for a in "$@"; do
   case "$a" in
     --no-lint) RUN_LINT=0 ;;
     -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -*)        fatal "unknown option: $a" ;;
     *)         FILTER="$a" ;;
   esac
 done
 
-red()   { printf '\033[1;31m%s\033[0m' "$*"; }
-green() { printf '\033[1;32m%s\033[0m' "$*"; }
-yellow(){ printf '\033[1;33m%s\033[0m' "$*"; }
-bold()  { printf '\033[1m%s\033[0m' "$*"; }
-
 FAILED=0
 
-# Every tracked shell script, plus the mocks (which are shell too).
-mapfile -t SCRIPTS < <(
-  find "$REPO_ROOT" -type f \( -name '*.sh' -o -path '*/mocks/bin/*' \) \
-    -not -path '*/.git/*' | sort
-)
+# --- enumerate, fail closed --------------------------------------------------
+# Every tracked shell script, plus the mocks (which are shell too). `find` can
+# fail -- unreadable directory, bad invocation, missing binary -- and used to
+# do so silently into an empty array.
+if ! script_list="$(find "$REPO_ROOT" -type f \( -name '*.sh' -o -path '*/mocks/bin/*' \) \
+                    -not -path '*/.git/*' | sort)"; then
+  fatal "could not enumerate shell scripts under $REPO_ROOT"
+fi
+[[ -n "$script_list" ]] \
+  || fatal "found no shell scripts under $REPO_ROOT -- enumeration is broken, not the tree"
+mapfile -t SCRIPTS <<<"$script_list"
 
 if (( RUN_LINT )); then
   printf '\n%s\n' "$(bold "syntax  (bash -n)")"
@@ -70,7 +99,11 @@ if (( RUN_LINT )); then
 fi
 
 printf '\n%s\n' "$(bold "fixture suites")"
-mapfile -t SUITES < <(find "$TEST_ROOT/cases" -name '*_test.sh' | sort)
+if ! suite_list="$(find "$TEST_ROOT/cases" -type f -name '*_test.sh' | sort)"; then
+  fatal "could not enumerate test suites under $TEST_ROOT/cases"
+fi
+[[ -n "$suite_list" ]] || fatal "no test suites found under $TEST_ROOT/cases"
+mapfile -t SUITES <<<"$suite_list"
 
 ran=0
 for suite in "${SUITES[@]}"; do
@@ -82,13 +115,13 @@ for suite in "${SUITES[@]}"; do
   fi
 done
 
-if (( ran == 0 )); then
-  printf '  %s no suites matched %s\n' "$(yellow "!!")" "${FILTER:-*}"
-fi
+# Only reachable via a filter, since an empty cases/ is already fatal above. A
+# typo'd filter used to run nothing and still print ALL PASSED.
+(( ran > 0 )) || fatal "no suites matched '$FILTER' (of ${#SUITES[@]} found) -- refusing to report success for zero tests"
 
 printf '\n'
 if (( FAILED )); then
   printf '%s\n\n' "$(red "FAILED")"
   exit 1
 fi
-printf '%s\n\n' "$(green "ALL PASSED")"
+printf '%s %s\n\n' "$(green "ALL PASSED")" "($ran suite(s))"

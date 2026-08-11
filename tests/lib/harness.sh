@@ -166,6 +166,14 @@ run_suite() {
 setup_test() { :; }
 
 suite_exit() {
+  # A suite that discovered no tests is a broken suite, not a passing one --
+  # a renamed helper or a botched `test_` prefix would otherwise turn into
+  # "all 0 passed" and count as green.
+  if (( TESTS_PASSED + TESTS_FAILED + TESTS_SKIPPED == 0 )); then
+    printf '\n  %s no test_* functions found in %s\n' \
+      "$(_red "FAIL")" "${SUITE_NAME:-this suite}" >&2
+    exit 1
+  fi
   if (( TESTS_FAILED > 0 )); then
     printf '\n  %s %d passed, %s failed\n' "$(_green "$TESTS_PASSED")" "$TESTS_PASSED" "$(_red "$TESTS_FAILED")" >&2
     exit 1
