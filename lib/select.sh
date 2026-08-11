@@ -121,13 +121,15 @@ selector_default_selection() {
 # Sets SELECT_PICKS to the validated 1-based positions. On refusal, sets
 # SELECT_ERROR and returns 1. Every refusal names the problem: a selector that
 # says "invalid input" and re-prompts teaches the user nothing.
+# SELECT_ERROR is a documented return channel, read by 30-models.sh and by the
+# tests. Not exported: every reader is in this same shell, and the messages
+# quote what the user typed. ShellCheck cannot see cross-file readers, and it
+# flags whichever assignment it reaches last -- so the directive covers the
+# whole function rather than one line inside it.
+# shellcheck disable=SC2034  # documented return channel, read by callers
 selector_parse() {
   local input="$1"
   SELECT_PICKS=()
-  # Documented return channel, read by 30-models.sh and by the tests. Not
-  # exported: every reader is in this same shell, and the messages quote what
-  # the user typed. ShellCheck cannot see cross-file readers from here.
-  # shellcheck disable=SC2034  # documented return channel, read by callers
   SELECT_ERROR=""
 
   local -a want=()
