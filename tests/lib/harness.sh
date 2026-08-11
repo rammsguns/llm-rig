@@ -122,7 +122,10 @@ assert_status() {
 }
 
 skip() {
-  TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
+  # Marker, for the same reason _fail leaves one: each test runs in a subshell,
+  # so a counter incremented here never reaches run_suite. Without it a skipped
+  # test was announced as SKIP and then counted -- and printed -- as a pass.
+  : >"${FAILURE_LOG}.skipped"
   printf '%s\n' "    $(_yellow "SKIP") ${CURRENT_TEST} $(_dim "- ${1:-}")" >&2
   return 0
 }
@@ -139,13 +142,12 @@ run_suite() {
   for fn in $(grep -oE '^[[:space:]]*(function[[:space:]]+)?test_[a-zA-Z0-9_]+' "${BASH_SOURCE[1]}" \
               | sed -E 's/^[[:space:]]*(function[[:space:]]+)?//' | awk '!seen[$0]++'); do
     CURRENT_TEST="$fn"
-    local before_skipped=$TESTS_SKIPPED
-    rm -f "${FAILURE_LOG}.fired"
+    rm -f "${FAILURE_LOG}.fired" "${FAILURE_LOG}.skipped"
     # Subshell isolation: env mutations and cd cannot leak between tests.
     if ( set +e; setup_test 2>/dev/null || true; "$fn" ); then
       # A test that called skip() reports itself; don't double-count it.
-      if (( TESTS_SKIPPED > before_skipped )); then
-        :
+      if [[ -e "${FAILURE_LOG}.skipped" ]]; then
+        TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
       else
         TESTS_PASSED=$((TESTS_PASSED + 1))
         printf '%s\n' "    $(_green "ok") $fn" >&2
@@ -177,6 +179,11 @@ suite_exit() {
   if (( TESTS_FAILED > 0 )); then
     printf '\n  %s %d passed, %s failed\n' "$(_green "$TESTS_PASSED")" "$TESTS_PASSED" "$(_red "$TESTS_FAILED")" >&2
     exit 1
+  fi
+  if (( TESTS_SKIPPED > 0 )); then
+    printf '\n  %s %d passed, %s %d skipped\n' \
+      "$(_green "all")" "$TESTS_PASSED" "$(_yellow "!!")" "$TESTS_SKIPPED" >&2
+    exit 0
   fi
   printf '\n  %s %d passed\n' "$(_green "all")" "$TESTS_PASSED" >&2
   exit 0
