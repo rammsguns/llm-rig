@@ -91,12 +91,24 @@ Each individual alternative is matched as a case-insensitive extended regex, so
 character classes work if you want them. Invalid expressions are rejected before any
 network or download work happens.
 
-> **Caveat on `CTX`:** the VRAM sizing reserve (`KV_RESERVE_MB`, default 7000) is a fixed
-> constant in `lib/detect.sh` and is **not** derived from `CTX`. At the default context it
-> happens to be sufficient. If you raise `CTX` substantially, raise `KV_RESERVE_MB` to
-> match or model selection will size against a reserve smaller than the cache you asked
-> for, and you will get an OOM that looks like a model problem. Tracked in
-> [TUNING.md § Known rough edges](TUNING.md#known-rough-edges).
+`CTX` is **authoritative**. If you set it, that is the context you get — model selection
+sizes against it, and `40-serve.sh` serves it. If it genuinely cannot fit, you get an
+error naming the context and what it costs, not a silent downgrade. Left unset, the
+default is tier-aware: 32k under 11 GB, 64k under 24 GB, 128k above.
+
+The KV reserve follows from the context rather than being a constant, so asking for more
+context correctly buys you a *smaller model* instead of an OOM at load time:
+
+```bash
+CTX=262144 ./30-models.sh    # reserves ~14 GB for KV, shortlists smaller models
+```
+
+The default geometry is the 30B-A3B class this stack is tuned for — 48 layers, 4 KV
+heads, head dim 128, 1 byte/element at q8_0, i.e. 48 KiB/token, plus 15% headroom.
+Override it with `KV_LAYERS` / `KV_HEADS` / `KV_HEAD_DIM` / `KV_BYTES` for a model with
+different geometry, or set `KV_RESERVE_MB` to bypass the derivation entirely. Both the
+effective context and the reserve (with where each came from) are printed by
+`00-specs.sh`, `30-models.sh`, and `40-serve.sh`.
 
 Generated artifacts — regenerate rather than hand-edit, they get overwritten:
 

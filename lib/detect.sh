@@ -67,6 +67,57 @@ restore_llama_swap() {
   fi
 }
 
+# Effective serving context.
+#
+# An explicit CTX is AUTHORITATIVE: if you asked for 128k, you get 128k, and if
+# that does not fit you get a clear error rather than a silent downgrade.
+# Automatic tier-aware defaults apply only when CTX is unset.
+#
+# 32k is the floor for Claude Code -- its system prompt plus tool definitions
+# alone run 10-25k tokens, and below that tool calls fail in confusing ways.
+resolve_context() {
+  # CTX_SOURCE is consulted so that detect_hw is idempotent: this function
+  # exports CTX, so a second call would otherwise see its own previous output
+  # and report a derived value as user-supplied.
+  if [[ -n "${CTX:-}" && "${CTX_SOURCE:-explicit}" == "explicit" ]]; then
+    CTX_SOURCE="explicit"
+  else
+    CTX_SOURCE="auto"
+    if   (( VRAM_TOTAL_MB < 11000 )); then CTX=32768
+    elif (( VRAM_TOTAL_MB < 24000 )); then CTX=65536
+    else                                   CTX=131072
+    fi
+  fi
+  export CTX CTX_SOURCE
+}
+
+# VRAM to hold back for the KV cache at the effective context.
+#
+# Derived from context x model geometry rather than a fixed constant, so asking
+# for more context correctly buys you a smaller model instead of an OOM at load
+# time. The default geometry is the 30B-A3B class this stack is tuned for --
+# 48 layers, 4 KV heads (GQA), head dim 128, 1 byte/element at q8_0 -- which
+# works out to 48 KiB/token, the figure measured in TUNING.md. Override any of
+# it for a model with different geometry.
+#
+# KV_RESERVE_MB remains an explicit expert override and wins outright.
+derive_kv_reserve() {
+  local per_token
+  per_token=$(kv_per_token "${KV_LAYERS:-48}" "${KV_HEADS:-4}" \
+                           "${KV_HEAD_DIM:-128}" "${KV_BYTES:-1}")
+  # Same idempotency guard as resolve_context.
+  if [[ -n "${KV_RESERVE_MB:-}" && "${KV_RESERVE_SOURCE:-explicit}" == "explicit" ]]; then
+    KV_RESERVE_SOURCE="explicit"
+  else
+    KV_RESERVE_SOURCE="derived"
+    # +15% headroom: the cache is not the only transient allocation, and
+    # running out at load time is far worse than declining a model.
+    KV_RESERVE_MB=$(( CTX * per_token * 115 / (100 * 1024 * 1024) ))
+  fi
+  KV_PER_TOKEN_B="$per_token"
+  export KV_RESERVE_MB KV_RESERVE_SOURCE KV_PER_TOKEN_B
+}
+
 detect_hw() {
   need nvidia-smi || die "nvidia-smi not found. Install the driver:
        sudo apt install system76-driver-nvidia && reboot"
@@ -109,11 +160,14 @@ detect_hw() {
     NVLINK=1
   fi
 
-  # --- usable weight budget ------------------------------------------------
-  # Reserve VRAM for the KV cache and CUDA context before deciding what fits.
-  # A model that fits in VRAM but leaves no room for a 64k KV cache is useless
-  # for agent work. ~1GB/GPU of CUDA context overhead + KV reserve.
-  KV_RESERVE_MB="${KV_RESERVE_MB:-7000}"
+  # --- context, then budget ------------------------------------------------
+  # Order matters. The KV cache is sized by the context length, so the context
+  # must be settled BEFORE the weight budget is computed -- otherwise a model is
+  # chosen against one context and then served at another. That was the bug:
+  # a fixed 7000 MB reserve here, and the real context picked later in
+  # 40-serve.sh, which also silently overwrote any CTX the user asked for.
+  resolve_context
+  derive_kv_reserve
   CTX_OVERHEAD_MB=$(( GPU_COUNT * 900 ))
   FIT_TOTAL_MB=$(( VRAM_TOTAL_MB - KV_RESERVE_MB - CTX_OVERHEAD_MB ))
   # Largest model that fits WITHOUT splitting (single card).
@@ -125,22 +179,29 @@ detect_hw() {
   MOE_OFFLOAD_MB=$(( (RAM_GB - 16) * 1024 ))
   (( MOE_OFFLOAD_MB < 0 )) && MOE_OFFLOAD_MB=0
 
-  # A negative budget always means the GPUs weren't idle when we measured, never
-  # that the hardware is too small. Fail loudly rather than emitting a config
-  # full of nonsense --n-cpu-moe values.
   export GPU_NAME GPU_COUNT VRAM_MB VRAM_TOTAL_MB VRAM_FREE_MB VRAM_INSTALLED_MB \
          BEST_GPU GPU_CC CUDA_ARCH \
          RAM_GB PHYS_CORES THREADS MULTI_GPU NVLINK \
-         FIT_TOTAL_MB FIT_SINGLE_MB MOE_OFFLOAD_MB KV_RESERVE_MB
+         FIT_TOTAL_MB FIT_SINGLE_MB MOE_OFFLOAD_MB \
+         KV_RESERVE_MB KV_RESERVE_SOURCE KV_PER_TOKEN_B CTX CTX_SOURCE
 
-  # A negative budget almost always means the GPUs weren't idle when we
-  # measured, not that the hardware is too small. Fail loudly rather than emit
-  # a config full of nonsense --n-cpu-moe values.
+  # No budget left. There are two quite different causes and they have opposite
+  # fixes, so name the right one rather than always blaming GPU holders.
   #
   # DETECT_SOFT_FAIL is for read-only callers such as 00-specs.sh: a report
   # should still describe the machine it could not size, rather than aborting
   # halfway through and leaving the user with no diagnosis at all.
   if (( FIT_TOTAL_MB <= 0 )); then
+    if [[ "$CTX_SOURCE" == explicit ]] && (( KV_RESERVE_MB > VRAM_TOTAL_MB / 2 )); then
+      c_err "No VRAM left for model weights: a ${CTX}-token context needs
+     ${KV_RESERVE_MB} MB of KV cache, out of ${VRAM_TOTAL_MB} MB free."
+      if [[ "${DETECT_SOFT_FAIL:-0}" == 1 ]]; then
+        c_warn "Continuing in report-only mode; no plan can be recommended."
+        return 1
+      fi
+      die "Lower CTX (32768 is the floor for Claude Code) or free more VRAM.
+     At ${KV_PER_TOKEN_B} bytes/token, each 32k of context costs ~$(( 32768 * KV_PER_TOKEN_B / 1024 / 1024 )) MB."
+    fi
     c_err "Computed weight budget is ${FIT_TOTAL_MB} MB -- only ${VRAM_TOTAL_MB} MB of
      ${VRAM_INSTALLED_MB} MB VRAM is free, so something is still holding the GPUs:"
     gpu_holders | sed 's/^/       /' >&2
@@ -167,8 +228,10 @@ print_hw() {
   Compute cap      : $GPU_CC  -> CMAKE_CUDA_ARCHITECTURES=$CUDA_ARCH
   System RAM       : ${RAM_GB} GB
   Cores            : $PHYS_CORES physical  -> --threads $THREADS
+  Context          : ${CTX} tokens (${CTX_SOURCE})
+  KV reserve       : ${KV_RESERVE_MB} MB (${KV_RESERVE_SOURCE}, ${KV_PER_TOKEN_B} bytes/token at q8_0)
   Weight budget    : ${FIT_SINGLE_MB} MB on one GPU  |  ${FIT_TOTAL_MB} MB split across all
-                     (after reserving ${KV_RESERVE_MB} MB for KV cache)
+                     (what is left after the KV reserve above)
   MoE CPU offload  : up to ~${MOE_OFFLOAD_MB} MB of system RAM available
 
 EOF

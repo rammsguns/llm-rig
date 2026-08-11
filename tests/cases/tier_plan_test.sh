@@ -19,13 +19,17 @@ SUITE_NAME="tier detection (#3)"
 
 setup_test() {
   mock_init
+  # Pin the context so the derived KV reserve is a known constant; these tests
+  # are about tier thresholds, not about context sizing (see #4 for that).
+  export CTX=65536
   # shellcheck source=/dev/null
   source "$REPO_ROOT/lib/models.sh"
 }
 
-# FIT_TOTAL_MB = sum(free VRAM) - KV_RESERVE(7000) - GPU_COUNT * 900.
-# On one GPU that is free - 7900, so a target budget needs free = budget + 7900.
-free_for_budget() { echo $(( $1 + 7900 )); }
+# FIT_TOTAL_MB = sum(free VRAM) - KV_RESERVE - GPU_COUNT * 900. With CTX pinned
+# to 65536 the reserve is 3532 MB, so on one GPU a target budget needs
+# free = budget + 3532 + 900.
+free_for_budget() { echo $(( $1 + 4432 )); }
 
 tier_at() {
   plan_for_budget "$1" 0

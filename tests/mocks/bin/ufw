@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+printf 'ufw %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+[[ "${1:-}" == status ]] && echo "Status: inactive"
+exit 0
