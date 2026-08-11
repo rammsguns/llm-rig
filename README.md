@@ -149,6 +149,22 @@ in `tests/fixtures/gpu`.
 ShellCheck is skipped with a notice if it isn't installed locally; CI always enforces it
 at `--severity=warning`. Install it with `sudo apt-get install -y shellcheck`.
 
+The "no network" claim is enforced rather than asserted:
+
+```bash
+./tests/isolated.sh              # re-run the suites inside a network namespace
+./tests/isolated.sh --check-only # just prove the isolation, run nothing
+```
+
+It enters a namespace with no interface but loopback, proves from inside that outbound
+connections fail, and **exits non-zero if it cannot establish or prove that** — a check
+that skips itself is not a check. CI runs it after the normal pass.
+
+The runner also fails closed on discovering nothing to do: a broken `find`, an
+unrecognisable tree, an empty `cases/`, a suite with no `test_*` functions, or a filter
+that matches no suite all exit non-zero. Reporting `ALL PASSED` after running zero tests
+is the one failure mode a test runner must never have.
+
 Adding hardware to test against is a data file, not a code change — drop a new TSV in
 `tests/fixtures/gpu/`, or call `synth_gpu <free_mb> [count]` for an exact boundary value.
 
