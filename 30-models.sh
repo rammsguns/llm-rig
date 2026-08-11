@@ -117,26 +117,25 @@ c_info "Weight budget: ${FIT_TOTAL_MB} MB split / ${FIT_SINGLE_MB} MB single-GPU
 # can never disagree about what the hardware should run.
 plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB"
 c_info "Tier: $PLAN_TIER"
-# Consumed below via indirect expansion (${!s_var}), which ShellCheck cannot follow.
-# shellcheck disable=SC2034
-SEARCH_1="$PLAN_SEARCH_1"; Q1="$PLAN_Q_1"
-SEARCH_2="$PLAN_SEARCH_2"; Q2="$PLAN_Q_2"
-SEARCH_3="$PLAN_SEARCH_3"; Q3="$PLAN_Q_3"
+# Arrays rather than SEARCH_1/2/3 + ${!indirect}: same behaviour, but the data
+# flow is visible to a reader (and to ShellCheck) instead of being assembled
+# from variable names at runtime.
+SEARCHES=("$PLAN_SEARCH_1" "$PLAN_SEARCH_2" "$PLAN_SEARCH_3")
+QUANTS=("$PLAN_Q_1" "$PLAN_Q_2" "$PLAN_Q_3")
 
 if [[ -n "$PLAN_MOE_NOTE" ]]; then
   c_info "${RAM_GB}GB RAM detected"
   printf '     %s\n' "$PLAN_MOE_NOTE" >&2
 fi
 
-# Allow quant overrides too.
-Q1="${Q1_OVERRIDE:-$Q1}"; Q2="${Q2_OVERRIDE:-$Q2}"; Q3="${Q3_OVERRIDE:-$Q3}"
-
-# Validate every quant expression before any network work. An invalid override
-# should fail here, not silently match nothing after a long resolve.
-for n in 1 2 3; do
-  q_var="Q$n"
-  if ! quant_pattern_valid "${!q_var}"; then
-    die "Q$n is invalid: $QUANT_PATTERN_ERROR
+# Per-pick quant overrides, then validate every expression before any network
+# work. An invalid override should fail here, not silently match nothing after
+# a long resolve.
+for i in 0 1 2; do
+  ov="Q$(( i + 1 ))_OVERRIDE"
+  [[ -n "${!ov:-}" ]] && QUANTS[i]="${!ov}"
+  if ! quant_pattern_valid "${QUANTS[i]}"; then
+    die "Q$(( i + 1 )) is invalid: $QUANT_PATTERN_ERROR
      A quant preference is an ordered alternation, e.g. Q4_K_M or 'IQ4_XS|Q4_K_S'."
   fi
 done
@@ -150,15 +149,18 @@ fi
 
 c_info "Resolving repos on HuggingFace"
 echo
-for n in 1 2 3; do
-  s_var="SEARCH_$n"; p_var="PICK_$n"
-  search="${!s_var}"
+REPOS=()
+for i in 0 1 2; do
+  n=$(( i + 1 ))
+  search="${SEARCHES[i]}"
+  p_var="PICK_$n"
   pick="${!p_var:-}"
   if [[ -z "$pick" ]]; then
     mapfile -t cands < <(hf_resolve "$search")
     if (( ${#cands[@]} == 0 )); then
       c_warn "no GGUF repo found for '$search' -- skipping. Search manually:"
       echo "    https://huggingface.co/models?search=$search&library=gguf"
+      REPOS[i]=""
       continue
     fi
     pick="${cands[0]}"
@@ -166,17 +168,16 @@ for n in 1 2 3; do
     printf '        %s\n' "${cands[@]:0:5}"
     echo "        -> using ${pick}  (override with PICK_$n=...)"
   fi
-  eval "REPO_$n=\"\$pick\""
+  REPOS[i]="$pick"
 done
 echo
 
 read -rp "Proceed with downloads into $MODELS_DIR? [y/N] " ok
 [[ "${ok,,}" == y ]] || { c_warn "aborted"; exit 0; }
 
-for n in 1 2 3; do
-  r_var="REPO_$n"; q_var="Q$n"
-  [[ -n "${!r_var:-}" ]] || continue
-  fetch "${!r_var}" "${!q_var}" "Model $n" || true
+for i in 0 1 2; do
+  [[ -n "${REPOS[i]:-}" ]] || continue
+  fetch "${REPOS[i]}" "${QUANTS[i]}" "Model $(( i + 1 ))" || true
 done
 
 echo
