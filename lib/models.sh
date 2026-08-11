@@ -212,7 +212,8 @@ plan_for_budget() {
     printf -v "PLAN_ARCH_$n"     '%s' "$(catalog_get "$id" arch)"
     printf -v "PLAN_CTX_$n"      '%s' "$(catalog_get "$id" context)"
     printf -v "PLAN_LICENSE_$n"  '%s' "$(catalog_get "$id" license)"
-    printf -v "PLAN_PROV_$n"     '%s' "$(catalog_get "$id" provenance)"
+    printf -v "PLAN_PROV_$n"     '%s' "$(catalog_get "$id" fact_method)"
+    printf -v "PLAN_VERIFIED_$n" '%s' "$(catalog_get "$id" verified_at)"
 
     # Size at the quant this tier actually asks for, not at the reference quant.
     local q_var="PLAN_Q_$n" first_q
@@ -231,6 +232,7 @@ plan_for_budget() {
          PLAN_CTX_1 PLAN_CTX_2 PLAN_CTX_3 \
          PLAN_LICENSE_1 PLAN_LICENSE_2 PLAN_LICENSE_3 \
          PLAN_PROV_1 PLAN_PROV_2 PLAN_PROV_3 \
+         PLAN_VERIFIED_1 PLAN_VERIFIED_2 PLAN_VERIFIED_3 \
          PLAN_SIZE_1 PLAN_SIZE_2 PLAN_SIZE_3 \
          PLAN_Q_1 PLAN_Q_2 PLAN_Q_3
   return 0
