@@ -101,17 +101,32 @@ if (( BUDGET_OK )) && plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB"; then
   done
 
   # Metadata quality is part of the recommendation, so it is stated rather than
-  # buried. See lib/catalog.sh for what each provenance value means.
-  unverified=""
+  # buried. Two separate claims are made here, and they are kept separate on
+  # purpose: where the FACTS came from, and whether there is any evidence for
+  # the quality RATING. See lib/catalog.sh for what each value means.
+  echo
+  echo "  Where these figures came from:"
   for n in 1 2 3; do
-    pv="PLAN_PROV_$n"; s="PLAN_SEARCH_$n"
-    [[ "${!pv}" == "unverified" ]] && unverified+=" ${!s}"
+    pv="PLAN_PROV_$n"; s="PLAN_SEARCH_$n"; va="PLAN_VERIFIED_$n"; pid="PLAN_ID_$n"
+    printf '    %-32s %-12s checked %s\n' "${!s}" "${!pv}" "${!va}"
+    if ! catalog_facts_verified "${!pid}"; then
+      c_warn "  ${!s}: not confirmed against a primary source"
+    fi
   done
-  if [[ -n "$unverified" ]]; then
+
+  # The rating is a different kind of claim from the facts above, and saying so
+  # is the whole reason the two tables are separate. An unknown rating is not a
+  # gap in the data -- it is the honest state of the evidence.
+  unrated=""
+  for n in 1 2 3; do
+    pid="PLAN_ID_$n"; s="PLAN_SEARCH_$n"
+    [[ "$(catalog_rating_get "${!pid}" rating_value)" == "unknown" ]] && unrated+=" ${!s}"
+  done
+  if [[ -n "$unrated" ]]; then
     echo
-    c_warn "Catalog rows not confirmed against a primary source:${unverified}"
-    echo "     Figures for these come from the curated table in lib/catalog.sh and"
-    echo "     have not been checked against the publisher's model card."
+    echo "  No coding-quality rating exists for:${unrated}"
+    echo "     Ranking for these rests on hardware fit, features, speed and"
+    echo "     freshness alone. Nothing here is scored on an unsourced opinion."
   fi
 
   [[ -n "$PLAN_MOE_NOTE" ]] && printf '\n  %s\n' "$PLAN_MOE_NOTE"
