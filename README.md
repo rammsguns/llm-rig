@@ -77,9 +77,19 @@ PICK_2=unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF \
 PICK_3=unsloth/Qwen3.6-27B-GGUF \
   ./30-models.sh
 
+# Override the quant preference for any pick
+Q1_OVERRIDE='Q6_K|Q5_K_M' ./30-models.sh
+
 CTX=65536 ./40-serve.sh       # override context length (see the caveat below)
 POWER_PCT=85 ./10-os-tune.sh  # cap power, if your chassis has thermal headroom
 ```
+
+A quant preference is an **ordered alternation**, not a regular expression:
+`'IQ4_XS|Q4_K_S'` means "take IQ4_XS if the repo has it, otherwise Q4_K_S". Alternatives
+are tried strictly left to right, so preference order always wins over filename order.
+Each individual alternative is matched as a case-insensitive extended regex, so
+character classes work if you want them. Invalid expressions are rejected before any
+network or download work happens.
 
 > **Caveat on `CTX`:** the VRAM sizing reserve (`KV_RESERVE_MB`, default 7000) is a fixed
 > constant in `lib/detect.sh` and is **not** derived from `CTX`. At the default context it

@@ -6,32 +6,11 @@
 # candidates and picks the best match; override with:
 #   PICK_1=unsloth/Some-Repo-GGUF ./30-models.sh
 set -uo pipefail
-source "$(dirname "$0")/lib/detect.sh"
-detect_hw
-
-mkdir -p "$MODELS_DIR"
-need jq || sudo apt-get install -y -qq jq
-
-# The CLI was renamed: `huggingface-cli` is retired and now refuses to run, and
-# the `[cli]` extra no longer exists. The entrypoint is `hf`. Support both so
-# this works on older installs too.
-if need hf; then
-  HF_BIN=hf
-elif need huggingface-cli && huggingface-cli --help >/dev/null 2>&1; then
-  HF_BIN=huggingface-cli
-else
-  c_info "Installing huggingface_hub"
-  pip install --user --break-system-packages -q -U huggingface_hub \
-    || die "pip install huggingface_hub failed"
-  hash -r
-  need hf && HF_BIN=hf || die "hf not on PATH even after install. Add ~/.local/bin to PATH."
-fi
-c_ok "using $HF_BIN ($(command -v $HF_BIN))"
-
-# Parallel chunk downloads -- these files are tens of GB.
-export HF_HUB_ENABLE_HF_TRANSFER=0
-export HF_HOME="${HF_HOME:-$MODELS_DIR/.hf}"
-
+RIG_SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# BASH_SOURCE, not $0: this file is sourced by the fixture tests, where $0
+# is the test runner rather than this script.
+source "$RIG_SRC_DIR/lib/detect.sh"
+source "$RIG_SRC_DIR/lib/models.sh"
 # Search HF for GGUF repos matching a name, preferring known-good quantizers.
 # Tries progressively looser search terms, because exact model naming (hyphens,
 # dots, version suffixes) varies between publishers and a strict query returns
@@ -74,13 +53,6 @@ hf_resolve() {
     | sort -s -k1,1n -k2,2n | cut -f3
 }
 
-# Fail fast with a useful message if HF is unreachable (VPN, DNS, region block).
-if ! curl -sfL --max-time 15 -o /dev/null "https://huggingface.co/api/models?limit=1"; then
-  die "Cannot reach huggingface.co. Check DNS/proxy, then re-run.
-     If HF is blocked on your network, download GGUFs manually into
-     $MODELS_DIR/<model-name>/ and skip straight to ./40-serve.sh"
-fi
-
 # Download the first file in a repo matching a quant pattern.
 fetch() {
   local repo="$1" pat="$2" label="$3"
@@ -89,23 +61,50 @@ fetch() {
   local files
   files=$(curl -sf "https://huggingface.co/api/models/$repo" | jq -r '.siblings[].rfilename' 2>/dev/null)
   local match
-  match=$(echo "$files" | grep -i "$pat" | grep -i '\.gguf$' | grep -vi 'mmproj' | sort | head -1)
-  if [[ -z "$match" ]]; then
+  if ! match=$(printf '%s\n' "$files" | select_quant_file "$pat"); then
     c_warn "no file matching '$pat' in $repo. Available quants:"
-    echo "$files" | grep -i '\.gguf$' | sed 's/^/      /' | head -20
+    printf '%s\n' "$files" | filter_gguf_candidates | sed 's/^/      /' | head -20
     return 1
   fi
-  # Multi-part GGUFs: grab the whole split set.
-  local pattern="$match"
-  if [[ "$match" =~ -0000[0-9]-of-[0-9]+ ]]; then
-    pattern="${match%%-0000*}*"
-    c_info "  split model -- fetching all parts: $pattern"
-  fi
+  # Multi-part GGUFs must arrive as a complete set or the model will not load.
+  local pattern
+  pattern="$(quant_include_pattern "$match")"
+  [[ "$pattern" == "$match" ]] || c_info "  split model -- fetching all parts: $pattern"
   "$HF_BIN" download "$repo" --include "$pattern" \
     --local-dir "$MODELS_DIR/$(basename "$repo")" \
     || { c_err "download failed for $repo"; return 1; }
   c_ok "$(basename "$repo") -> $MODELS_DIR/$(basename "$repo")"
 }
+
+# --- main -------------------------------------------------------------------
+# Sourcing this file defines the helpers above and stops here, so the fixture
+# tests can exercise fetch() without running a download workflow.
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] || return 0
+
+detect_hw
+
+mkdir -p "$MODELS_DIR"
+need jq || sudo apt-get install -y -qq jq
+
+# The CLI was renamed: `huggingface-cli` is retired and now refuses to run, and
+# the `[cli]` extra no longer exists. The entrypoint is `hf`. Support both so
+# this works on older installs too.
+if need hf; then
+  HF_BIN=hf
+elif need huggingface-cli && huggingface-cli --help >/dev/null 2>&1; then
+  HF_BIN=huggingface-cli
+else
+  c_info "Installing huggingface_hub"
+  pip install --user --break-system-packages -q -U huggingface_hub \
+    || die "pip install huggingface_hub failed"
+  hash -r
+  need hf && HF_BIN=hf || die "hf not on PATH even after install. Add ~/.local/bin to PATH."
+fi
+c_ok "using $HF_BIN ($(command -v $HF_BIN))"
+
+# Parallel chunk downloads -- these files are tens of GB.
+export HF_HUB_ENABLE_HF_TRANSFER=0
+export HF_HOME="${HF_HOME:-$MODELS_DIR/.hf}"
 
 # --- shortlist, driven by the real weight budget ---------------------------
 # v1 keyed off a crude total-VRAM tier and recommended a 49GB model to a machine
@@ -150,6 +149,23 @@ fi
 
 # Allow quant overrides too.
 Q1="${Q1_OVERRIDE:-$Q1}"; Q2="${Q2_OVERRIDE:-$Q2}"; Q3="${Q3_OVERRIDE:-$Q3}"
+
+# Validate every quant expression before any network work. An invalid override
+# should fail here, not silently match nothing after a long resolve.
+for n in 1 2 3; do
+  q_var="Q$n"
+  if ! quant_pattern_valid "${!q_var}"; then
+    die "Q$n is invalid: $QUANT_PATTERN_ERROR
+     A quant preference is an ordered alternation, e.g. Q4_K_M or 'IQ4_XS|Q4_K_S'."
+  fi
+done
+
+# Fail fast with a useful message if HF is unreachable (VPN, DNS, region block).
+if ! curl -sfL --max-time 15 -o /dev/null "https://huggingface.co/api/models?limit=1"; then
+  die "Cannot reach huggingface.co. Check DNS/proxy, then re-run.
+     If HF is blocked on your network, download GGUFs manually into
+     $MODELS_DIR/<model-name>/ and skip straight to ./40-serve.sh"
+fi
 
 c_info "Resolving repos on HuggingFace"
 echo
