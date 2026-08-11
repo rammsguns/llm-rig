@@ -63,37 +63,60 @@ SCORE_TRUSTED_OWNERS=(unsloth bartowski ggml-org lmstudio-community mradermacher
 
 # Hardware fit. Answers "does this run here", not "is this a good model".
 #
-#   score_hw_fit <id> <budget_mb> [quant]
+#   score_hw_fit <id> <budget_mb> [quant] [offload_ceiling_mb]
+#
+# Banded on the SAME boundaries as catalog_hw_class, and by calling it rather
+# than by reimplementing them. Two sets of thresholds for one question is how a
+# model gets grouped under "small" while being scored as a tight fit.
 score_hw_fit() {
-  local id="$1" budget="$2" quant="${3:-}" size arch smallest
+  local id="$1" budget="$2" quant="${3:-}" offload="${4:-0}" size arch class
   [[ -n "$quant" ]] || quant="$(catalog_preferred_quant "$id")" || return 1
   size="$(catalog_est_size_mb "$id" "$quant")" || return 1
   arch="$(catalog_get "$id" arch)" || return 1
-  (( budget > 0 )) || { printf '0'; return 0; }
 
-  if (( size * 100 <= budget * 85 )); then
-    printf '100'                      # fits with room to spare
-  elif (( size <= budget )); then
-    printf '75'                       # fits, but nothing left for growth
+  class="$(catalog_hw_class "$id" "$budget" "$quant" "$offload")" || return 1
+  case "$class" in
+    unsupported) printf '0';   return 0 ;;
+    small)       printf '100'; return 0 ;;
+    medium)      printf '90';  return 0 ;;
+  esac
+
+  # Large: either it fits with nothing to spare, or it runs by offloading. For
+  # a MoE offload is routine -- only the active experts need to be resident.
+  # For a dense model every layer is touched every token, and it is punishing.
+  if (( size <= budget )); then
+    printf '70'
+  elif [[ "$arch" == "moe" ]]; then
+    printf '45'
   else
-    # Over budget. For a MoE this is routine -- only the active experts need to
-    # be resident, so expert offload costs relatively little. For a dense model
-    # every layer is touched every token and offload is punishing.
-    smallest="$(catalog_est_size_mb "$id" "${CATALOG_QUANT_LADDER[-1]}")" || return 1
-    if (( smallest > budget * 3 )); then
-      printf '0'                      # not viable at any quant, on any path
-    elif [[ "$arch" == "moe" ]]; then
-      printf '45'
-    else
-      printf '10'
-    fi
+    printf '15'
   fi
 }
 
-# Coding and agent quality. Straight from the catalog -- there is no offline
-# oracle for this, which is exactly why the column carries a provenance value
-# and why confidence drops when that value is `unverified`.
-score_coding() { catalog_get "$1" coding_score; }
+# Coding and agent quality, from the ratings table.
+#
+# SCORE_CODING_KNOWN is set alongside the value and is the more important of
+# the two: it says whether the number means anything. When no rating exists the
+# component returns a NEUTRAL 50 -- not 0, which would rank an unrated model
+# below a bad one, and not a guess, which is what this whole redesign removed.
+#
+# A neutral value across every row means this component discriminates between
+# nothing, and 25% of the weight does no work. That is the honest consequence
+# of having no comparable evidence, and it is visible in score_explain rather
+# than hidden inside a plausible-looking total.
+SCORE_NEUTRAL_CODING=50
+
+score_coding() {
+  local id="$1" value
+  value="$(catalog_rating_get "$id" rating_value)" || return 1
+  if [[ "$value" == "unknown" ]]; then
+    SCORE_CODING_KNOWN=0
+    printf '%d' "$SCORE_NEUTRAL_CODING"
+  else
+    SCORE_CODING_KNOWN=1
+    printf '%d' "$value"
+  fi
+}
 
 # Tool use and usable context. Agent work fails on either of these long before
 # it fails on raw model quality: a model that cannot call a tool cannot drive
@@ -182,18 +205,29 @@ score_trust() {
 # How much the total is worth, expressed separately from the total itself so a
 # weak score and a well-evidenced one cannot be confused.
 #
-#   high    catalog row confirmed against a primary source, live data current
-#   medium  one of those is missing
-#   low     unverified metadata AND no current live data
+# Three independent things can be evidenced or not, and they are counted rather
+# than collapsed, because they fail independently:
+#
+#   facts    the catalog row was confirmed against the publisher
+#   rating   a coding rating exists, with a method and a source behind it
+#   live     download counts and file listings are current, not stale or absent
+#
+#   3 of 3  high      2  medium      0 or 1  low
+#
+# Today every row has verified facts and no rating, so a model with current
+# live data reaches medium and no further. That ceiling is deliberate: nothing
+# should report high confidence while a quarter of the weight rests on a
+# neutral placeholder.
 score_confidence() {
-  local id="$1" live_source="${2:-missing}" prov verified=0 live=0
-  prov="$(catalog_get "$id" provenance)" || return 1
-  [[ "$prov" != "unverified" ]] && verified=1
-  case "$live_source" in fresh|cached) live=1 ;; esac
+  local id="$1" live_source="${2:-missing}" value evidence=0
+  catalog_facts_verified "$id" && evidence=$(( evidence + 1 ))
+  value="$(catalog_rating_get "$id" rating_value)" || return 1
+  [[ "$value" != "unknown" ]] && evidence=$(( evidence + 1 ))
+  case "$live_source" in fresh|cached) evidence=$(( evidence + 1 )) ;; esac
 
-  if   (( verified && live )); then printf 'high'
-  elif (( verified || live )); then printf 'medium'
-  else                              printf 'low'
+  if   (( evidence >= 3 )); then printf 'high'
+  elif (( evidence == 2 )); then printf 'medium'
+  else                           printf 'low'
   fi
 }
 
@@ -206,14 +240,23 @@ score_confidence() {
 # without recomputing it.
 score_model() {
   local id="$1" budget="$2" quant="${3:-}" owner="${4:-}" downloads="${5:-0}" live="${6:-missing}"
+  local offload="${7:-${SCORE_OFFLOAD_MB:-0}}"
   [[ -n "$quant" ]] || quant="$(catalog_preferred_quant "$id")" || return 1
 
-  SCORE_C_HW_FIT="$(score_hw_fit   "$id" "$budget" "$quant")" || return 1
-  SCORE_C_CODING="$(score_coding    "$id")"                   || return 1
+  SCORE_C_HW_FIT="$(score_hw_fit   "$id" "$budget" "$quant" "$offload")" || return 1
   SCORE_C_FEATURES="$(score_features "$id")"                  || return 1
   SCORE_C_SPEED="$(score_speed      "$id" "$budget" "$quant")" || return 1
   SCORE_C_FRESHNESS="$(score_freshness "$id")"                || return 1
   SCORE_C_TRUST="$(score_trust      "$owner")"                || return 1
+
+  # Not in a command substitution: score_coding sets SCORE_CODING_KNOWN as a
+  # second return value, and a subshell would swallow it -- the same trap that
+  # has bitten `run` in the test harness three times now.
+  SCORE_CODING_KNOWN=0
+  local coding_out
+  coding_out="$(score_coding "$id"; printf ':%s' "$SCORE_CODING_KNOWN")" || return 1
+  SCORE_C_CODING="${coding_out%:*}"
+  SCORE_CODING_KNOWN="${coding_out##*:}"
 
   # Each contribution is floored on its own and the TOTAL IS THEIR SUM -- not
   # the floor of the sum. Those differ by a point or two, and the difference is
@@ -234,11 +277,13 @@ score_model() {
   SCORE_POPULARITY="${downloads:-0}"
   [[ "$SCORE_POPULARITY" =~ ^[0-9]+$ ]] || SCORE_POPULARITY=0
   SCORE_CONFIDENCE="$(score_confidence "$id" "$live")"
-  SCORE_CLASS="$(catalog_size_class "$id")"
+  SCORE_CLASS="$(catalog_hw_class "$id" "$budget" "$quant" "$offload")" || return 1
   SCORE_QUANT="$quant"
   SCORE_ID="$id"
+  SCORE_CODING_KNOWN="${SCORE_CODING_KNOWN:-0}"
 
   export SCORE_TOTAL SCORE_POPULARITY SCORE_CONFIDENCE SCORE_CLASS SCORE_QUANT SCORE_ID \
+         SCORE_CODING_KNOWN \
          SCORE_C_HW_FIT SCORE_C_CODING SCORE_C_FEATURES SCORE_C_SPEED \
          SCORE_C_FRESHNESS SCORE_C_TRUST \
          SCORE_P_HW_FIT SCORE_P_CODING SCORE_P_FEATURES SCORE_P_SPEED \
@@ -252,7 +297,8 @@ score_model() {
 # rather than at the total.
 score_explain() {
   local id="$1" budget="$2" quant="${3:-}" owner="${4:-}" downloads="${5:-0}" live="${6:-missing}"
-  score_model "$id" "$budget" "$quant" "$owner" "$downloads" "$live" || return 1
+  local offload="${7:-${SCORE_OFFLOAD_MB:-0}}"
+  score_model "$id" "$budget" "$quant" "$owner" "$downloads" "$live" "$offload" || return 1
 
   printf '%s  (%s, %s, %s)\n' "$SCORE_ID" "$SCORE_CLASS" "$SCORE_QUANT" \
     "$(catalog_get "$id" arch)"
@@ -266,35 +312,55 @@ score_explain() {
     "freshness"        "$SCORE_C_FRESHNESS" "$SCORE_W_FRESHNESS" "$SCORE_P_FRESHNESS" \
     "repository trust" "$SCORE_C_TRUST"     "$SCORE_W_TRUST"     "$SCORE_P_TRUST"
   printf '  %-22s %5s\n' "TOTAL" "$SCORE_TOTAL"
+
+  # The two provenance claims are printed separately because they ARE separate:
+  # the facts behind the size and the context are confirmed; the rating behind
+  # a quarter of the weight is not. Collapsing them into one "provenance" line
+  # is what let an unsourced score ride along with verified metadata.
   printf '  %-22s %5s   %s\n' "confidence" "$SCORE_CONFIDENCE" \
-    "(catalog provenance: $(catalog_get "$id" provenance); live data: $live)"
+    "(facts: $(catalog_get "$id" fact_method), checked $(catalog_get "$id" verified_at); live data: $live)"
+  if (( SCORE_CODING_KNOWN )); then
+    printf '  %-22s %5s   %s\n' "rating basis" \
+      "$(catalog_rating_get "$id" rating_confidence)" \
+      "($(catalog_rating_get "$id" rating_method), $(catalog_rating_get "$id" rating_date))"
+  else
+    printf '  %-22s %5s   %s\n' "rating basis" "none" \
+      "(no comparable evidence; scored at the neutral $SCORE_NEUTRAL_CODING)"
+  fi
   printf '  %-22s %5s   %s\n' "popularity" "$SCORE_POPULARITY" "(tie-breaker only, no weight)"
 }
 
 # --- ranking ----------------------------------------------------------------
 #
-#   score_rank <budget_mb>
+#   score_rank <budget_mb> [offload_mb]
 #
 # Emits every catalog model as:
 #
 #   class<TAB>score<TAB>id<TAB>quant<TAB>confidence<TAB>popularity
 #
-# grouped large -> medium -> small, and within each group by score descending.
-# Ties break on popularity, then on id, so the output is fully deterministic --
-# two runs over the same data must never disagree about the order.
+# grouped large -> medium -> small -> unsupported, and within each group by
+# score descending. Ties break on popularity, then on id, so the output is
+# fully deterministic -- two runs over the same data must never disagree about
+# the order.
+#
+# The classes are HARDWARE-RELATIVE, so this ordering changes with the budget:
+# the same model is large on one machine and small on another, and that is the
+# point. Unsupported models are emitted last rather than dropped, so a caller
+# can show the user why a model they expected to see is not on offer.
 score_rank() {
-  local budget="$1" id class_rank
+  local budget="$1" offload="${2:-${SCORE_OFFLOAD_MB:-0}}" id class_rank
   {
     for id in $(catalog_ids); do
       score_model "$id" "$budget" "" \
         "${SCORE_LIVE_OWNER:-}" "${SCORE_LIVE_DOWNLOADS:-0}" "${SCORE_LIVE_SOURCE:-missing}" \
-        || continue
+        "$offload" || continue
       # A numeric group key, so `sort` orders the classes by size rather than
       # alphabetically -- which would give large, medium, small a nonsense order.
       case "$SCORE_CLASS" in
-        large)  class_rank=1 ;;
-        medium) class_rank=2 ;;
-        *)      class_rank=3 ;;
+        large)       class_rank=1 ;;
+        medium)      class_rank=2 ;;
+        small)       class_rank=3 ;;
+        *)           class_rank=4 ;;   # unsupported, and last
       esac
       printf '%d\t%s\t%d\t%s\t%s\t%s\t%d\n' \
         "$class_rank" "$SCORE_CLASS" "$SCORE_TOTAL" "$id" "$SCORE_QUANT" \
@@ -304,8 +370,13 @@ score_rank() {
     | cut -f2-
 }
 
+# Only the models this machine can actually run, in the same order.
+score_rank_supported() {
+  score_rank "$@" | awk -F'\t' '$1 != "unsupported"'
+}
+
 # The best model in each size class, for a report that wants one line per class
 # rather than the whole table.
 score_best_per_class() {
-  score_rank "$1" | awk -F'\t' '!seen[$1]++'
+  score_rank "$@" | awk -F'\t' '!seen[$1]++'
 }

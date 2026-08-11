@@ -86,9 +86,35 @@ test_a_zero_budget_scores_zero_rather_than_dividing_by_it() {
 
 # --- coding, features, speed ------------------------------------------------
 
-test_coding_score_comes_straight_from_the_catalog() {
-  assert_eq "$(score_coding qwen3-coder-30b)" "$(catalog_get qwen3-coder-30b coding_score)" \
-    "no transformation, so the provenance caveat still applies"
+test_an_unrated_model_scores_neutral_not_zero() {
+  # Zero would rank a model nobody has measured below one measured and found
+  # bad. Neutral says what is actually true: this component cannot separate
+  # them.
+  assert_eq "$(catalog_rating_get qwen3-coder-30b rating_value)" "unknown" \
+    "precondition: this model is currently unrated" || return 1
+  assert_eq "$(score_coding qwen3-coder-30b)" "$SCORE_NEUTRAL_CODING" \
+    "an unknown rating scores neutral"
+}
+
+test_the_absence_of_a_rating_is_reported_not_just_absorbed() {
+  # The value alone cannot distinguish "measured at 50" from "no evidence".
+  # SCORE_CODING_KNOWN is what carries that, and it must survive score_model --
+  # which computes its components in subshells, where a second return value is
+  # exactly the sort of thing that gets lost.
+  score_model qwen3-coder-30b 20000 || { _fail "scoring failed"; return 1; }
+  assert_eq "$SCORE_CODING_KNOWN" "0" "an unrated model must be flagged as unrated"
+}
+
+test_a_rated_model_uses_its_recorded_value() {
+  # The path that matters once local benchmarking lands: a real rating must
+  # actually reach the score rather than being neutralised along with the rest.
+  local out
+  out="$(
+    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium'; }
+    score_coding qwen3-4b
+    printf ':%s' "$SCORE_CODING_KNOWN"
+  )"
+  assert_eq "$out" "77:1" "a recorded rating is used verbatim and flagged as known"
 }
 
 test_tool_and_context_features_reward_agent_capability() {
@@ -224,13 +250,39 @@ test_popularity_does_not_change_the_total() {
 
 # --- confidence -------------------------------------------------------------
 
-test_unverified_metadata_with_no_live_data_is_low_confidence() {
+test_verified_facts_alone_do_not_reach_medium_confidence() {
+  # One of three: the row is confirmed, but there is no rating and no live
+  # data. Verified metadata is not the same as a well-evidenced recommendation.
   assert_eq "$(score_confidence qwen3-4b missing)" "low" \
-    "an unverified row and no live data cannot support a confident number"
+    "confirmed facts alone cannot support a confident number"
 }
 
-test_unverified_metadata_with_fresh_live_data_is_medium() {
-  assert_eq "$(score_confidence qwen3-4b fresh)" "medium" "half the picture is evidenced"
+test_verified_facts_plus_current_live_data_reach_medium() {
+  assert_eq "$(score_confidence qwen3-4b fresh)" "medium" "two of the three are evidenced"
+}
+
+test_high_confidence_is_unreachable_while_ratings_are_unknown() {
+  # The ceiling that matters: nothing may report high confidence while a
+  # quarter of the weight rests on a neutral placeholder. Today no combination
+  # of live-data freshness can get there.
+  local src
+  for src in fresh cached stale missing; do
+    local c; c="$(score_confidence qwen3-4b "$src")"
+    [[ "$c" == "high" ]] \
+      && { _fail "live source '$src' reached high confidence with no rating evidence"; return 1; }
+  done
+  return 0
+}
+
+test_all_three_kinds_of_evidence_reach_high_confidence() {
+  # And the route out, so the ceiling is a consequence of the data rather than
+  # a cap nothing can ever lift.
+  local out
+  out="$(
+    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium'; }
+    score_confidence qwen3-4b fresh
+  )"
+  assert_eq "$out" "high" "verified facts + a sourced rating + current live data"
 }
 
 test_stale_live_data_does_not_count_as_current() {
@@ -268,9 +320,25 @@ test_the_breakdown_contributions_add_up_to_the_total() {
 }
 
 test_the_breakdown_states_the_provenance_behind_the_number() {
+  # Two separate claims, printed separately: the facts are confirmed, the
+  # rating is not. A single "provenance" line would let the second ride on the
+  # credibility of the first.
   local out; out="$(score_explain qwen3-4b 20000)"
-  assert_contains "$out" "provenance" "the reader must be told what the data rests on" || return 1
-  assert_contains "$out" "tie-breaker only" "and that popularity carries no weight"
+  assert_contains "$out" "facts: hf-api" "where the metadata came from" || return 1
+  assert_contains "$out" "checked 2026-08-11" "and when it was last checked" || return 1
+  assert_contains "$out" "rating basis" "the rating is accounted for separately" || return 1
+  assert_contains "$out" "no comparable evidence" "and its absence is stated plainly" || return 1
+  assert_contains "$out" "tie-breaker only" "and popularity carries no weight"
+}
+
+test_the_breakdown_shows_a_real_rating_when_one_exists() {
+  local out
+  out="$(
+    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium'; }
+    score_explain qwen3-4b 20000
+  )"
+  assert_contains "$out" "local-benchmark" "the method behind the rating" || return 1
+  assert_not_contains "$out" "no comparable evidence" "and no longer claims there is none"
 }
 
 # --- ranking ----------------------------------------------------------------
@@ -307,6 +375,55 @@ test_a_small_model_can_outscore_a_large_one_without_reordering_the_classes() {
   # ...and yet large is still printed first.
   assert_eq "$(score_rank 20000 | head -1 | cut -f1)" "large" \
     "class order is by size, never by score"
+}
+
+test_the_same_model_changes_class_with_the_hardware() {
+  # The requirement the parameter-count bands could not meet. Nothing about
+  # devstral-small changes between these two calls except the machine it is
+  # being judged against.
+  local tight roomy
+  tight="$(score_rank 14000 | awk -F'\t' '$3=="devstral-small" { print $1 }')"
+  roomy="$(score_rank 40000 | awk -F'\t' '$3=="devstral-small" { print $1 }')"
+  assert_eq "$tight" "large" "12.5 GB of a 14 GB budget is a large model here" || return 1
+  assert_eq "$roomy" "small" "the same model on a 40 GB budget is a small one"
+}
+
+test_a_model_that_cannot_run_is_grouped_last_not_silently_dropped() {
+  # A user who expected to see a 70B needs to be told it will not run, not left
+  # wondering why it is missing.
+  local class
+  class="$(score_rank 3000 0 | awk -F'\t' '$3=="llama-3.3-70b" { print $1 }')"
+  assert_eq "$class" "unsupported" "no VRAM and no offload means unsupported" || return 1
+  assert_eq "$(score_rank 3000 0 | tail -1 | cut -f1)" "unsupported" \
+    "and unsupported models sort to the end"
+}
+
+test_unsupported_models_score_zero_on_hardware_fit() {
+  # The class and the fit score must agree. They used to be computed from two
+  # separate sets of thresholds, which is how a model gets grouped one way and
+  # scored another.
+  score_model llama-3.3-70b 3000 IQ3_M "" 0 missing 0 || { _fail "scoring failed"; return 1; }
+  assert_eq "$SCORE_CLASS" "unsupported" "precondition" || return 1
+  assert_eq "$SCORE_C_HW_FIT" "0" "an unrunnable model has no hardware fit"
+}
+
+test_the_supported_view_excludes_exactly_the_unsupported_models() {
+  local all supported unsupported
+  all="$(score_rank 3000 0 | wc -l)"
+  supported="$(score_rank_supported 3000 0 | wc -l)"
+  unsupported="$(score_rank 3000 0 | awk -F'\t' '$1=="unsupported"' | wc -l)"
+  assert_gt "$unsupported" 0 "precondition: something must be unsupported at 3 GB" || return 1
+  assert_eq "$supported" "$(( all - unsupported ))" "the filtered view drops those and nothing else"
+}
+
+test_offload_capacity_moves_models_out_of_unsupported() {
+  # Same card, same model, RAM available to offload into: it becomes a slow
+  # option rather than no option.
+  local without with
+  without="$(score_rank 3000 0     | awk -F'\t' '$3=="llama-3.3-70b" { print $1 }')"
+  with="$(   score_rank 3000 64000 | awk -F'\t' '$3=="llama-3.3-70b" { print $1 }')"
+  assert_eq "$without" "unsupported" "no RAM to spare" || return 1
+  assert_eq "$with"    "large"       "64 GB of offload makes it viable, if slow"
 }
 
 test_every_catalog_model_appears_exactly_once() {
