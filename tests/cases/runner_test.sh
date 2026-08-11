@@ -49,6 +49,8 @@ write_suite() {
     case "$kind" in
       passing) echo 'test_it_works() { assert_eq 1 1 "sanity"; }' ;;
       failing) echo 'test_it_breaks() { assert_eq 1 2 "deliberate failure"; }' ;;
+      skipping) echo 'test_it_works() { assert_eq 1 1 "sanity"; }'
+                echo 'test_it_skips() { skip "not applicable here"; }' ;;
       empty)   echo '# deliberately defines no test_ functions' ;;
     esac
     echo 'run_suite'
@@ -110,6 +112,19 @@ test_an_empty_cases_directory_fails() {
   run_fake --no-lint
   assert_fails "nothing to run is not success" || return 1
   assert_contains "$RUN_OUTPUT" "no test suites found" "diagnostic"
+}
+
+test_a_skipped_test_is_not_counted_as_a_pass() {
+  # skip() bumped a counter inside the per-test subshell, so run_suite never
+  # saw it: the test was announced as SKIP and then reported as ok on the very
+  # next line. Anything conditional -- like "this host cannot make a network
+  # namespace" -- was therefore silently credited as having run.
+  write_suite skipping dummy
+  run_fake --no-lint
+  assert_ok "a skipped test does not fail the run" || return 1
+  assert_contains "$RUN_OUTPUT" "1 skipped" "skips are reported as skips" || return 1
+  # One real test plus one skip: the tally must say 1 passed, not 2.
+  assert_not_contains "$RUN_OUTPUT" "2 passed" "a skip must not be counted as a pass"
 }
 
 test_a_suite_that_defines_no_tests_fails() {
