@@ -93,18 +93,22 @@ selector_default_picks() {
 # The 1-based menu positions of the default picks, which is what a user sees
 # and what MODEL_SELECTION records.
 selector_default_selection() {
-  local id i out=()
+  # Named `positions` rather than the obvious `out`: 30-models.sh sources this
+  # file and has its own string `out` in hf_resolve. ShellCheck follows the
+  # source directive, sees one name used as an array here and as a string
+  # there, and is right to call that confusing (SC2178/SC2128).
+  local id i positions=()
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
     for i in "${!SELECT_ROWS[@]}"; do
       if [[ "$(_selector_field "${SELECT_ROWS[i]}" 3)" == "$id" ]]; then
-        out+=("$(( i + 1 ))")
+        positions+=("$(( i + 1 ))")
         break
       fi
     done
   done < <(selector_default_picks)
   local IFS=,
-  printf '%s' "${out[*]}"
+  printf '%s' "${positions[*]}"
 }
 
 # --- parsing the answer -----------------------------------------------------
@@ -120,6 +124,10 @@ selector_default_selection() {
 selector_parse() {
   local input="$1"
   SELECT_PICKS=()
+  # Documented return channel, read by 30-models.sh and by the tests. Not
+  # exported: every reader is in this same shell, and the messages quote what
+  # the user typed. ShellCheck cannot see cross-file readers from here.
+  # shellcheck disable=SC2034  # documented return channel, read by callers
   SELECT_ERROR=""
 
   local -a want=()
