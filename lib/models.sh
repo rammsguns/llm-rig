@@ -32,8 +32,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/catalog.sh"
 # run rather than silently matching nothing 40 minutes in.
 quant_pattern_valid() {
   local pattern="$1" alt
-  # Read by the caller on failure; exported so ShellCheck sees the contract.
-  export QUANT_PATTERN_ERROR
+  # Read by the caller on failure, in this same shell. Deliberately NOT
+  # exported: the message contains quotes, and exporting a quoted string is
+  # what ShellCheck's SC2089/SC2090 warn about -- the quoting is not preserved
+  # across a process boundary. Nothing here needs it in a child's environment.
+  QUANT_PATTERN_ERROR=""
   [[ -n "$pattern" ]] || { QUANT_PATTERN_ERROR="pattern is empty"; return 1; }
   # Checked on the raw string: word splitting silently drops leading/trailing
   # empty fields, so "Q4_K_M|" would otherwise look like a single valid entry.
@@ -127,6 +130,9 @@ quant_include_pattern() {
 # IQ3 on a 8 GB card and Q6_K on a 48 GB one.
 plan_for_budget() {
   local fit_total="$1" moe_offload="${2:-0}"
+  # Cleared up front so a failure two calls ago cannot be read back as this
+  # call's diagnosis.
+  PLAN_ERROR=""
 
   if (( fit_total < 9000 )); then
     PLAN_TIER="tiny"
@@ -193,8 +199,8 @@ plan_for_budget() {
     local id_var="PLAN_ID_$n"
     id="${!id_var}"
     if ! catalog_row "$id" >/dev/null; then
-      PLAN_ERROR="tier '$PLAN_TIER' pick $n names '$id', which is not in the catalog"
-      export PLAN_ERROR
+      # Same-shell return channel, not exported -- see quant_pattern_valid.
+      PLAN_ERROR="tier $PLAN_TIER pick $n names \"$id\", which is not in the catalog"
       return 1
     fi
     printf -v "PLAN_SEARCH_$n"   '%s' "$(catalog_model_name "$id")"
