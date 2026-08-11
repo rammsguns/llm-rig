@@ -133,6 +133,58 @@ bash -c 'source lib/hfmeta.sh; hfmeta_summary unsloth/Qwen3-4B-GGUF; echo'
 bash -c 'source lib/hfmeta.sh; hfmeta_cache_clear'
 ```
 
+### How models are ranked
+
+[`lib/score.sh`](lib/score.sh) scores every catalog model 0–100 against your
+actual budget, and ranks them **within** each size class rather than in one
+global list — on a small card a 4B genuinely outscores a 70B, and you still
+want to see them in separate groups.
+
+| Component | Weight | What it measures |
+| --- | --- | --- |
+| Hardware fit | 30% | Does it run here, and with how much headroom. |
+| Coding / agent | 25% | Coding and agent-loop quality (curated; see provenance). |
+| Tools / context | 15% | Tool use, agentic capability, usable context length. |
+| Speed | 15% | Driven by **active** parameters, plus an offload penalty. |
+| Freshness | 10% | Age of the **model** — never the GGUF repo's timestamp. |
+| Repository trust | 5% | Reputation of the account publishing the GGUF. |
+
+**Popularity carries no weight.** Download counts reward whatever has been
+popular longest, which is mostly a measure of age and of being the default in
+someone's tutorial. It is used only to break an exact tie.
+
+Every score is explainable and every score states its own confidence:
+
+```bash
+bash -c 'source lib/score.sh; score_explain qwen3-coder-30b 20000 Q4_K_M unsloth 412300 fresh'
+```
+
+```
+qwen3-coder-30b  (medium, Q4_K_M, moe)
+  hardware fit              75  x 30%  =    22
+  coding / agent            88  x 25%  =    22
+  tools / context          100  x 15%  =    15
+  speed                    100  x 15%  =    15
+  freshness                 50  x 10%  =     5
+  repository trust         100  x  5%  =     5
+  TOTAL                     84
+  confidence             medium   (catalog provenance: unverified; live data: fresh)
+  popularity             412300   (tie-breaker only, no weight)
+```
+
+The printed contributions are the ones actually summed, so the breakdown always
+reconciles with the total. Confidence is `high` only when the catalog row is
+confirmed against a primary source **and** live data is current — with every
+row currently `unverified`, nothing scores above `medium` today.
+
+```bash
+# The whole shortlist for a 20 GB usable budget
+bash -c 'source lib/score.sh; score_rank 20000'
+
+# Just the best in each size class
+bash -c 'source lib/score.sh; score_best_per_class 20000'
+```
+
 ## Configuration
 
 Everything is derived from detected hardware, and everything is overridable by
