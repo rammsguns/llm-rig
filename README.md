@@ -37,7 +37,7 @@ chmod +x *.sh
 source ~/.bashrc
 ./00-specs.sh            # read-only. writes ~/llm-specs.txt, prints the tier plan
 ./10-os-tune.sh          # sudo. GPU persistence, power, governor, THP, sysctls
-./20-build-llamacpp.sh   # compiles for your compute capability. 5–20 min
+./20-build-llamacpp.sh   # compiles for your compute capability. 5–20 min. out-of-tree
 ./30-models.sh           # resolves + downloads 3 GGUFs matched to your budget
 ./40-serve.sh            # llama-swap config + systemd + firewall
 ./50-claude-code.sh      # env file + TOOL CALLING SMOKE TEST (LiteLLM only if needed)
@@ -80,6 +80,10 @@ PICK_3=unsloth/Qwen3.6-27B-GGUF \
 # Override the quant preference for any pick
 Q1_OVERRIDE='Q6_K|Q5_K_M' ./30-models.sh
 
+# Build a specific llama.cpp revision, or point at your own checkout
+LLAMA_REF=b4585 ./20-build-llamacpp.sh
+LLAMA_DIR=~/src/my-llama.cpp ./20-build-llamacpp.sh
+
 CTX=65536 ./40-serve.sh       # override context length (see the caveat below)
 POWER_PCT=85 ./10-os-tune.sh  # cap power, if your chassis has thermal headroom
 ```
@@ -109,6 +113,28 @@ Override it with `KV_LAYERS` / `KV_HEADS` / `KV_HEAD_DIM` / `KV_BYTES` for a mod
 different geometry, or set `KV_RESERVE_MB` to bypass the derivation entirely. Both the
 effective context and the reserve (with where each came from) are printed by
 `00-specs.sh`, `30-models.sh`, and `40-serve.sh`.
+
+### Your llama.cpp checkout is safe
+
+`20-build-llamacpp.sh` never rewrites a checkout it did not create. If `LLAMA_DIR` points
+at your own clone, it is treated as **read-only**: the script builds exactly the revision
+you have checked out — uncommitted changes included — and never fetches, checks out, or
+resets. A clone the script made itself is marked, and only those are updated to
+`LLAMA_REF` (and even then it refuses if you have uncommitted work).
+
+Builds are **out-of-tree**, in `~/llm-rig/build/llamacpp`, so compiling cannot touch your
+source tree at all and your own `build/` directory is left alone. The delete target is
+validated before anything is removed — it can never be the checkout root, a path inside
+it, `$HOME`, or a system directory.
+
+The built commit is recorded in `.llamacpp-rev`. Pin it for reproducible rebuilds:
+
+```bash
+echo <commit> > ~/llm-rig/llamacpp.ref
+```
+
+Without a pin the build tracks `master`, and the script says so rather than letting the
+next run silently produce something different.
 
 Generated artifacts — regenerate rather than hand-edit, they get overwritten:
 

@@ -10,3 +10,6 @@ claude-code-local.env
 # Runtime output.
 logs/
 *.log
+
+# Out-of-tree llama.cpp build output (20-build-llamacpp.sh).
+build/

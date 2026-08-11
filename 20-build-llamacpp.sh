@@ -3,7 +3,9 @@
 # A generic/prebuilt binary ships fat kernels for every arch and misses
 # arch-specific paths; a targeted build is typically 5-15% faster and starts quicker.
 set -uo pipefail
-source "$(dirname "$0")/lib/detect.sh"
+RIG_SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$RIG_SRC_DIR/lib/detect.sh"
+source "$RIG_SRC_DIR/lib/llamasrc.sh"
 detect_hw
 
 c_info "Building llama.cpp for compute capability $GPU_CC (arch $CUDA_ARCH)"
@@ -34,24 +36,26 @@ NVCC_VER=$(nvcc --version | grep -oP 'release \K[0-9]+\.[0-9]+')
 c_ok "nvcc $NVCC_VER"
 
 # --- source -----------------------------------------------------------------
-mkdir -p "$(dirname "$LLAMA_DIR")"
-if [[ -d "$LLAMA_DIR/.git" ]]; then
-  c_info "Updating existing checkout"
-  git -C "$LLAMA_DIR" fetch --depth=1 origin master
-  git -C "$LLAMA_DIR" reset --hard origin/master
-else
-  c_info "Cloning llama.cpp"
-  git clone --depth=1 https://github.com/ggml-org/llama.cpp "$LLAMA_DIR"
-fi
-BUILD_REV=$(git -C "$LLAMA_DIR" rev-parse --short HEAD)
-c_ok "at $BUILD_REV"
+# A checkout llm-rig did not create is read-only: we build the revision it
+# already has rather than resetting it out from under whoever is working in it.
+llama_prepare_source "$LLAMA_DIR" || die "cannot prepare llama.cpp source"
+BUILD_REV="$LLAMA_BUILD_REV_SHORT"
+c_ok "$LLAMA_SOURCE_KIND checkout at $BUILD_REV"
 
 # --- configure --------------------------------------------------------------
 # GGML_CUDA_FA_ALL_QUANTS: compiles flash-attention kernels for every KV quant
 # combination. Costs build time, but without it a quantized KV cache silently
 # falls back to a slow path -- and we depend on q8_0 KV to fit long contexts.
-cd "$LLAMA_DIR" || die "cannot enter $LLAMA_DIR"
-rm -rf build
+# Out-of-tree build. Keeping it outside the checkout is what lets an external
+# checkout come out byte-for-byte unchanged, and means we never delete a build
+# directory a user manages themselves.
+BUILD_DIR="$(llama_build_dir)"
+llama_validate_build_dir "$BUILD_DIR" "$LLAMA_DIR" \
+  || die "unsafe build directory: $BUILD_DIR_ERROR"
+BUILD_DIR="$LLAMA_BUILD_DIR_RESOLVED"
+c_info "Building in $BUILD_DIR"
+llama_clean_build_dir "$BUILD_DIR" "$LLAMA_DIR" || die "could not clean $BUILD_DIR"
+mkdir -p "$BUILD_DIR"
 
 # --- CUDA / host-gcc compatibility -----------------------------------------
 # nvcc rejects host compilers newer than it supports. Ubuntu 24.04 ships gcc-13
@@ -78,7 +82,7 @@ if (( HOST_GCC_VER > MAX_GCC )); then
   c_ok "pinning CUDA host compiler to gcc-$MAX_GCC (C/C++ still use gcc-$HOST_GCC_VER)"
 fi
 
-cmake -B build \
+cmake -B "$BUILD_DIR" -S "$LLAMA_DIR" \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_CUDA=ON \
   -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" \
@@ -93,13 +97,13 @@ cmake -B build \
   || die "cmake configure failed"
 
 c_info "Compiling with $(nproc) jobs (this takes 5-20 min the first time)"
-cmake --build build --config Release -j"$(nproc)" || die "build failed"
+cmake --build "$BUILD_DIR" --config Release -j"$(nproc)" || die "build failed"
 
 # --- install ----------------------------------------------------------------
 c_info "Linking binaries into /usr/local/bin"
 for b in llama-server llama-cli llama-bench llama-quantize llama-perplexity; do
-  if [[ -x "$LLAMA_DIR/build/bin/$b" ]]; then
-    sudo ln -sf "$LLAMA_DIR/build/bin/$b" "/usr/local/bin/$b"
+  if [[ -x "$BUILD_DIR/bin/$b" ]]; then
+    sudo ln -sf "$BUILD_DIR/bin/$b" "/usr/local/bin/$b"
     c_ok "$b"
   fi
 done
@@ -113,4 +117,6 @@ if llama-cli --list-devices 2>&1 | grep -qi cuda; then
 else
   die "CUDA backend NOT present -- the build fell back to CPU only. Check nvcc + driver."
 fi
-echo "$BUILD_REV" > "$RIG_DIR/.llamacpp-rev"
+# Record the full commit, not the abbreviation: a short hash is not a durable
+# identifier, and this is what makes a build reproducible.
+llama_record_build "$LLAMA_BUILD_REV" "$LLAMA_SOURCE_KIND"
