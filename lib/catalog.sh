@@ -376,8 +376,10 @@ catalog_validate() {
   (( n <= CATALOG_MAX_ROWS )) \
     || errs+="the catalog has $n rows, over the cap of $CATALOG_MAX_ROWS"$'\n'
 
+  # Not exported: the messages quote the offending values, and exporting a
+  # quoted string neither preserves the quoting nor helps anyone -- every
+  # reader is in this same shell.
   CATALOG_ERRORS="$errs"
-  export CATALOG_ERRORS
   [[ -z "$errs" ]]
 }
 
