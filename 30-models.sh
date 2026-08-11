@@ -111,6 +111,7 @@ export HF_HOME="${HF_HOME:-$MODELS_DIR/.hf}"
 # with 31.7GB across two cards. Selection is now based on FIT_TOTAL_MB, which is
 # total VRAM MINUS the KV cache reserve -- a model that fits but leaves no room
 # for a 64k context is useless for agent work.
+c_info "Context ${CTX} tokens ($CTX_SOURCE) -> KV reserve ${KV_RESERVE_MB} MB ($KV_RESERVE_SOURCE)"
 c_info "Weight budget: ${FIT_TOTAL_MB} MB split / ${FIT_SINGLE_MB} MB single-GPU"
 
 # Tier selection lives in lib/models.sh so the specs report and this downloader

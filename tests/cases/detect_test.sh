@@ -108,13 +108,13 @@ test_moe_offload_never_negative_on_small_ram() {
   assert_eq "$MOE_OFFLOAD_MB" 0 "MoE offload floor"
 }
 
-test_small_gpu_cannot_be_sized_with_the_fixed_kv_reserve() {
-  # Documents current behaviour, which issue #4 changes: the 7000 MB reserve is
-  # a constant, so a 12 GB card that could serve a small model at 32k context is
-  # rejected outright. When #4 lands this expectation flips.
+test_small_gpu_is_sizable_now_that_the_reserve_follows_context() {
+  # This was the inverse assertion when the harness landed: a fixed 7000 MB
+  # reserve rejected any card under ~8 GB outright. Since #4 the reserve is
+  # derived from the context that card would actually be given, so it is sized.
   synth_gpu 7500 1
   run bash -c "source '$REPO_ROOT/lib/detect.sh'; detect_hw"
-  assert_fails "detect_hw on a 7.5GB card"
+  assert_ok "detect_hw on a 7.5GB card"
 }
 
 test_dies_when_gpus_are_still_held() {

@@ -63,6 +63,7 @@ otherwise enable has no candidate among them.
 |---|---|---|
 | `-c` | 131072 | KV at q8_0 costs ~48 KB/token → 6.0 GiB at 128k, fits the ~9.8 GB budget |
 | `--cache-type-k/v` | q8_0 | Halves KV vs f16; this is what makes 128k fit |
+| KV reserve | derived from `-c` | 48 KiB/token x context, +15%. At 128k that is 7065 MB, which is why a bigger context automatically shortlists a smaller model rather than OOMing at load |
 | `--cache-reuse` | 256 | **Measured 90× speedup** — 9.97s cold → 0.12s warm |
 | `--flash-attn` | on | 62–88% throughput retained at 8× context; without FA this collapses |
 | `GGML_CUDA_FA_ALL_QUANTS` | ON (build) | Without it a quantized KV cache silently falls back to a slow path, and we depend on q8_0 KV |
@@ -152,11 +153,6 @@ reaches equilibrium temperature.
 
 ## Known rough edges
 
-- **`KV_RESERVE_MB` is not derived from `CTX`.** It is a fixed 7000 in `lib/detect.sh`,
-  set before `40-serve.sh` chooses `CTX`. At 131072 the cache needs ~6144 MB, so it fits
-  with ~856 MB to spare — by luck, not by construction. Raising `CTX` without raising
-  `KV_RESERVE_MB` sizes model selection against a reserve smaller than the cache, and
-  presents as an OOM on load.
 - **The single-card trick has no candidate.** See [Models](#models).
 - **Native `/v1/messages` is a single point of failure.** See [Stack](#stack).
 

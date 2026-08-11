@@ -71,9 +71,10 @@ fi
 # Its KV cost at q8_0 is ~48 KB/token (48 layers, 4 KV heads, d=128), so:
 #   64k  -> 3.0 GiB      128k -> 6.0 GiB      256k -> 12.0 GiB (too big)
 # 128k fits with margin, and long context is exactly what a coding agent eats.
-CTX="${CTX:-131072}"
-(( VRAM_TOTAL_MB < 24000 )) && CTX=65536
-(( VRAM_TOTAL_MB < 11000 )) && CTX=32768
+# CTX and KV_RESERVE_MB are settled by detect_hw, BEFORE the weight budget is
+# computed, so the model that was selected is the model this context was sized
+# against. This block used to re-derive CTX here and silently overwrite an
+# explicit user value.
 
 # Even tensor split across identical cards. If your GPUs differ in size, weight
 # this by capacity instead.
@@ -88,7 +89,8 @@ if (( MULTI_GPU )); then
      layer boundary. Models that fit on ONE card are pinned to one card below."
 fi
 
-c_info "ctx=$CTX threads=$THREADS budget=${FIT_TOTAL_MB}MB split / ${FIT_SINGLE_MB}MB single"
+c_info "ctx=$CTX ($CTX_SOURCE) kv-reserve=${KV_RESERVE_MB}MB ($KV_RESERVE_SOURCE) threads=$THREADS"
+c_info "budget=${FIT_TOTAL_MB}MB split / ${FIT_SINGLE_MB}MB single"
 
 # --- generate llama-swap config --------------------------------------------
 CFG="$RIG_DIR/etc/llama-swap.yaml"

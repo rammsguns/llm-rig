@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+printf 'install %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"; exit 0
