@@ -1,0 +1,16 @@
+thermal sweep v2 (heat-soaked)  20260810 -- Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
+
+### Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
+| model                          |       size |     params | backend    | ngl | test  |              t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ----: | ---------------: |
+| qwen3moe 30B Q4_K_M            |  17.28 GiB |    30.53 B | CUDA       | 999 | pp512 |   3011.22 ± 8.41 |
+| qwen3moe 30B Q4_K_M            |  17.28 GiB |    30.53 B | CUDA       | 999 | pp4096 |  2426.40 ± 5.12 |
+| qwen3moe 30B Q4_K_M            |  17.28 GiB |    30.53 B | CUDA       | 999 | pp32768 | 1514.85 ± 3.90 |
+| qwen3moe 30B Q4_K_M            |  17.28 GiB |    30.53 B | CUDA       | 999 | tg128 |    120.08 ± 0.44 |
+
+### Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf
+| model                          |       size |     params | backend    | ngl | test  |              t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ----: | ---------------: |
+| llama 24B Q4_K_M               |  13.34 GiB |    23.57 B | CUDA       | 999 | pp4096 |  1342.06 ± 4.01 |
+| llama 24B Q4_K_M               |  13.34 GiB |    23.57 B | CUDA       | 999 | pp32768 |  879.82 ± 2.15 |
+| llama 24B Q4_K_M               |  13.34 GiB |    23.57 B | CUDA       | 999 | tg128 |     23.90 ± 0.11 |

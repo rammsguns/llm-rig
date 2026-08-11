@@ -1,0 +1,5 @@
+### SomeModel-Q4_K_M.gguf
+| model              |    size |  params | backend | ngl | test    |            t/s |
+| ------------------ | ------: | ------: | ------- | --: | ------: | -------------: |
+| some 13B Q4_K_M    | 7.2 GiB | 13.00 B | CUDA    | 999 | pp4096  | 2000.00 ± 5.00 |
+| some 13B Q4_K_M    | 7.2 GiB | 13.00 B | CUDA    | 999 | pp32768 |  240.00 ± 1.00 |
