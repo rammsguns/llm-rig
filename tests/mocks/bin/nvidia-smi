@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Mock nvidia-smi. Serves a TSV fixture from tests/fixtures/gpu/<name>.tsv,
+# selected by $MOCK_GPU_FIXTURE. The fixture's header names the columns, so a
+# new hardware profile is a data file, not a code change.
+set -uo pipefail
+
+printf 'nvidia-smi %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+
+# A fixture is either a name under tests/fixtures/gpu, or an absolute path to
+# one synthesised by a test (see synth_gpu, used for exact boundary values).
+FIXTURE="${MOCK_GPU_FIXTURE:-dual_a4000}"
+[[ "$FIXTURE" == /* ]] || FIXTURE="${TEST_ROOT:?}/fixtures/gpu/${FIXTURE}.tsv"
+[[ -f "$FIXTURE" ]] || { echo "mock nvidia-smi: no fixture $FIXTURE" >&2; exit 9; }
+
+# nvidia-smi nvlink -s
+if [[ "${1:-}" == "nvlink" ]]; then
+  if [[ "${MOCK_NVLINK:-0}" == 1 ]]; then
+    printf 'GPU 0: NVIDIA RTX A4000\n\t Link 0: 14.062 GB/s\n'
+  fi
+  exit 0
+fi
+
+# Setters (-pl watts, -pm 1). Logged above; they emit nothing on success.
+for a in "$@"; do
+  case "$a" in
+    -pl|-pm) exit "${MOCK_NVIDIA_SMI_SET_STATUS:-0}" ;;
+  esac
+done
+
+QUERY=""; APPS_QUERY=""; FORMAT=""
+for a in "$@"; do
+  case "$a" in
+    --query-gpu=*)          QUERY="${a#--query-gpu=}" ;;
+    --query-compute-apps=*) APPS_QUERY="${a#--query-compute-apps=}" ;;
+    --format=*)             FORMAT="${a#--format=}" ;;
+  esac
+done
+
+# Processes currently holding VRAM. Empty unless a test sets MOCK_GPU_HOLDERS.
+if [[ -n "$APPS_QUERY" ]]; then
+  # File-backed holders are released when llama-swap stops (see the systemctl
+  # mock); the env-var form models a process that will not let go.
+  if [[ -n "${MOCK_GPU_HOLDERS_FILE:-}" && -s "${MOCK_GPU_HOLDERS_FILE}" ]]; then
+    cat "$MOCK_GPU_HOLDERS_FILE"
+  fi
+  [[ -n "${MOCK_GPU_HOLDERS:-}" ]] && printf '%s\n' "$MOCK_GPU_HOLDERS"
+  exit 0
+fi
+
+[[ -n "$QUERY" ]] || exit 0
+
+NOUNITS=0
+[[ "$FORMAT" == *nounits* ]] && NOUNITS=1
+
+# Real nvidia-smi separates CSV fields with ", " and appends units unless
+# nounits is given. detect.sh depends on both (it cuts on "," and xargs-trims).
+awk -v query="$QUERY" -v nounits="$NOUNITS" -F'\t' '
+  function unit(f) {
+    if (f ~ /^memory\./)      return " MiB"
+    if (f ~ /^power\./)       return " W"
+    if (f ~ /^clocks\./)      return " MHz"
+    if (f ~ /^utilization\./) return " %"
+    return ""
+  }
+  NR == 1 {
+    for (i = 1; i <= NF; i++) col[$i] = i
+    n = split(query, want, ",")
+    for (i = 1; i <= n; i++) gsub(/^[ \t]+|[ \t]+$/, "", want[i])
+    next
+  }
+  {
+    out = ""
+    for (i = 1; i <= n; i++) {
+      f = want[i]
+      v = (f in col) ? $(col[f]) : "[N/A]"
+      if (!nounits) v = v unit(f)
+      out = out (i > 1 ? ", " : "") v
+    }
+    print out
+  }
+' "$FIXTURE"

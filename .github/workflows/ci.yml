@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref; these are cheap checks and there is no
+# value in finishing a run for a commit that has already been replaced.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: syntax, shellcheck, fixture tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install ShellCheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck --version
+
+      - name: Show environment
+        run: |
+          bash --version | head -1
+          # The suite must pass with no GPU present. Prove there isn't one, so a
+          # future runner image that happens to ship nvidia-smi can't mask a
+          # test that accidentally depends on real hardware.
+          if command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::warning::nvidia-smi present on runner; tests must still use mocks"
+          else
+            echo "no nvidia-smi on runner, as expected"
+          fi
+
+      - name: Run tests
+        run: ./tests/run.sh
+
+      - name: Re-run the fixture suite with no network, and prove there was none
+        # Mandatory, not best-effort. This previously skipped itself whenever
+        # unprivileged user namespaces were unavailable -- which is the default
+        # on the hosted runners, so the no-network guarantee was never actually
+        # enforced while the check reported green every time.
+        #
+        # tests/isolated.sh picks an isolation method (unprivileged user
+        # namespace, else sudo unshare with privileges dropped straight back),
+        # proves from inside that nothing but loopback exists and that outbound
+        # connections fail, and exits non-zero if it cannot do either.
+        run: ./tests/isolated.sh

@@ -50,7 +50,7 @@ c_ok "at $BUILD_REV"
 # GGML_CUDA_FA_ALL_QUANTS: compiles flash-attention kernels for every KV quant
 # combination. Costs build time, but without it a quantized KV cache silently
 # falls back to a slow path -- and we depend on q8_0 KV to fit long contexts.
-cd "$LLAMA_DIR"
+cd "$LLAMA_DIR" || die "cannot enter $LLAMA_DIR"
 rm -rf build
 
 # --- CUDA / host-gcc compatibility -----------------------------------------

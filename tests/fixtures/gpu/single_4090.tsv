@@ -1,0 +1,2 @@
+index	name	memory.total	memory.free	compute_cap	power.max_limit	power.min_limit	power.limit	temperature.gpu	clocks.max.sm	persistence_mode
+0	NVIDIA GeForce RTX 4090	24564	24000	8.9	450	150	450	38	2520	Enabled

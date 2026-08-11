@@ -46,8 +46,10 @@ ensure_gpus_idle() {
     c_info "Stopping llama-swap so VRAM measurements reflect reality"
     sudo systemctl stop llama-swap
     LLAMA_SWAP_WAS_RUNNING=1
-    # Wait for the driver to actually release the allocation.
-    for _ in $(seq 1 20); do
+    # Wait for the driver to actually release the allocation. Overridable
+    # because a big model on a slow bus can take longer than the default, and
+    # because the fixture tests should not sit through it.
+    for _ in $(seq 1 "${GPU_RELEASE_WAIT:-20}"); do
       [[ -z "$(gpu_holders)" ]] && break
       sleep 1
     done
@@ -91,7 +93,10 @@ detect_hw() {
   GPU_CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | xargs)
   CUDA_ARCH=${GPU_CC/./}
 
-  RAM_GB=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)
+  # MEMINFO is a testing seam: /proc/meminfo cannot be shimmed onto PATH the way
+  # a command can, and CI runners have different RAM than any dev box, so the
+  # fixture tests need to be able to point this somewhere deterministic.
+  RAM_GB=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' "${MEMINFO:-/proc/meminfo}")
   PHYS_CORES=$(lscpu -p=Core,Socket | grep -v '^#' | sort -u | wc -l)
   THREADS=$(( PHYS_CORES > 1 ? PHYS_CORES - 1 : 1 ))
 

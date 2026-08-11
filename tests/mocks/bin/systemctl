@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Mock systemctl. Service state comes from $MOCK_SERVICES_ACTIVE.
+set -uo pipefail
+printf 'systemctl %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+args=(); for a in "$@"; do [[ "$a" == --* ]] || args+=("$a"); done
+verb="${args[0]:-}"; svc="${args[1]:-}"
+is_active() { [[ " ${MOCK_SERVICES_ACTIVE:-} " == *" ${1%.service} "* ]]; }
+# Stopping llama-swap releases its VRAM, exactly as the driver does. Without
+# this, ensure_gpus_idle spins its full 20-second wait in every test.
+if [[ "$verb" == stop && "${svc%.service}" == "llama-swap" ]]; then
+  [[ -n "${MOCK_GPU_HOLDERS_FILE:-}" ]] && : >"$MOCK_GPU_HOLDERS_FILE"
+fi
+
+case "$verb" in
+  is-active)
+    if is_active "$svc"; then [[ " $* " == *" --quiet "* ]] || echo active; exit 0
+    else [[ " $* " == *" --quiet "* ]] || echo inactive; exit 3; fi ;;
+  is-enabled) is_active "$svc" && { echo enabled; exit 0; }; echo disabled; exit 1 ;;
+  status) is_active "$svc" && exit 0 || exit 3 ;;
+  *) exit 0 ;;
+esac

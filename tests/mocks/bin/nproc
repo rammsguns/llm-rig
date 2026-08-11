@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+printf 'nproc %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+echo "${MOCK_PHYS_CORES:-16}"

@@ -1,0 +1,2 @@
+index	name	memory.total	memory.free	compute_cap	power.max_limit	power.min_limit	power.limit	temperature.gpu	clocks.max.sm	persistence_mode
+0	NVIDIA GeForce RTX 3060	12288	11800	8.6	170	100	170	40	1777	Enabled
