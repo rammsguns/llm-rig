@@ -1,0 +1,11 @@
+{
+  "id": "someone/Model-GGUF",
+  "likes": 3,
+  "downloads": 91,
+  "createdAt": "2025-01-01T00:00:00.000Z",
+  "lastModified": "2025-06-01T00:00:00.000Z",
+  "siblings": [
+    { "rfilename": "Model-Q4_K_M.gguf" },
+    { "rfilename": "README.md" }
+  ]
+}

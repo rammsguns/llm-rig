@@ -1,0 +1,16 @@
+{
+  "id": "unsloth/Qwen3-4B-GGUF",
+  "author": "unsloth",
+  "likes": 142,
+  "downloads": 98765,
+  "createdAt": "2025-05-02T09:14:00.000Z",
+  "lastModified": "2026-07-28T16:02:11.000Z",
+  "tags": ["gguf", "text-generation"],
+  "siblings": [
+    { "rfilename": "README.md", "size": 4821 },
+    { "rfilename": "Qwen3-4B-Q4_K_M.gguf", "size": 2621440000 },
+    { "rfilename": "Qwen3-4B-Q5_K_M.gguf", "size": 3076083712 },
+    { "rfilename": "Qwen3-4B-Q8_0.gguf", "size": 4613734400 },
+    { "rfilename": "mmproj-model-f16.gguf", "size": 851443712 }
+  ]
+}
