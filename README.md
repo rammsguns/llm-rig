@@ -123,9 +123,23 @@ resets. A clone the script made itself is marked, and only those are updated to
 `LLAMA_REF` (and even then it refuses if you have uncommitted work).
 
 Builds are **out-of-tree**, in `~/llm-rig/build/llamacpp`, so compiling cannot touch your
-source tree at all and your own `build/` directory is left alone. The delete target is
-validated before anything is removed — it can never be the checkout root, a path inside
-it, `$HOME`, or a system directory.
+source tree at all and your own `build/` directory is left alone.
+
+A rebuild deletes the build directory first, so it is only ever allowed to run against a
+directory llm-rig positively owns — being "not obviously dangerous" is not enough. A
+build directory qualifies when it is under `~/llm-rig/build`, or when it does not exist
+yet, or when it carries the `.llm-rig-build` marker we wrote on a previous run. Anything
+else is refused untouched, including `$HOME`, system paths, the checkout, and any
+existing directory of your own:
+
+```bash
+LLAMA_BUILD_DIR=~/Documents ./20-build-llamacpp.sh   # refused, nothing deleted
+LLAMA_BUILD_DIR=~/scratch/llama-build ./20-build-llamacpp.sh   # fine: created and marked
+touch ~/existing-build/.llm-rig-build                # deliberately hand one over
+```
+
+Symlinks and `..` are resolved before any of that is decided, so neither can be used to
+launder a path into looking owned.
 
 The built commit is recorded in `.llamacpp-rev`. Pin it for reproducible rebuilds:
 

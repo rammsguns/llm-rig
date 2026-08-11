@@ -286,5 +286,115 @@ test_clean_refuses_an_unsafe_target_without_deleting() {
   return 0
 }
 
+# --- build directory ownership (#15) ----------------------------------------
+# The path rules above are a denylist: they establish that a directory is not
+# obviously catastrophic to delete, which is not the same as establishing that
+# it is ours. LLAMA_BUILD_DIR=$HOME/Documents passed every one of them and was
+# then handed to rm -rf, which is the original data-loss class in a new hat.
+
+# A directory of somebody's own files, with a fingerprint taken.
+unowned_dir() {
+  local d="$1"
+  mkdir -p "$d/notes"
+  echo "chapter one" >"$d/thesis.txt"
+  echo "figures"     >"$d/notes/fig.dat"
+  printf '%s' "$(fingerprint "$d")"
+}
+
+test_an_existing_unowned_directory_is_refused() {
+  local d="$HOME/Documents" before
+  before="$(unowned_dir "$d")"
+
+  run llama_validate_build_dir "$d" "$SANDBOX/src/llama.cpp"
+  assert_fails "an arbitrary existing directory must not be accepted" || return 1
+
+  run llama_clean_build_dir "$d" "$SANDBOX/src/llama.cpp"
+  assert_fails "and must certainly not be deleted" || return 1
+
+  assert_eq "$(fingerprint "$d")" "$before" "contents must be untouched" || return 1
+  [[ -f "$d/thesis.txt" ]] || { _fail "the directory was destroyed"; return 1; }
+  return 0
+}
+
+test_the_refusal_explains_how_to_claim_the_directory() {
+  local d="$HOME/Documents"
+  unowned_dir "$d" >/dev/null
+  llama_validate_build_dir "$d" "$SANDBOX/src/llama.cpp" 2>/dev/null
+  assert_contains "$BUILD_DIR_ERROR" "does not own" "reason" || return 1
+  assert_contains "$BUILD_DIR_ERROR" "$LLAMA_BUILD_MARKER" "the remedy"
+}
+
+test_a_custom_directory_without_a_marker_is_refused() {
+  local d="$SANDBOX/elsewhere/build" before
+  before="$(unowned_dir "$d")"
+  run llama_clean_build_dir "$d" "$SANDBOX/src/llama.cpp"
+  assert_fails "unmarked means unowned, wherever it lives" || return 1
+  assert_eq "$(fingerprint "$d")" "$before" "contents must be untouched"
+}
+
+test_a_marked_custom_directory_can_be_cleaned() {
+  # The opt-in: a directory we created on an earlier run, or one the user
+  # deliberately handed over.
+  local d="$SANDBOX/elsewhere/build"
+  mkdir -p "$d"; touch "$d/stale.o" "$d/$LLAMA_BUILD_MARKER"
+  run llama_clean_build_dir "$d" "$SANDBOX/src/llama.cpp"
+  assert_ok "a marked build directory is ours to clean" || return 1
+  [[ ! -e "$d" ]] || { _fail "it was not removed"; return 1; }
+  return 0
+}
+
+test_the_rig_build_root_is_owned_without_a_marker() {
+  # First use of the default path must work with no manual setup.
+  local d="$RIG_DIR/build/llamacpp"
+  mkdir -p "$d"; touch "$d/stale.o"
+  run llama_clean_build_dir "$d" "$SANDBOX/src/llama.cpp"
+  assert_ok "the rig's own build root is ours by construction" || return 1
+  [[ ! -e "$d" ]] || { _fail "it was not removed"; return 1; }
+  return 0
+}
+
+test_a_directory_that_does_not_exist_yet_is_accepted_and_marked() {
+  local d="$SANDBOX/elsewhere/fresh-build"
+  # Called directly, not through `run`: the ownership grade is an exported
+  # variable, and `run` evaluates in a command-substitution subshell.
+  llama_validate_build_dir "$d" "$SANDBOX/src/llama.cpp" \
+    || { _fail "nothing exists there, so nothing can be lost"; return 1; }
+  assert_eq "$LLAMA_BUILD_DIR_OWNERSHIP" "new" "ownership grade" || return 1
+
+  llama_mark_build_dir "$d" || { _fail "could not create the build dir"; return 1; }
+  [[ -f "$d/$LLAMA_BUILD_MARKER" ]] || { _fail "no marker was written"; return 1; }
+
+  # And on the next run it validates as ours.
+  llama_validate_build_dir "$d" "$SANDBOX/src/llama.cpp" || { _fail "not ours second time"; return 1; }
+  assert_eq "$LLAMA_BUILD_DIR_OWNERSHIP" "marked" "ownership grade on rebuild"
+}
+
+test_a_symlink_to_an_unowned_directory_is_refused() {
+  local target="$HOME/Documents" link="$SANDBOX/build-link" before
+  before="$(unowned_dir "$target")"
+  # /bin/ln, not the recording mock on PATH: this test needs a real symlink.
+  /bin/ln -s "$target" "$link"
+  run llama_clean_build_dir "$link" "$SANDBOX/src/llama.cpp"
+  assert_fails "ownership is decided after resolving the link" || return 1
+  assert_eq "$(fingerprint "$target")" "$before" "target must be untouched"
+}
+
+test_traversal_out_of_the_rig_build_root_is_refused() {
+  # ../.. from inside the owned root lands outside it; ownership must be
+  # decided on the resolved path, not on the string that was typed.
+  local d="$HOME/Documents" before
+  before="$(unowned_dir "$d")"
+  run llama_clean_build_dir "$RIG_DIR/build/../../home/Documents" "$SANDBOX/src/llama.cpp"
+  assert_fails "a traversal must not launder ownership" || return 1
+  assert_eq "$(fingerprint "$d")" "$before" "contents must be untouched"
+}
+
+test_clean_states_plainly_when_ownership_is_unproven() {
+  local d="$SANDBOX/elsewhere/build"
+  unowned_dir "$d" >/dev/null
+  llama_clean_build_dir "$d" "$SANDBOX/src/llama.cpp" 2>/dev/null
+  assert_matches "$BUILD_DIR_ERROR" "does not own|ownership not established" "refusal reason"
+}
+
 run_suite
 suite_exit

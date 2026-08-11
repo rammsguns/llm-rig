@@ -54,8 +54,10 @@ llama_validate_build_dir "$BUILD_DIR" "$LLAMA_DIR" \
   || die "unsafe build directory: $BUILD_DIR_ERROR"
 BUILD_DIR="$LLAMA_BUILD_DIR_RESOLVED"
 c_info "Building in $BUILD_DIR"
-llama_clean_build_dir "$BUILD_DIR" "$LLAMA_DIR" || die "could not clean $BUILD_DIR"
-mkdir -p "$BUILD_DIR"
+llama_clean_build_dir "$BUILD_DIR" "$LLAMA_DIR" \
+  || die "could not clean $BUILD_DIR: ${BUILD_DIR_ERROR:-unknown error}"
+# Stamp it as ours, so the next run is allowed to delete it again.
+llama_mark_build_dir "$BUILD_DIR" || die "could not create $BUILD_DIR"
 
 # --- CUDA / host-gcc compatibility -----------------------------------------
 # nvcc rejects host compilers newer than it supports. Ubuntu 24.04 ships gcc-13

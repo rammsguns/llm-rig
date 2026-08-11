@@ -80,14 +80,29 @@ llama_build_dir() {
   printf '%s' "${LLAMA_BUILD_DIR:-$RIG_DIR/build/llamacpp}"
 }
 
+# A build directory outside the rig's own build root carries this marker to say
+# we created it and may therefore delete it again.
+LLAMA_BUILD_MARKER=".llm-rig-build"
+
+# The one directory tree that is ours by construction, so the default path
+# needs no setup on first use.
+llama_build_root() { printf '%s' "$(realpath -m "${RIG_DIR:-$HOME/llm-rig}/build")"; }
+
 # Refuse to delete anything that is not demonstrably our own build directory.
 # A bare `rm -rf build` after a failed `cd` deletes whatever "build" happens to
 # be in the current directory; this makes that class of mistake impossible.
+#
+# Note what the path rules below can and cannot do. They are a denylist, and a
+# denylist can only establish that a directory is not OBVIOUSLY catastrophic to
+# delete -- never that it is ours. `LLAMA_BUILD_DIR=$HOME/Documents` passes
+# every one of them. So ownership is established positively, at the end, and
+# recursive deletion is gated on that rather than on the absence of a red flag.
 llama_validate_build_dir() {
-  local bd="$1" src="$2" real_bd real_src
+  local bd="$1" src="$2" real_bd real_src root
   # Read by the caller to explain a refusal; exported so ShellCheck sees the
   # output contract across the source boundary.
   export BUILD_DIR_ERROR=""
+  export LLAMA_BUILD_DIR_OWNERSHIP=""
 
   [[ -n "$bd" ]]            || { BUILD_DIR_ERROR="build directory is empty"; return 1; }
   [[ "$bd" == /* ]]         || { BUILD_DIR_ERROR="build directory must be an absolute path, got '$bd'"; return 1; }
@@ -109,16 +124,62 @@ llama_validate_build_dir() {
   [[ "$real_bd" != "$real_src"/* ]] || {
     BUILD_DIR_ERROR="build directory must be outside the checkout ($real_src)"; return 1; }
 
+  # --- positive ownership ---------------------------------------------------
+  # Ours if it is under the rig's build root, or if we marked it on an earlier
+  # run, or if it does not exist yet -- in which case we are about to create it
+  # and there is nothing of anyone else's to lose.
+  root="$(llama_build_root)"
+  if [[ "$real_bd" == "$root" || "$real_bd" == "$root"/* ]]; then
+    LLAMA_BUILD_DIR_OWNERSHIP="rig-build-root"
+  elif [[ ! -e "$real_bd" ]]; then
+    LLAMA_BUILD_DIR_OWNERSHIP="new"
+  elif [[ -d "$real_bd" && -f "$real_bd/$LLAMA_BUILD_MARKER" ]]; then
+    LLAMA_BUILD_DIR_OWNERSHIP="marked"
+  elif [[ -d "$real_bd" ]]; then
+    BUILD_DIR_ERROR="refusing to build in a directory llm-rig does not own: $real_bd
+     It already exists, is not under $root, and carries no $LLAMA_BUILD_MARKER
+     marker -- so as far as this script can tell it is yours, and rebuilding
+     would recursively delete it. Point LLAMA_BUILD_DIR at a path that does not
+     exist yet, or claim this one deliberately:
+       touch $real_bd/$LLAMA_BUILD_MARKER"
+    return 1
+  else
+    BUILD_DIR_ERROR="build directory exists but is not a directory: $real_bd"
+    return 1
+  fi
+
   LLAMA_BUILD_DIR_RESOLVED="$real_bd"
-  export LLAMA_BUILD_DIR_RESOLVED
+  export LLAMA_BUILD_DIR_RESOLVED LLAMA_BUILD_DIR_OWNERSHIP
   return 0
 }
 
-# Remove a previous build, but only after validation.
+# Create the build directory and record that it is ours, so a later run may
+# clean it. Written on every build, not just the first: a directory under the
+# rig build root is owned by construction, but marking it keeps the ownership
+# visible if RIG_DIR ever moves.
+llama_mark_build_dir() {
+  local bd="$1"
+  mkdir -p "$bd" || return 1
+  [[ ! -f "$bd/$LLAMA_BUILD_MARKER" ]] || return 0
+  printf '%s\n%s\n' \
+    "Created by llm-rig 20-build-llamacpp.sh." \
+    "Its presence is what permits this directory to be deleted and rebuilt. Remove it to make llm-rig refuse to touch this directory." \
+    >"$bd/$LLAMA_BUILD_MARKER"
+}
+
+# Remove a previous build, but only after validation AND only when validation
+# established that the directory is ours. Not-obviously-dangerous is not the
+# same as ours, and rm -rf is not the place to blur the two.
 llama_clean_build_dir() {
   local bd="$1" src="$2"
   llama_validate_build_dir "$bd" "$src" || return 1
   [[ -e "$LLAMA_BUILD_DIR_RESOLVED" ]] || return 0
+  case "$LLAMA_BUILD_DIR_OWNERSHIP" in
+    rig-build-root|marked) ;;
+    *)
+      BUILD_DIR_ERROR="refusing to remove $LLAMA_BUILD_DIR_RESOLVED: llm-rig ownership not established"
+      return 1 ;;
+  esac
   rm -rf "$LLAMA_BUILD_DIR_RESOLVED"
 }
 
