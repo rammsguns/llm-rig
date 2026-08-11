@@ -64,17 +64,60 @@ du -sh "$HOME/ollama-models" 2>/dev/null || true
 # 30-models.sh uses. Previously this section read an undefined $TIER, which
 # under `set -u` aborted the report right here -- and its hardcoded copy had
 # drifted into recommending models that are never downloaded.
-if (( BUDGET_OK )); then
-  plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB"
+if (( BUDGET_OK )) && plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB"; then
   c_info "Recommended plan for tier: $PLAN_TIER  (usable budget ${FIT_TOTAL_MB} MB)"
   printf '  %s\n\n' "$PLAN_NOTE"
   printf '  Runtime: %s\n\n' "$PLAN_RUNTIME"
   echo "  Models ./30-models.sh will fetch for this machine:"
-  printf '    %d. %-32s %s\n' \
-    1 "$PLAN_SEARCH_1" "$PLAN_Q_1" \
-    2 "$PLAN_SEARCH_2" "$PLAN_Q_2" \
-    3 "$PLAN_SEARCH_3" "$PLAN_Q_3"
+  echo
+  printf '    %-2s %-32s %-14s %8s %-6s %-7s %-11s %s\n' \
+    '#' MODEL QUANT 'EST MB' ARCH PARAMS LICENCE CONTEXT
+  for n in 1 2 3; do
+    s="PLAN_SEARCH_$n"; q="PLAN_Q_$n"; sz="PLAN_SIZE_$n"; a="PLAN_ARCH_$n"
+    p="PLAN_PARAMS_$n"; l="PLAN_LICENSE_$n"; c="PLAN_CTX_$n"
+    printf '    %-2s %-32s %-14s %8s %-6s %-7s %-11s %s\n' \
+      "$n." "${!s}" "${!q}" "${!sz}" "${!a}" "${!p}B" "${!l}" "${!c}"
+  done
+  echo
+  echo "    Sizes are ESTIMATES from parameter count and bits-per-weight, not"
+  echo "    measured file sizes. Expect a few percent either way."
+
+  # A pick larger than the weight budget is legitimate for a MoE -- only the
+  # active experts need to be resident -- but silently printing it next to the
+  # budget invites the reader to assume it fits. Say which it is.
+  for n in 1 2 3; do
+    sz="PLAN_SIZE_$n"; a="PLAN_ARCH_$n"; s="PLAN_SEARCH_$n"
+    if (( ${!sz} > FIT_TOTAL_MB )); then
+      if [[ "${!a}" == "moe" ]]; then
+        printf '    %s is ~%s MB, over the %s MB budget: it runs by offloading\n' \
+          "${!s}" "${!sz}" "$FIT_TOTAL_MB"
+        printf '      experts to system RAM, which is cheap for a MoE.\n'
+      else
+        printf '    %s is ~%s MB, over the %s MB budget, and it is dense --\n' \
+          "${!s}" "${!sz}" "$FIT_TOTAL_MB"
+        printf '      expect heavy offload and slow generation.\n'
+      fi
+    fi
+  done
+
+  # Metadata quality is part of the recommendation, so it is stated rather than
+  # buried. See lib/catalog.sh for what each provenance value means.
+  unverified=""
+  for n in 1 2 3; do
+    pv="PLAN_PROV_$n"; s="PLAN_SEARCH_$n"
+    [[ "${!pv}" == "unverified" ]] && unverified+=" ${!s}"
+  done
+  if [[ -n "$unverified" ]]; then
+    echo
+    c_warn "Catalog rows not confirmed against a primary source:${unverified}"
+    echo "     Figures for these come from the curated table in lib/catalog.sh and"
+    echo "     have not been checked against the publisher's model card."
+  fi
+
   [[ -n "$PLAN_MOE_NOTE" ]] && printf '\n  %s\n' "$PLAN_MOE_NOTE"
+  echo
+elif (( BUDGET_OK )); then
+  c_warn "No plan recommended: ${PLAN_ERROR:-the tier could not be resolved against the catalog}"
   echo
 else
   c_warn "No plan recommended: the usable VRAM budget could not be computed."

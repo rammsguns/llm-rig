@@ -5,6 +5,16 @@
 
 # shellcheck shell=bash
 
+# Load guard. models.sh and catalog.sh need each other -- plan_for_budget reads
+# the catalog, and catalog_validate reuses quant_pattern_valid from here -- so
+# each sources the other and the guards break the cycle. Without them the pair
+# recurses until the shell dies.
+[[ -z "${_LLMRIG_MODELS_SH:-}" ]] || return 0
+_LLMRIG_MODELS_SH=1
+
+# shellcheck source=lib/catalog.sh
+source "$(dirname "${BASH_SOURCE[0]}")/catalog.sh"
+
 # A quant preference is an ORDERED alternation: "IQ3_XXS|Q3_K_S" means "take
 # IQ3_XXS if the repo has it, otherwise Q3_K_S".
 #
@@ -110,14 +120,19 @@ quant_include_pattern() {
 # Thresholds are on FIT_TOTAL_MB -- usable VRAM after the KV reserve -- not on
 # installed VRAM. Sizing off installed memory is what once recommended a 49 GB
 # model to a 31.7 GB machine.
+#
+# Picks are catalog IDs, and the search string and metadata behind each one are
+# read from lib/catalog.sh. The tier still chooses the QUANT, because that is a
+# budget decision rather than a property of the model: the same 30B MoE wants
+# IQ3 on a 8 GB card and Q6_K on a 48 GB one.
 plan_for_budget() {
   local fit_total="$1" moe_offload="${2:-0}"
 
   if (( fit_total < 9000 )); then
     PLAN_TIER="tiny"
-    PLAN_SEARCH_1="Qwen3-Coder-30B-A3B-Instruct"; PLAN_Q_1="IQ3_XXS|Q3_K_S"
-    PLAN_SEARCH_2="Qwen3-4B";                     PLAN_Q_2="Q5_K_M"
-    PLAN_SEARCH_3="Qwen3-1.7B";                   PLAN_Q_3="Q8_0"
+    PLAN_ID_1="qwen3-coder-30b"; PLAN_Q_1="IQ3_XXS|Q3_K_S"
+    PLAN_ID_2="qwen3-4b";        PLAN_Q_2="Q5_K_M"
+    PLAN_ID_3="qwen3-1.7b";      PLAN_Q_3="Q8_0"
     PLAN_RUNTIME="llama.cpp + llama-swap. vLLM is not viable -- it needs the whole model resident."
     PLAN_NOTE="Claude Code needs 32k context minimum, and the KV cache at that length
   will take a large share of this card. The primary pick is a MoE precisely
@@ -126,17 +141,17 @@ plan_for_budget() {
 
   elif (( fit_total < 15000 )); then
     PLAN_TIER="16g"
-    PLAN_SEARCH_1="Devstral-Small-2-24B-Instruct"; PLAN_Q_1="IQ4_XS|Q4_K_S"
-    PLAN_SEARCH_2="Qwen3-Coder-30B-A3B-Instruct";  PLAN_Q_2="IQ3_M|Q3_K_M"
-    PLAN_SEARCH_3="Qwen3-4B";                      PLAN_Q_3="Q5_K_M"
+    PLAN_ID_1="devstral-small";  PLAN_Q_1="IQ4_XS|Q4_K_S"
+    PLAN_ID_2="qwen3-coder-30b"; PLAN_Q_2="IQ3_M|Q3_K_M"
+    PLAN_ID_3="qwen3-4b";        PLAN_Q_3="Q5_K_M"
     PLAN_RUNTIME="llama.cpp + llama-swap. Quantize the KV cache to q8_0 -- that is what makes a long context fit."
     PLAN_NOTE="A 24B dense model at IQ4 fits with room for a 32-64k KV cache."
 
   elif (( fit_total < 26000 )); then
     PLAN_TIER="24g"
-    PLAN_SEARCH_1="Qwen3-Coder-30B-A3B-Instruct";  PLAN_Q_1="Q4_K_M"
-    PLAN_SEARCH_2="Devstral-Small-2-24B-Instruct"; PLAN_Q_2="Q4_K_M"
-    PLAN_SEARCH_3="Qwen3.6-27B";                   PLAN_Q_3="Q4_K_M"
+    PLAN_ID_1="qwen3-coder-30b"; PLAN_Q_1="Q4_K_M"
+    PLAN_ID_2="devstral-small";  PLAN_Q_2="Q4_K_M"
+    PLAN_ID_3="gemma-3-27b";     PLAN_Q_3="Q4_K_M"
     PLAN_RUNTIME="llama.cpp + llama-swap."
     PLAN_NOTE="The sweet spot. The MoE primary activates ~3B params per token, so it
   generates far faster than a dense model of similar size and degrades
@@ -144,18 +159,18 @@ plan_for_budget() {
 
   elif (( fit_total < 45000 )); then
     PLAN_TIER="48g"
-    PLAN_SEARCH_1="Qwen3-Coder-30B-A3B-Instruct";  PLAN_Q_1="Q6_K|Q5_K_M"
-    PLAN_SEARCH_2="Qwen3.6-27B";                   PLAN_Q_2="Q5_K_M"
-    PLAN_SEARCH_3="Devstral-Small-2-24B-Instruct"; PLAN_Q_3="Q5_K_M"
+    PLAN_ID_1="qwen3-coder-30b"; PLAN_Q_1="Q6_K|Q5_K_M"
+    PLAN_ID_2="qwen3-32b";       PLAN_Q_2="Q5_K_M"
+    PLAN_ID_3="devstral-small";  PLAN_Q_3="Q5_K_M"
     PLAN_RUNTIME="llama.cpp + llama-swap now; vLLM is worth measuring once you settle on one model."
     PLAN_NOTE="Enough headroom to spend it on quantization quality rather than more
   parameters -- a higher quant of a right-sized model beats a squeezed larger one."
 
   else
     PLAN_TIER="big"
-    PLAN_SEARCH_1="Qwen3-Coder-Next";              PLAN_Q_1="Q4_K_M"
-    PLAN_SEARCH_2="Qwen3-Coder-30B-A3B-Instruct";  PLAN_Q_2="Q6_K"
-    PLAN_SEARCH_3="Qwen3.6-27B";                   PLAN_Q_3="Q5_K_M"
+    PLAN_ID_1="llama-3.3-70b";   PLAN_Q_1="IQ4_XS|Q4_K_S"
+    PLAN_ID_2="qwen3-coder-30b"; PLAN_Q_2="Q6_K"
+    PLAN_ID_3="qwen3-32b";       PLAN_Q_3="Q5_K_M"
     PLAN_RUNTIME="vLLM with prefix caching is worth evaluating at this scale; llama.cpp + llama-swap still works."
     PLAN_NOTE="Large enough to run a frontier-class open model resident."
   fi
@@ -169,9 +184,45 @@ plan_for_budget() {
     PLAN_MOE_NOTE=""
   fi
 
+  # Resolve catalog IDs into the search strings and metadata callers read.
+  # A tier naming an ID that is not in the catalog is a programming error, and
+  # it fails here rather than 40 minutes into a download that resolves to
+  # nothing -- which is precisely the drift this indirection exists to prevent.
+  local n id
+  for n in 1 2 3; do
+    local id_var="PLAN_ID_$n"
+    id="${!id_var}"
+    if ! catalog_row "$id" >/dev/null; then
+      PLAN_ERROR="tier '$PLAN_TIER' pick $n names '$id', which is not in the catalog"
+      export PLAN_ERROR
+      return 1
+    fi
+    printf -v "PLAN_SEARCH_$n"   '%s' "$(catalog_model_name "$id")"
+    printf -v "PLAN_REPO_$n"     '%s' "$(catalog_get "$id" canonical_repo)"
+    printf -v "PLAN_PARAMS_$n"   '%s' "$(catalog_get "$id" params_b)"
+    printf -v "PLAN_ARCH_$n"     '%s' "$(catalog_get "$id" arch)"
+    printf -v "PLAN_CTX_$n"      '%s' "$(catalog_get "$id" context)"
+    printf -v "PLAN_LICENSE_$n"  '%s' "$(catalog_get "$id" license)"
+    printf -v "PLAN_PROV_$n"     '%s' "$(catalog_get "$id" provenance)"
+
+    # Size at the quant this tier actually asks for, not at the reference quant.
+    local q_var="PLAN_Q_$n" first_q
+    first_q="${!q_var}"; first_q="${first_q%%|*}"
+    printf -v "PLAN_SIZE_$n" '%s' "$(catalog_est_size_mb "$id" "$first_q")"
+  done
+
   # These are the function's return values -- callers read them. Exporting
   # states that contract (and is what detect_hw already does for its outputs).
   export PLAN_TIER PLAN_RUNTIME PLAN_NOTE PLAN_MOE_NOTE \
+         PLAN_ID_1 PLAN_ID_2 PLAN_ID_3 \
          PLAN_SEARCH_1 PLAN_SEARCH_2 PLAN_SEARCH_3 \
+         PLAN_REPO_1 PLAN_REPO_2 PLAN_REPO_3 \
+         PLAN_PARAMS_1 PLAN_PARAMS_2 PLAN_PARAMS_3 \
+         PLAN_ARCH_1 PLAN_ARCH_2 PLAN_ARCH_3 \
+         PLAN_CTX_1 PLAN_CTX_2 PLAN_CTX_3 \
+         PLAN_LICENSE_1 PLAN_LICENSE_2 PLAN_LICENSE_3 \
+         PLAN_PROV_1 PLAN_PROV_2 PLAN_PROV_3 \
+         PLAN_SIZE_1 PLAN_SIZE_2 PLAN_SIZE_3 \
          PLAN_Q_1 PLAN_Q_2 PLAN_Q_3
+  return 0
 }

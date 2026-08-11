@@ -65,6 +65,40 @@ claude
 viable — attention stays on the GPU, expert tensors go to CPU, and only a few billion
 params are active per token. A *dense* model of the same size would be unusable.
 
+## The model catalog
+
+Model metadata lives in one place, [`lib/catalog.sh`](lib/catalog.sh), and both
+`00-specs.sh` and `30-models.sh` read it. They used to hold separate hardcoded
+lists, which drifted: the report recommended models the downloader never
+fetched, and in two cases models that did not exist.
+
+Each row carries the canonical repository, release date, total and active
+parameters, architecture, native context, licence, capabilities, quant
+preferences, an estimated size, and a **provenance** value saying where those
+facts came from. The catalog is capped at 15 rows — it is curated by hand, and
+a longer list cannot be kept honest.
+
+Two distinctions the schema enforces, because both have bitten this project:
+
+- **`release_date` is the model's, not the GGUF repository's.** A quantizer
+  re-uploads whenever they rebuild, so the repo's `lastModified` can be months
+  newer than the model. Using one for the other makes an old model look fresh.
+  GGUF repository dates are live data and are kept under different names.
+- **Sizes are estimates**, derived from parameter count and bits-per-weight,
+  and are labelled as such everywhere they surface. They answer "will this
+  fit", not "how many bytes will I download".
+
+`provenance: unverified` means a row is believed correct but has not been
+checked against the publisher's model card. Those rows are listed in the specs
+report rather than quietly presented as fact. **Every row currently ships as
+`unverified`** — see the schema notes in the file.
+
+Validate the table at any time:
+
+```bash
+bash -c 'source lib/models.sh; catalog_validate || printf "%s" "$CATALOG_ERRORS"'
+```
+
 ## Configuration
 
 Everything is derived from detected hardware, and everything is overridable by
