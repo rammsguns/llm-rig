@@ -85,7 +85,9 @@ llama_build_dir() {
 # be in the current directory; this makes that class of mistake impossible.
 llama_validate_build_dir() {
   local bd="$1" src="$2" real_bd real_src
-  BUILD_DIR_ERROR=""
+  # Read by the caller to explain a refusal; exported so ShellCheck sees the
+  # output contract across the source boundary.
+  export BUILD_DIR_ERROR=""
 
   [[ -n "$bd" ]]            || { BUILD_DIR_ERROR="build directory is empty"; return 1; }
   [[ "$bd" == /* ]]         || { BUILD_DIR_ERROR="build directory must be an absolute path, got '$bd'"; return 1; }
