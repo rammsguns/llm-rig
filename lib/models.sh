@@ -168,4 +168,10 @@ plan_for_budget() {
   else
     PLAN_MOE_NOTE=""
   fi
+
+  # These are the function's return values -- callers read them. Exporting
+  # states that contract (and is what detect_hw already does for its outputs).
+  export PLAN_TIER PLAN_RUNTIME PLAN_NOTE PLAN_MOE_NOTE \
+         PLAN_SEARCH_1 PLAN_SEARCH_2 PLAN_SEARCH_3 \
+         PLAN_Q_1 PLAN_Q_2 PLAN_Q_3
 }

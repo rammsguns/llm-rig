@@ -117,6 +117,8 @@ c_info "Weight budget: ${FIT_TOTAL_MB} MB split / ${FIT_SINGLE_MB} MB single-GPU
 # can never disagree about what the hardware should run.
 plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB"
 c_info "Tier: $PLAN_TIER"
+# Consumed below via indirect expansion (${!s_var}), which ShellCheck cannot follow.
+# shellcheck disable=SC2034
 SEARCH_1="$PLAN_SEARCH_1"; Q1="$PLAN_Q_1"
 SEARCH_2="$PLAN_SEARCH_2"; Q2="$PLAN_Q_2"
 SEARCH_3="$PLAN_SEARCH_3"; Q3="$PLAN_Q_3"
