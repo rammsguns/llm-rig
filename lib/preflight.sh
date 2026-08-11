@@ -162,7 +162,9 @@ preflight_verify_stack() {
   fi
   c_ok "$model emits tool_use (${PREFLIGHT_TOOL_MODE:-auto} tool choice)"
 
-  PREFLIGHT_ENDPOINT="$base"
-  PREFLIGHT_MODEL="$model"
+  # Read by the caller to report what was actually verified. Exported because
+  # they are this function's output contract, which ShellCheck cannot see.
+  export PREFLIGHT_ENDPOINT="$base"
+  export PREFLIGHT_MODEL="$model"
   return 0
 }
