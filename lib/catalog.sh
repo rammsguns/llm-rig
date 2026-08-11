@@ -378,7 +378,9 @@ catalog_validate() {
 
   # Not exported: the messages quote the offending values, and exporting a
   # quoted string neither preserves the quoting nor helps anyone -- every
-  # reader is in this same shell.
+  # reader is in this same shell. Its readers live in other files, which is
+  # why shellcheck cannot see them from here.
+  # shellcheck disable=SC2034  # documented return channel, read by callers
   CATALOG_ERRORS="$errs"
   [[ -z "$errs" ]]
 }

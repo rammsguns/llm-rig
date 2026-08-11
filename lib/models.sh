@@ -131,7 +131,9 @@ quant_include_pattern() {
 plan_for_budget() {
   local fit_total="$1" moe_offload="${2:-0}"
   # Cleared up front so a failure two calls ago cannot be read back as this
-  # call's diagnosis.
+  # call's diagnosis. Read by 00-specs.sh and 30-models.sh, which shellcheck
+  # cannot see from inside this file.
+  # shellcheck disable=SC2034  # documented return channel, read by callers
   PLAN_ERROR=""
 
   if (( fit_total < 9000 )); then
@@ -200,6 +202,7 @@ plan_for_budget() {
     id="${!id_var}"
     if ! catalog_row "$id" >/dev/null; then
       # Same-shell return channel, not exported -- see quant_pattern_valid.
+      # shellcheck disable=SC2034  # documented return channel, read by callers
       PLAN_ERROR="tier $PLAN_TIER pick $n names \"$id\", which is not in the catalog"
       return 1
     fi
