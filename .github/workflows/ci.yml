@@ -16,7 +16,7 @@ jobs:
     name: syntax, shellcheck, fixture tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install ShellCheck
         run: |
@@ -42,11 +42,20 @@ jobs:
         run: ./tests/run.sh
 
       - name: Assert the suite needs no network
-        # Re-run with DNS and outbound traffic unavailable to the test process.
-        # Anything that quietly reached the internet fails here rather than
-        # becoming a flaky test months later.
+        # Re-run with no route out, so anything that quietly reached the
+        # internet fails here rather than becoming a flaky test months later.
+        #
+        # No sudo: `unshare --map-root-user` creates an unprivileged user
+        # namespace, and combining it with real root breaks exec inside the
+        # namespace (exit 126). If the runner forbids unprivileged user
+        # namespaces entirely, warn rather than fail -- that is a runner
+        # limitation, not a defect in the code under test.
         run: |
-          sudo unshare --net --map-root-user bash -c '
+          if ! unshare --net --map-root-user true 2>/dev/null; then
+            echo "::warning::unprivileged user namespaces unavailable; skipping no-network check"
+            exit 0
+          fi
+          unshare --net --map-root-user bash -c '
             ip link set lo up 2>/dev/null || true
-            exec ./tests/run.sh --no-lint
+            exec bash ./tests/run.sh --no-lint
           '
