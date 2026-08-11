@@ -4,9 +4,13 @@
 etc/llama-swap.yaml
 claude-code-local.env
 
-# Build state marker written by 20-build-llamacpp.sh; nothing reads it back.
+# The commit this machine last built. Machine state, not configuration -- the
+# deliberate pin is llamacpp.ref, which IS meant to be committed.
 .llamacpp-rev
 
 # Runtime output.
 logs/
 *.log
+
+# Out-of-tree llama.cpp build output (20-build-llamacpp.sh).
+build/
