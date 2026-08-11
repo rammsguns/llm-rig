@@ -82,8 +82,13 @@ if unshare --net --map-root-user true 2>/dev/null; then
   env LLM_RIG_ISOLATED=1 unshare --net --map-root-user bash "$0" "$@" || status=$?
 elif sudo -n unshare --net --setuid "$(id -u)" --setgid "$(id -g)" true 2>/dev/null; then
   echo "isolation method: sudo unshare --net, privileges dropped back to $(id -un) (uid $(id -u))"
+  # Every variable phase 2 needs is passed explicitly through `env`: sudo
+  # resets the environment, so an exported ISOLATION_PROOF does not survive
+  # the crossing -- and phase 2 silently not writing it looks identical to
+  # phase 2 never running.
   sudo -n unshare --net --setuid "$(id -u)" --setgid "$(id -g)" -- \
-    env LLM_RIG_ISOLATED=1 HOME="$HOME" PATH="$PATH" bash "$0" "$@" || status=$?
+    env LLM_RIG_ISOLATED=1 ISOLATION_PROOF="$PROOF" \
+        HOME="$HOME" PATH="$PATH" bash "$0" "$@" || status=$?
 else
   echo "could not establish network isolation by any supported method." >&2
   echo "  tried: unshare --net --map-root-user   (unprivileged user namespace)" >&2
