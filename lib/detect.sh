@@ -128,18 +128,30 @@ detect_hw() {
   # A negative budget always means the GPUs weren't idle when we measured, never
   # that the hardware is too small. Fail loudly rather than emitting a config
   # full of nonsense --n-cpu-moe values.
-  if (( FIT_TOTAL_MB <= 0 )); then
-    c_err "Computed weight budget is ${FIT_TOTAL_MB} MB -- only ${VRAM_TOTAL_MB} MB of
-     ${VRAM_INSTALLED_MB} MB VRAM is free, so something is still holding the GPUs:"
-    gpu_holders | sed 's/^/       /' >&2
-    die "Free the GPUs first:  sudo systemctl stop llama-swap
-     Then re-run. (Scripts that size models call ensure_gpus_idle for this reason.)"
-  fi
-
   export GPU_NAME GPU_COUNT VRAM_MB VRAM_TOTAL_MB VRAM_FREE_MB VRAM_INSTALLED_MB \
          BEST_GPU GPU_CC CUDA_ARCH \
          RAM_GB PHYS_CORES THREADS MULTI_GPU NVLINK \
          FIT_TOTAL_MB FIT_SINGLE_MB MOE_OFFLOAD_MB KV_RESERVE_MB
+
+  # A negative budget almost always means the GPUs weren't idle when we
+  # measured, not that the hardware is too small. Fail loudly rather than emit
+  # a config full of nonsense --n-cpu-moe values.
+  #
+  # DETECT_SOFT_FAIL is for read-only callers such as 00-specs.sh: a report
+  # should still describe the machine it could not size, rather than aborting
+  # halfway through and leaving the user with no diagnosis at all.
+  if (( FIT_TOTAL_MB <= 0 )); then
+    c_err "Computed weight budget is ${FIT_TOTAL_MB} MB -- only ${VRAM_TOTAL_MB} MB of
+     ${VRAM_INSTALLED_MB} MB VRAM is free, so something is still holding the GPUs:"
+    gpu_holders | sed 's/^/       /' >&2
+    if [[ "${DETECT_SOFT_FAIL:-0}" == 1 ]]; then
+      c_warn "Continuing in report-only mode; no plan can be recommended."
+      return 1
+    fi
+    die "Free the GPUs first:  sudo systemctl stop llama-swap
+     Then re-run. (Scripts that size models call ensure_gpus_idle for this reason.)"
+  fi
+  return 0
 }
 
 # KV cache bytes per token: n_layers kv_heads head_dim bytes_per_elem
