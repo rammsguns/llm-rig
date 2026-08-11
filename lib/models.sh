@@ -22,6 +22,8 @@
 # run rather than silently matching nothing 40 minutes in.
 quant_pattern_valid() {
   local pattern="$1" alt
+  # Read by the caller on failure; exported so ShellCheck sees the contract.
+  export QUANT_PATTERN_ERROR
   [[ -n "$pattern" ]] || { QUANT_PATTERN_ERROR="pattern is empty"; return 1; }
   # Checked on the raw string: word splitting silently drops leading/trailing
   # empty fields, so "Q4_K_M|" would otherwise look like a single valid entry.

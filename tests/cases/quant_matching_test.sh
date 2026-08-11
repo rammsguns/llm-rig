@@ -177,6 +177,8 @@ load_fetch() {
   # The main flow is guarded, so sourcing gives us the helpers only.
   # shellcheck source=/dev/null
   source "$REPO_ROOT/30-models.sh"
+  # Consumed by fetch(), which we just sourced.
+  # shellcheck disable=SC2034
   HF_BIN=hf
 }
 
