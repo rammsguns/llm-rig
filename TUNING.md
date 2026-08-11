@@ -162,6 +162,7 @@ reaches equilibrium temperature.
 cd ~/llm-rig
 source claude-code-local.env && claude    # use it
 ./71-verify-runtime.sh                    # confirm live n_ctx / FA / cache types
+./71-verify-runtime.sh --require props    # same, but non-zero if unproven
 ./60-bench.sh                             # re-benchmark (takes the stack offline)
 ./80-try-bigger.sh --list <hf-repo>       # size a bigger model without downloading
 systemctl status llama-swap

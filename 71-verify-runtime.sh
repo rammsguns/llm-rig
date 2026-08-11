@@ -1,86 +1,199 @@
 #!/usr/bin/env bash
-# Verify what the RUNNING llama-server actually has enabled, rather than trusting
-# the config or guessing from logs. Loads the primary model, then queries the
-# upstream server's /props endpoint directly.
+# Verify what the RUNNING llama-server actually has enabled, rather than
+# trusting the config or guessing from logs.
+#
+# Evidence is graded and never conflated:
+#
+#   [configured] a flag is present in the generated config. Says what was
+#                asked for, not what happened.
+#   [live]       the running server reported it via /props. Strongest.
+#   [benchmark]  inferred from timings measured ON THIS MACHINE. Without an
+#                artifact the answer is "not measured" -- never a substituted
+#                figure from somewhere else.
+#
+# Usage:
+#   ./71-verify-runtime.sh
+#   ./71-verify-runtime.sh --measure            # run a bounded live benchmark
+#   ./71-verify-runtime.sh --require props      # non-zero unless established
+#   ./71-verify-runtime.sh --require flash-attn --require props
+#
+# --require makes this usable as a gate: it exits non-zero when the requested
+# assertion cannot be ESTABLISHED, which is not the same as being false.
 set -uo pipefail
-source "$(dirname "$0")/lib/detect.sh"
+RIG_SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$RIG_SRC_DIR/lib/detect.sh"
+source "$RIG_SRC_DIR/lib/bench.sh"
 
 CFG="$RIG_DIR/etc/llama-swap.yaml"
+MEASURE=0
+REQUIRE=()
+
+while (( $# )); do
+  case "$1" in
+    --measure)   MEASURE=1 ;;
+    --require)   shift; REQUIRE+=("${1:-}") ;;
+    --require=*) REQUIRE+=("${1#--require=}") ;;
+    -h|--help)   sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    *)           die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+# What each assertion is backed by, once we know. Empty means not established.
+EV_PROPS=""
+EV_FLASH_ATTN=""
+EV_BENCH=""
 
 # --- 1. what the config asks for -------------------------------------------
-c_info "Flags in $CFG"
+c_info "[configured] flags in $CFG"
 if [[ -f "$CFG" ]]; then
   grep -E -- '--flash-attn|--cache-type|--cache-reuse|--no-context-shift|--jinja|-c [0-9]+' "$CFG" \
     | sed 's/^/    /' | sort -u
+  echo "    (this is what was requested -- not evidence that it took effect)" >&2
 else
-  c_err "$CFG missing -- run ./40-serve.sh"
-  exit 1
+  die "$CFG missing -- run ./40-serve.sh"
 fi
 
-# --- 2. the argument-validation proof --------------------------------------
-# llama-server exits non-zero on an unrecognised flag or an invalid flag VALUE.
-# So if it is serving requests, every flag above was accepted. This is why an
-# empty `journalctl | grep flash` is not evidence of anything: it only means
-# llama-swap does not forward upstream stdout to the journal.
-if systemctl is-active --quiet llama-swap; then
-  c_ok "llama-swap is active -- llama-server accepted every flag above"
-  c_info "(it would have exited on an unknown flag or bad value, so this is proof
-     the flags took effect, not just that they were written to the file)"
+# --- 2. argument validation -------------------------------------------------
+# llama-server exits non-zero on an unrecognised flag or an invalid flag value,
+# so a serving process proves every flag above was at least ACCEPTED. That is
+# weaker than /props: accepted is not the same as active.
+if systemctl is-active --quiet llama-swap 2>/dev/null; then
+  c_ok "[configured] llama-swap is active, so llama-server accepted every flag above"
 else
-  c_warn "llama-swap not running"
+  c_warn "llama-swap is not running -- no live evidence can be collected"
 fi
 
-# --- 3. ask the running server -------------------------------------------
-MODELS=$(curl -sf "http://127.0.0.1:$LLAMA_PORT/v1/models" | jq -r '.data[].id' 2>/dev/null)
-[[ -n "$MODELS" ]] || die "llama-swap not responding on $LLAMA_PORT"
-PRIMARY=$(echo "$MODELS" | grep -i coder | head -1)
-[[ -n "$PRIMARY" ]] || PRIMARY=$(echo "$MODELS" | head -1)
+# --- 3. ask the running server ---------------------------------------------
+MODELS=$(curl -sf --max-time 30 "http://127.0.0.1:$LLAMA_PORT/v1/models" 2>/dev/null \
+         | jq -r '.data[].id' 2>/dev/null)
+if [[ -n "$MODELS" ]]; then
+  PRIMARY=$(printf '%s\n' "$MODELS" | grep -i coder | head -1)
+  [[ -n "$PRIMARY" ]] || PRIMARY=$(printf '%s\n' "$MODELS" | head -1)
 
-c_info "Loading $PRIMARY (may take a minute)"
-curl -sf --max-time 600 -X POST "http://127.0.0.1:$LLAMA_PORT/v1/chat/completions" \
-  -H 'content-type: application/json' \
-  -d "{\"model\":\"$PRIMARY\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
-  >/dev/null 2>&1 || c_warn "warm-up request failed"
+  c_info "Loading $PRIMARY (may take a minute)"
+  curl -sf --max-time "${VERIFY_LOAD_TIMEOUT:-600}" \
+    -X POST "http://127.0.0.1:$LLAMA_PORT/v1/chat/completions" \
+    -H 'content-type: application/json' \
+    -d "$(jq -nc --arg m "$PRIMARY" \
+          '{model:$m, max_tokens:1, messages:[{role:"user",content:"hi"}]}')" \
+    >/dev/null 2>&1 || c_warn "warm-up request failed"
+else
+  c_warn "llama-swap is not answering on $LLAMA_PORT"
+fi
 
-c_info "Querying upstream llama-server /props"
-FOUND=0
-for p in $(seq 9100 9110); do
+# Upstream ports come from the generated config, not a hardcoded range.
+PORTS="$(swap_upstream_ports "$CFG")"
+c_info "[live] querying upstream /props on ports $(printf '%s' "$PORTS" | tr '\n' ' ')"
+for p in $PORTS; do
   props=$(curl -sf --max-time 5 "http://127.0.0.1:$p/props" 2>/dev/null) || continue
-  [[ -z "$props" ]] && continue
-  FOUND=1
+  [[ -n "$props" ]] || continue
+  EV_PROPS="port $p"
   echo "  --- upstream port $p ---"
-  echo "$props" | jq -r '
+  # flash_attn is a BOOLEAN, so jq's `//` cannot be used to default it: `//`
+  # falls through on false exactly as it does on null, which would report a
+  # server that says flash attention is OFF as "not reported". Select on
+  # non-null explicitly instead.
+  fa=$(echo "$props" | jq -r '
+    [.flash_attn, .default_generation_settings.flash_attn?]
+    | map(select(. != null)) | first
+    | if . == null then "" else tostring end' 2>/dev/null)
+
+  echo "$props" | jq -r --arg fa "${fa:-not reported}" '
     "    model         : \(.model_path // .default_generation_settings.model // "?")",
     "    n_ctx         : \(.default_generation_settings.n_ctx // .n_ctx // "?")",
-    "    flash_attn    : \(.flash_attn // .default_generation_settings.flash_attn // "not reported")",
+    "    flash_attn    : \($fa)",
     "    cache type k  : \(.cache_type_k // "not reported")",
     "    cache type v  : \(.cache_type_v // "not reported")"
   ' 2>/dev/null || echo "$props" | head -c 600
-  echo
-  # Raw dump of anything cache/attention related, in case field names differ
-  # across builds.
+
+  case "${fa,,}" in
+    true|1|on|enabled) EV_FLASH_ATTN="live: /props on port $p reports flash_attn=$fa" ;;
+    false|0|off)       EV_FLASH_ATTN="" ; c_warn "/props reports flash_attn=$fa -- flash attention is OFF" ;;
+  esac
+
   echo "$props" | jq -r 'to_entries[] | select(.key|test("flash|cache|ctx|attn";"i")) | "    \(.key) = \(.value|tostring)"' 2>/dev/null | head -20
   break
 done
-(( FOUND )) || c_warn "No upstream /props answered on 9100-9110.
-     The model may have unloaded (ttl expired) or llama-swap uses different ports.
-     Check: grep startPort $CFG"
+[[ -n "$EV_PROPS" ]] || c_warn "No upstream /props answered.
+     The model may have unloaded (ttl expired), or llama-swap may use other ports.
+     Config says startPort=$(swap_start_port "$CFG") with $(swap_model_count "$CFG") model(s)."
 
-# --- 4. the empirical check ------------------------------------------------
-# Flash attention's signature is that long-context prompt processing degrades
-# roughly linearly rather than quadratically. If pp32768 is more than ~60% of
-# pp4096's rate, attention is not the bottleneck -- i.e. FA is doing its job.
+# --- 4. benchmark evidence, from THIS machine ------------------------------
 echo
-c_info "Empirical check from your bench data"
-python3 - <<'PY'
-pairs = [("Qwen3-Coder-30B-A3B", 2426.40, 1514.85),
-         ("Devstral-Small-2-24B", 1342.06, 879.82),
-         ("Qwen3.6-27B", 779.19, 688.76)]
-print("    model                    pp4096    pp32768   retained")
-for n, a, b in pairs:
-    print(f"    {n:24s} {a:8.0f}  {b:8.0f}   {b/a*100:5.1f}%")
-print()
-print("    Without flash attention, an 8x context increase costs far more than")
-print("    this -- retention would fall well below 50%. 62-88% retention is the")
-print("    signature of FA being active.")
-PY
+ARTIFACT="$(bench_latest_artifact)"
+
+if (( MEASURE )); then
+  # A bounded live measurement, only when explicitly asked for: two prompt
+  # lengths, one repetition. Enough to compute retention, not a full sweep.
+  if [[ -z "$MODELS" ]]; then
+    c_warn "cannot measure: the stack is not responding"
+  elif ! need llama-bench; then
+    c_warn "cannot measure: llama-bench is not installed"
+  else
+    GGUF=$(find "$MODELS_DIR" -name '*.gguf' -size +100M 2>/dev/null | head -1)
+    if [[ -z "$GGUF" ]]; then
+      c_warn "cannot measure: no GGUF found under $MODELS_DIR"
+    else
+      ARTIFACT="$RIG_DIR/logs/verify-measure-$(date +%Y%m%d-%H%M%S).txt"
+      c_info "[benchmark] measuring ${BENCH_SHORT_PP:-pp4096} vs ${BENCH_LONG_PP:-pp32768} on $(basename "$GGUF")"
+      c_warn "this loads the model into VRAM and takes a few minutes"
+      {
+        echo "### $(basename "$GGUF")"
+        llama-bench -m "$GGUF" \
+          -p "${BENCH_SHORT_PP:-pp4096}" -p "${BENCH_LONG_PP:-pp32768}" \
+          -n 0 -ngl 999 -fa 1 -ctk q8_0 -ctv q8_0 -r 1 2>&1
+      } | sed -E 's/^p([0-9]+)/pp\1/' >"$ARTIFACT" || c_warn "measurement failed"
+    fi
+  fi
+fi
+
+if [[ -n "$ARTIFACT" && -f "$ARTIFACT" ]] && bench_has_retention_data "$ARTIFACT"; then
+  EV_BENCH="$ARTIFACT"
+  c_info "[benchmark] long-context retention, from $(basename "$ARTIFACT")"
+  printf '    %-28s %10s %10s %10s\n' "model" "short pp" "long pp" "retained" >&2
+  while IFS=$'\t' read -r model short long pct; do
+    printf '    %-28s %10.0f %10.0f %9.1f%%\n' "$model" "$short" "$long" "$pct" >&2
+  done < <(bench_retention "$ARTIFACT")
+  echo >&2
+  echo "    Flash attention makes long-context prompt processing degrade roughly" >&2
+  echo "    linearly rather than quadratically, so retention at or above" >&2
+  echo "    ${BENCH_FA_RETENTION_MIN}% is consistent with FA being active. This is an" >&2
+  echo "    inference from timings measured on this machine, not a direct reading." >&2
+  if bench_retention_supports_fa "$ARTIFACT"; then
+    [[ -n "$EV_FLASH_ATTN" ]] || EV_FLASH_ATTN="benchmark: retention in $(basename "$ARTIFACT")"
+  else
+    c_warn "retention is below ${BENCH_FA_RETENTION_MIN}% -- that is NOT consistent with flash attention"
+  fi
+else
+  c_warn "[benchmark] not measured on this machine."
+  echo "     No usable benchmark artifact was found (looked for ~/llm-bench-*.txt" >&2
+  echo "     containing both ${BENCH_SHORT_PP:-pp4096} and ${BENCH_LONG_PP:-pp32768})." >&2
+  echo "     Produce one with  ./60-bench.sh , or take a bounded measurement now:" >&2
+  echo "       ./71-verify-runtime.sh --measure" >&2
+fi
+
+# --- summary ----------------------------------------------------------------
+echo
+c_info "Evidence summary"
+printf '    %-14s %s\n' "props"       "${EV_PROPS:-not established}" >&2
+printf '    %-14s %s\n' "flash-attn"  "${EV_FLASH_ATTN:-not established}" >&2
+printf '    %-14s %s\n' "benchmark"   "${EV_BENCH:-not established}" >&2
+
+# --- requested assertions ---------------------------------------------------
+STATUS=0
+for want in "${REQUIRE[@]}"; do
+  case "$want" in
+    props)       ev="$EV_PROPS" ;;
+    flash-attn)  ev="$EV_FLASH_ATTN" ;;
+    bench)       ev="$EV_BENCH" ;;
+    *)           die "unknown assertion: $want (known: props, flash-attn, bench)" ;;
+  esac
+  if [[ -n "$ev" ]]; then
+    c_ok "required '$want' established -- $ev"
+  else
+    c_err "required '$want' could NOT be established"
+    STATUS=1
+  fi
+done
+exit "$STATUS"

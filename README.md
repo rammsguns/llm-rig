@@ -56,7 +56,7 @@ claude
 
 | Script | Purpose |
 |---|---|
-| `./71-verify-runtime.sh` | Query the **running** server's `/props` — confirms live `n_ctx`, flash-attn, KV cache types. Trust this over the config file. |
+| `./71-verify-runtime.sh` | Query the **running** server's `/props` — confirms live `n_ctx`, flash-attn, KV cache types. Trust this over the config file. Grades its evidence; see below. |
 | `./70-thermal-sweep.sh` | Re-derive the best power limit for your chassis under a heat-soaked load. |
 | `./80-try-bigger.sh <hf-repo> [quant]` | Assess, download, auto-tune `--n-cpu-moe` and benchmark a model **larger than VRAM**. Empirically finds the lowest working offload level. `--list` sizes it without downloading. |
 | `./19-os-revert.sh` | Undo `10-os-tune.sh`. |
@@ -155,6 +155,30 @@ is a deliberate prefix-cache decision, not just token thrift; see
 
 From another machine on the LAN, point `ANTHROPIC_BASE_URL` at this host's address
 instead of `127.0.0.1` (ufw restricts :8081 to the local subnet).
+
+### What `71-verify-runtime.sh` will and won't claim
+
+It grades every claim by how it was established, and never conflates the grades:
+
+| Grade | Means |
+|---|---|
+| `[configured]` | The flag is in the generated config. Says what was *asked for*. |
+| `[live]` | The running server reported it via `/props`. Strongest. |
+| `[benchmark]` | Inferred from timings measured **on this machine**. |
+
+If no benchmark artifact exists it reports **"not measured"** rather than substituting a
+figure from anywhere else, and a `--flash-attn` line in the config never on its own
+establishes that flash attention is active.
+
+```bash
+./71-verify-runtime.sh --measure              # take a bounded measurement now
+./71-verify-runtime.sh --require props        # exit non-zero unless established
+./71-verify-runtime.sh --require flash-attn --require props
+```
+
+`--require` turns it into a gate: non-zero when the assertion cannot be **established**,
+which is not the same as it being false. Upstream ports are derived from the generated
+`startPort` and model count, so a non-default `startPort` is probed correctly.
 
 ## Tests
 
