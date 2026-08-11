@@ -1,0 +1,1 @@
+{"id":"msg_2","type":"message","role":"assistant","content":[{"type":"text","text":"I cannot call tools, but the weather in Paris is mild."}],"usage":{"input_tokens":31,"output_tokens":14}}

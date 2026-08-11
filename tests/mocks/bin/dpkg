@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -uo pipefail
+printf 'dpkg %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+if [[ "${MOCK_DPKG_OLLAMA:-0}" == 1 ]]; then
+  echo "ii  ollama                        0.14.0    amd64  Ollama"
+fi
+exit 0

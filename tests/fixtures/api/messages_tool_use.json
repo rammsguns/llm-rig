@@ -1,0 +1,1 @@
+{"id":"msg_3","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"location":"Paris"}}],"stop_reason":"tool_use"}
