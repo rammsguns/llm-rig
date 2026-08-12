@@ -48,11 +48,18 @@ OSTUNE_STATE_DIR="${OSTUNE_STATE_DIR:-$OSTUNE_ROOT/var/lib/llm-rig}"
 OSTUNE_STATE="$OSTUNE_STATE_DIR/os-tune.state"
 OSTUNE_BACKUP_DIR="$OSTUNE_STATE_DIR/backup"
 
+# The three files under /etc. Read by 10-os-tune.sh and 19-os-revert.sh, which
+# is why shellcheck cannot see a use for them here.
+# shellcheck disable=SC2034  # documented return channel, read by callers
 OSTUNE_SYSCTL_FILE="$OSTUNE_ROOT/etc/sysctl.d/99-llm-inference.conf"
+# shellcheck disable=SC2034  # documented return channel, read by callers
 OSTUNE_LIMITS_FILE="$OSTUNE_ROOT/etc/security/limits.d/99-llm-memlock.conf"
+# shellcheck disable=SC2034  # documented return channel, read by callers
 OSTUNE_UNIT_FILE="$OSTUNE_ROOT/etc/systemd/system/llm-gpu-tune.service"
 
+# shellcheck disable=SC2034  # documented return channel, read by callers
 OSTUNE_THP_ENABLED="$OSTUNE_ROOT/sys/kernel/mm/transparent_hugepage/enabled"
+# shellcheck disable=SC2034  # documented return channel, read by callers
 OSTUNE_THP_DEFRAG="$OSTUNE_ROOT/sys/kernel/mm/transparent_hugepage/defrag"
 OSTUNE_CPU_GLOB="$OSTUNE_ROOT/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor"
 
@@ -352,6 +359,9 @@ ostune_state_rewrite_sha() {
 #
 # created: delete, but only if the contents are still ours.
 # adopted: put the original back, byte for byte, and verify the hash.
+# shellcheck disable=SC2034  # OSTUNE_LAST_NOTE is a documented return channel,
+# read by 19-os-revert.sh. Scoped to the whole function rather than repeated at
+# each assignment.
 ostune_restore_file() {
   local path="$1" entry kind sha backup orig_sha current
   entry="$(ostune_state_get file "$path")" || return 0   # never ours, never touched
