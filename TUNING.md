@@ -151,6 +151,18 @@ reaches equilibrium temperature.
 - **`--split-mode row`** — fails to load without P2P.
 - **Power capping** — measured strictly worse on this chassis.
 
+## Reproducibility of the stack itself
+
+The measurements on this page describe a specific pair of binaries. `llama.cpp`
+is built from a revision recorded in `.llamacpp-rev`, and **llama-swap is
+pinned** to a version whose SHA-256 is recorded in `lib/swap.sh` — it used to be
+whatever `releases/latest` returned that day, unverified, so two rebuilds of the
+"same" stack could differ in a component sitting directly in the request path.
+
+Neither pin is a claim that a newer version is worse. It is a claim that when a
+number on this page changes, it should be possible to tell whether the workload
+changed or the software did.
+
 ## Known rough edges
 
 - **The single-card trick has no candidate.** See [Models](#models).

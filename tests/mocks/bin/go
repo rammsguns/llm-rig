@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Mock go. Records the invocation and, for `go install`, writes a fake binary
+# into $GOBIN so the source-fallback path can be exercised end to end without
+# a toolchain and without the network.
+#
+# MOCK_GO_STATUS=1 makes the build fail, which is the case that must not leave
+# a working binary replaced.
+set -uo pipefail
+printf 'go %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+[[ "${1:-}" == "install" ]] || exit 0
+if [[ "${MOCK_GO_STATUS:-0}" != 0 ]]; then
+  echo "go: build failed (mock)" >&2
+  exit "${MOCK_GO_STATUS}"
+fi
+[[ -n "${GOBIN:-}" ]] || exit 1
+mkdir -p "$GOBIN"
+printf '#!/usr/bin/env bash\necho "llama-swap %s"\n' "${MOCK_GO_VERSION:-v250}" >"$GOBIN/llama-swap"
+chmod +x "$GOBIN/llama-swap"
+exit 0

@@ -4,6 +4,8 @@
 # listening on the LAN.
 set -uo pipefail
 source "$(dirname "$0")/lib/detect.sh"
+# Pinned + verified llama-swap install; see the header of lib/swap.sh.
+source "$(dirname "$0")/lib/swap.sh"
 
 # Re-running this while llama-swap holds a model resident would measure ~3GB free
 # and compute a NEGATIVE weight budget, producing a config full of bogus
@@ -14,54 +16,111 @@ detect_hw
 mkdir -p "$RIG_DIR/etc" "$RIG_DIR/logs"
 
 # --- install llama-swap -----------------------------------------------------
+# Pinned and verified. See lib/swap.sh for why, and for the rules; the short
+# version is that this installs executable code as root, so it installs a
+# NAMED version whose SHA-256 matches, or it installs nothing.
 install_llama_swap() {
-  local api="https://api.github.com/repos/mostlygeek/llama-swap/releases/latest"
-  local json; json=$(curl -sfL "$api" 2>/dev/null || true)
-  local url=""
-  if [[ -n "$json" ]] && echo "$json" | jq -e .tag_name >/dev/null 2>&1; then
-    local tag; tag=$(echo "$json" | jq -r .tag_name)
-    # Asset naming has changed across releases; match broadly rather than
-    # assuming a literal "linux_amd64".
-    url=$(echo "$json" | jq -r '.assets[].browser_download_url' \
-          | grep -iE 'linux' | grep -iE 'amd64|x86_64' | grep -iE '\.tar\.gz$' | head -1)
-    [[ -n "$url" ]] && c_info "llama-swap $tag -> $(basename "$url")"
+  local version="$SWAP_VERSION" tmp json url checksums digest bin
+
+  c_info "Installing llama-swap $version (pinned; override with LLAMA_SWAP_VERSION)"
+
+  json="$(swap_fetch "$SWAP_API/repos/$SWAP_REPO/releases/tags/$version")" || json=""
+  if [[ -z "$json" ]] || ! jq -e .tag_name >/dev/null 2>&1 <<<"$json"; then
+    swap_fail "cannot read the $version release of $SWAP_REPO.
+     A network failure is not a reason to install something else -- fix the
+     network, or install the binary by hand and re-run."
+    return 1
   fi
 
-  if [[ -n "$url" ]]; then
-    local tmp; tmp=$(mktemp -d)
-    if curl -sfL "$url" -o "$tmp/ls.tar.gz" && tar -xzf "$tmp/ls.tar.gz" -C "$tmp"; then
-      local bin; bin=$(find "$tmp" -name 'llama-swap' -type f | head -1)
-      if [[ -n "$bin" ]]; then
-        sudo install -m755 "$bin" /usr/local/bin/llama-swap
-        rm -rf "$tmp"; return 0
-      fi
-    fi
-    rm -rf "$tmp"
-    c_warn "release tarball didn't contain the expected binary"
+  url="$(swap_select_asset "$json" "$version")" || return 1
+
+  tmp="$(mktemp -d)"
+  # shellcheck disable=SC2064  # $tmp is expanded now on purpose
+  trap "rm -rf '$tmp'" RETURN
+
+  if ! swap_fetch "$url" "$tmp/ls.tar.gz"; then
+    swap_fail "download failed: $url"
+    return 1
   fi
 
-  # Fallback: build from source. Requires Go, which is a small apt install.
-  c_warn "Falling back to building llama-swap from source"
-  need go || sudo apt-get install -y -qq golang-go || return 1
-  GOBIN=/tmp/gobin go install github.com/mostlygeek/llama-swap@latest 2>/dev/null \
-    && sudo install -m755 /tmp/gobin/llama-swap /usr/local/bin/llama-swap && return 0
+  # Upstream's checksums file is only consulted for versions llm-rig has not
+  # pinned; swap_verify decides, and fails closed when neither exists.
+  checksums=""
+  local ck_url
+  ck_url="$(jq -r --arg n "$(swap_checksums_name "$version")" \
+    '.assets[]? | select(.name == $n) | .browser_download_url' <<<"$json" 2>/dev/null)"
+  [[ -n "$ck_url" ]] && checksums="$(swap_fetch "$ck_url" || printf '')"
 
-  c_err "Could not install llama-swap automatically."
-  cat <<'EOF'
-     Install it manually, then re-run this script:
-       https://github.com/mostlygeek/llama-swap/releases
-       tar -xzf llama-swap_*_linux_amd64.tar.gz
-       sudo install -m755 llama-swap /usr/local/bin/
-EOF
-  return 1
+  # Status 2, not 1: a digest that does not match is not "could not fetch it".
+  # It means the bytes are not the bytes this version is supposed to have, and
+  # the answer to that is to stop -- not to quietly acquire the same version by
+  # some other route. Only an acquisition failure may fall back.
+  local verified verified_by
+  verified="$(swap_verify "$tmp/ls.tar.gz" "$version" "$checksums")" || return 2
+  digest="${verified%%$'\t'*}"
+  verified_by="${verified#*$'\t'}"
+  c_ok "sha256 verified ($verified_by): $digest"
+
+  tar -xzf "$tmp/ls.tar.gz" -C "$tmp" || { swap_fail "cannot unpack the tarball"; return 1; }
+  bin="$(find "$tmp" -name 'llama-swap' -type f | head -1)"
+  [[ -n "$bin" ]] || { swap_fail "the verified tarball contains no llama-swap binary"; return 1; }
+
+  swap_install_binary "$bin" "$SWAP_BIN" || return 1
+  swap_record_write "$version" "$digest" "release tarball, verified $verified_by"
+  return 0
 }
 
-if ! need llama-swap; then
-  c_info "Installing llama-swap"
-  install_llama_swap || die "llama-swap required; see instructions above"
-  c_ok "llama-swap $(llama-swap --version 2>&1 | head -1)"
+# Source fallback, at the SAME tag. The old `@latest` meant the fallback
+# installed a different version from the one the release path would have --
+# silently, and usually only on the machine where the download failed.
+install_llama_swap_from_source() {
+  local version="$SWAP_VERSION"
+  c_warn "Falling back to building llama-swap $version from source"
+  need go || sudo apt-get install -y -qq golang-go || return 1
+  local gobin; gobin="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$gobin'" RETURN
+  GOBIN="$gobin" go install "github.com/$SWAP_REPO@$version" || {
+    swap_fail "go install github.com/$SWAP_REPO@$version failed"
+    return 1
+  }
+  [[ -x "$gobin/llama-swap" ]] || { swap_fail "the source build produced no binary"; return 1; }
+  swap_install_binary "$gobin/llama-swap" "$SWAP_BIN" || return 1
+  # A locally compiled binary has no upstream digest to match: Go builds are
+  # not bit-identical across toolchains. The digest is recorded as what WAS
+  # built rather than as something that was checked against anything.
+  swap_record_write "$version" "$(swap_sha256 "$SWAP_BIN")" "built from source at $version (digest recorded, not verified)"
+  return 0
+}
+
+swap_current="$(swap_installed_version 2>/dev/null || printf '')"
+if [[ "$swap_current" == "$SWAP_VERSION" ]]; then
+  c_ok "llama-swap $swap_current already installed$( [[ -n "$(swap_record_get sha256 2>/dev/null)" ]] && printf ' (sha256 %s)' "$(swap_record_get sha256)")"
 else
-  c_ok "llama-swap already installed"
+  if [[ -n "$swap_current" ]]; then
+    c_info "llama-swap $swap_current installed; this llm-rig revision pins $SWAP_VERSION"
+  fi
+  install_llama_swap; install_rc=$?
+  if (( install_rc == 2 )); then
+    c_err "Verification failed. Not falling back to a source build: when the published
+     artifact is not what it should be, the right move is to stop and look."
+    die "llama-swap $SWAP_VERSION could not be verified; nothing was replaced"
+  fi
+  if (( install_rc != 0 )); then
+    if ! install_llama_swap_from_source; then
+      c_err "Could not install llama-swap $SWAP_VERSION."
+      cat <<EOF
+     Nothing has been replaced. Install it by hand, then re-run this script:
+       https://github.com/$SWAP_REPO/releases/tag/$SWAP_VERSION
+       sha256sum -c <<< "\$(curl -sfL https://github.com/$SWAP_REPO/releases/download/$SWAP_VERSION/$(swap_checksums_name "$SWAP_VERSION") | grep $(swap_asset_name "$SWAP_VERSION"))"
+       tar -xzf $(swap_asset_name "$SWAP_VERSION")
+       sudo install -m755 llama-swap $SWAP_BIN
+EOF
+      die "llama-swap required; see instructions above"
+    fi
+  fi
+  c_ok "llama-swap $(swap_installed_version || printf '%s' "$SWAP_VERSION") installed"
+  [[ -x "$SWAP_BIN.previous" ]] && c_info "previous binary kept at $SWAP_BIN.previous"
 fi
 
 # --- sizing decisions -------------------------------------------------------

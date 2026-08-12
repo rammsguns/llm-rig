@@ -272,6 +272,72 @@ whose next step downloads tens of gigabytes.
   afterwards so a run can be reproduced exactly. Duplicate, out-of-range and
   non-numeric answers are refused by name rather than with "invalid input".
 
+### The llama-swap binary is pinned and verified
+
+`40-serve.sh` installs executable code into `/usr/local/bin` as root, so it
+installs a **named version whose SHA-256 matches**, or it installs nothing.
+
+```bash
+./40-serve.sh                              # installs the pinned default
+LLAMA_SWAP_VERSION=v248 ./40-serve.sh      # a different version, explicitly
+```
+
+The pinned default lives in [`lib/swap.sh`](lib/swap.sh) (`SWAP_VERSION`),
+alongside the SHA-256 of that version's `linux_amd64` tarball. Two runs of the
+same llm-rig revision therefore install the same bytes. Previously this fetched
+`releases/latest` — a moving target — with no checksum at all, and fell back to
+`go install ...@latest`, so two runs a week apart could differ and nothing would
+say so.
+
+| Rule | Why |
+| --- | --- |
+| A digest pinned in llm-rig is the authority; upstream's `checksums.txt` is used only for versions not pinned here | A release asset can be replaced under the same tag, and its checksums file re-uploaded with it |
+| No checksum from either source ⇒ **refuse** | "Could not check" is not "checked" |
+| A mismatch ⇒ **stop**, and do not try another route | The bytes are not what this version should be. Quietly acquiring it another way buries the one signal worth looking at |
+| Exactly one asset may match, or refuse | The old broad pattern took the first match of a list that includes `linux_arm64` |
+| The existing binary is replaced by a rename, only after verification | No window where `/usr/local/bin/llama-swap` is half-written, and a failed install leaves the working binary exactly where it was |
+| The source fallback builds the **same tag** | `@latest` meant the machine whose download failed silently ran a different version from every other machine |
+
+What was installed is recorded in `~/llm-rig/etc/llama-swap.installed` and
+printed on every run:
+
+```
+version       v249
+sha256        3a7f59d5dcbc518f4513f23522cea7d0848c2cec4d24a5e164ce5055d228dbb9
+source        release tarball, verified pinned in llm-rig
+installed_at  2026-08-12T09:14:22Z
+```
+
+Re-running with the same version does nothing and says so. Changing version is
+stated explicitly (`llama-swap v248 installed; this llm-rig revision pins v249`).
+
+**Upgrading.** Bump `SWAP_VERSION` in `lib/swap.sh` and add the new version's
+digest to `swap_pinned_digests()` in the same commit — the digest is the point
+of the pin, and a version without one silently downgrades to trusting upstream:
+
+```bash
+V=250
+curl -sfL https://github.com/mostlygeek/llama-swap/releases/download/v$V/llama-swap_${V}_checksums.txt \
+  | grep linux_amd64
+```
+
+**Rolling back.** The binary that was replaced is kept next to the new one, so
+the fastest path needs no network:
+
+```bash
+sudo mv /usr/local/bin/llama-swap.previous /usr/local/bin/llama-swap
+```
+
+Or reinstall a known version, verified the same way as any other:
+
+```bash
+LLAMA_SWAP_VERSION=v248 ./40-serve.sh
+```
+
+A source-built binary records `built from source at <tag> (digest recorded, not
+verified)`. Go builds are not bit-identical across toolchains, so its digest is
+a record of what was produced, not evidence that it matches anything.
+
 ## Configuration
 
 Everything is derived from detected hardware, and everything is overridable by
