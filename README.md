@@ -79,8 +79,10 @@ There are **two tables**, and the split is the point.
 active parameters, architecture, native context, licence, capabilities and
 quant preferences. Every row was checked against the publisher's own repository
 or model card, and carries the `fact_method` used, a `fact_source` URL you can
-open, and the `verified_at` date. The catalog is capped at 15 rows — it is
-curated by hand, and a longer list cannot be kept honest.
+open, and the `verified_at` date. The catalog is capped at 17 rows — it is
+curated by hand, and a longer list cannot be kept honest. The cap can be
+raised, but not quietly: `CATALOG_MAX_ROWS` carries the date and reason for
+every change, and past roughly twenty the answer is to retire rows instead.
 
 `catalog_ratings()` holds *judgements*: how good a model is at coding, with a
 `rating_value`, `rating_date`, `rating_method`, `rating_source` and
@@ -130,6 +132,53 @@ Validate the table at any time:
 ```bash
 bash -c 'source lib/models.sh; catalog_validate || printf "%s" "$CATALOG_ERRORS"'
 ```
+
+### Laguna, and what a mirror is not
+
+Two rows were added on 2026-08-12: **Laguna XS 2.1** (33.4B total, 2.7B active,
+262k context) and **Laguna S 2.1** (117.6B total, 7.8B active, 1M context),
+both MoE, both `openmdw-1.1`. Four things about them are worth stating, because
+each is a place the table's assumptions had not been tested.
+
+**They are Poolside's, not Unsloth's.** Unsloth mirrors S 2.1 as GGUF and is
+where most people meet the model, but `canonical_repo` names the original
+publisher — and Unsloth does not mirror XS 2.1 at all, so the mirror is not
+even a consistent answer. Poolside publishes GGUFs for both itself.
+
+**The active parameter counts are computed, not copied.** The names say A3B and
+A8B; `config.json` says 2.7B and 7.8B. The formula is written above
+`catalog_rows()` so you can repeat it. This matters because the speed score is
+built on the active count, and rounding it up claims the model is slower than
+it is.
+
+**Unsloth's `UD-` quants are not the plain quants they are named after.** They
+allocate bits per tensor, so `UD-Q2_K_XL` measures 2.70 bits per weight where
+plain `Q2_K` is 3.35 — a 75 GB difference on a 118B model, in the direction
+that says it fits. Only the four this repo references have bits-per-weight
+entries, each measured from the published files rather than estimated; an
+unlisted one fails loudly instead of guessing.
+
+**Their ratings are `unknown` even though a vendor number exists.** Poolside
+ships `.eval_results/swe-bench_verified.yaml` in the model repo claiming 70.9%
+resolved for XS 2.1. No other row here has a SWE-bench figure, so recording it
+would not rank Laguna against the catalog — it would rank *published a number*
+against *did not*, and the result would look like a quality judgement while
+measuring disclosure practice.
+
+One consequence to be aware of: with every coding rating still `unknown`, the
+quality term does no discriminating work, so the ranking runs on freshness,
+hardware fit, speed and features. On a 31 GB machine that makes Laguna XS 2.1
+the top `medium` pick ahead of `qwen3-coder-30b`, on metadata alone. That is
+the existing design behaving as designed, and it is an argument for finishing
+the local benchmark, not for hand-weighting the table.
+
+Running them here: XS 2.1 at `Q4_K_M` is 18.9 GiB and needs both cards
+(`-sm layer`); S 2.1 at `UD-Q4_K_XL` is 68.4 GiB and runs with the experts in
+system RAM via `-ncmoe`, which is cheap precisely because only 7.8B parameters
+are active per token. Support for the architecture reached mainline llama.cpp
+in [PR #25165](https://github.com/ggml-org/llama.cpp/pull/25165), merged
+2026-07-22 — a build older than that will not load either model. Poolside's
+DFlash speculative decoding is *not* upstream and lives only on their fork.
 
 ### Live repository metadata
 
