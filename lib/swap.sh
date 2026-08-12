@@ -31,14 +31,21 @@ _LLMRIG_SWAP_SH=1
 
 # The pinned default. Bump deliberately, together with the digest below, and
 # say so in the commit -- this is the version every fresh install gets.
+#
+# These four are read by 40-serve.sh rather than in this file, which is why
+# shellcheck cannot see a use for them. Same convention as the rest of lib/.
+# shellcheck disable=SC2034  # documented return channel, read by callers
 SWAP_VERSION="${LLAMA_SWAP_VERSION:-v249}"
 
+# shellcheck disable=SC2034  # documented return channel, read by callers
 SWAP_REPO="${LLAMA_SWAP_REPO:-mostlygeek/llama-swap}"
 # SWAP_BIN first, so a caller that has already set it -- the test suite, which
 # must never be able to reach the real /usr/local/bin -- is not overridden by
 # this default.
 SWAP_BIN="${SWAP_BIN:-${LLAMA_SWAP_BIN:-/usr/local/bin/llama-swap}}"
+# shellcheck disable=SC2034  # documented return channel, read by callers
 SWAP_API="${LLAMA_SWAP_API:-https://api.github.com}"
+# shellcheck disable=SC2034  # documented return channel, read by callers
 SWAP_DL="${LLAMA_SWAP_DL:-https://github.com}"
 
 # Digests pinned in llm-rig, for the linux_amd64 tarball of each version.
@@ -225,8 +232,10 @@ swap_verify() {
   # want the digest, so they call this in a command substitution, and a
   # subshell discards the variables the moment it ends. The variables stay for
   # a direct caller; the in-band form is the one that survives.
-  # shellcheck disable=SC2034  # documented return channel, read by callers
+  # shellcheck disable=SC2034  # both are documented return channels, read by
+  # a direct caller; the in-band form below is what survives a subshell.
   SWAP_VERIFIED_DIGEST="$actual"
+  # shellcheck disable=SC2034  # documented return channel, read by callers
   SWAP_VERIFIED_BY="$source"
   printf '%s\t%s' "$actual" "$source"
 }
