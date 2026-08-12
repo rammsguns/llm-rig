@@ -127,7 +127,7 @@ c_info "Weight budget: ${FIT_TOTAL_MB} MB split / ${FIT_SINGLE_MB} MB single-GPU
 # A tier that names a model missing from lib/catalog.sh is a bug in the tier
 # table, and it stops the run here rather than resolving to nothing after a
 # long search.
-plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB" \
+plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB" "$GPU_CC" \
   || die "${PLAN_ERROR:-could not resolve a plan for this budget}"
 c_info "Tier: $PLAN_TIER"
 

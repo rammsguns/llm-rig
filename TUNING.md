@@ -145,7 +145,27 @@ reaches equilibrium temperature.
 - **LiteLLM** — unnecessary once llama-server proved to speak Anthropic natively.
   Retained only as an automatic fallback.
 - **vLLM** — its wins are prefix caching (already have 90×) and continuous batching
-  (single user). Tensor-parallel without NVLink would run over PCIe.
+  (single user). Tensor-parallel without NVLink would run over PCIe. Re-examined
+  2026-08-12 against the hardware rather than the workload, and the hardware is the
+  stronger argument of the two:
+  - **No expert offload.** vLLM holds the whole model in VRAM; there is no
+    `--n-cpu-moe` equivalent. A 118B MoE that llama.cpp runs out of the 109 GB of
+    system RAM here does not run slower under vLLM, it does not run. On this box that
+    is the difference between having a frontier-class model and not.
+  - **sm_86 has no native FP8 and no NVFP4.** W8A8 FP8 starts at Ada (sm_89); NVFP4 is
+    Blackwell (sm_100+). An FP8 checkpoint still *loads* on Ampere, dequantized
+    weight-only through FP8 Marlin — the memory saving without the arithmetic. INT4 and
+    INT8 Marlin do work, and that is the only vLLM path here.
+  - **The two cards are not symmetric.** ~16376 and ~15352 MiB free; whichever drives
+    the desktop loses ~1 GB. Tensor parallel sizes to the smaller and assumes they
+    match.
+
+  What would change the answer: one Blackwell card with ≥48 GB. Then NVFP4 plus
+  Poolside's DFlash speculative decoding — which is *not* in mainline llama.cpp — makes
+  vLLM the better stack and llama.cpp the compromise. Until then the recommendation is
+  computed rather than assumed: `lib/runtime.sh` derives it from the detected compute
+  capability, and `00-specs.sh` prints the verdict with the capability named so the
+  claim can be checked rather than believed.
 - **Speculative decoding** — at 120 t/s the MoE is bandwidth-saturated; a draft model
   would consume VRAM better spent on KV cache.
 - **`--split-mode row`** — fails to load without P2P.

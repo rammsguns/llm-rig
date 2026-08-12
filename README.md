@@ -29,6 +29,13 @@ If you see LiteLLM in your service list, the probe failed — see
 Ollama was evaluated and rejected; the reasoning is in
 [TUNING.md § Rejected](TUNING.md#rejected-with-reasons).
 
+vLLM was too, and `00-specs.sh` re-decides it for **your** GPU rather than repeating
+the verdict for this one. Whether vLLM is worth your time turns on compute capability
+— native FP8 starts at Ada, NVFP4 at Blackwell — and on the fact that it keeps the
+whole model in VRAM, with no `--n-cpu-moe` equivalent, so a machine with far more RAM
+than VRAM gives up its largest models by switching. The report names the capability it
+read, so you can check the claim instead of believing it.
+
 ## Run order
 
 ```bash
