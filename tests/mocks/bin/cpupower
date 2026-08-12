@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Mock cpupower.
+#
+# `frequency-set -g X` really writes the sandbox governor files, rather than
+# only recording the call. A mock that merely says "yes" cannot demonstrate
+# that a revert put the previous governor back -- which is the whole subject of
+# issue #23 -- so this one models the effect the real tool has.
+set -uo pipefail
+printf 'cpupower %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+
+gov=""
+prev=""
+for a in "$@"; do
+  [[ "$prev" == "-g" || "$prev" == "--governor" ]] && { gov="$a"; break; }
+  prev="$a"
+done
+
+if [[ -n "$gov" ]]; then
+  for f in "${OSTUNE_ROOT:-}"/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    [[ -f "$f" ]] || continue
+    printf '%s\n' "$gov" >"$f" 2>/dev/null || true
+  done
+fi
+exit 0
