@@ -32,8 +32,11 @@ _LLMRIG_SWAP_SH=1
 # The pinned default. Bump deliberately, together with the digest below, and
 # say so in the commit -- this is the version every fresh install gets.
 #
-# These four are read by 40-serve.sh rather than in this file, which is why
-# shellcheck cannot see a use for them. Same convention as the rest of lib/.
+# These four are read by 40-serve.sh rather than in this file, so the linter
+# sees no use for them here. Same convention as the rest of lib/.
+#
+# Note the wording: a comment line may not BEGIN with the word shellcheck, or
+# it is parsed as a directive and fails with SC1072/SC1073.
 # shellcheck disable=SC2034  # documented return channel, read by callers
 SWAP_VERSION="${LLAMA_SWAP_VERSION:-v249}"
 
