@@ -344,11 +344,48 @@ test_the_breakdown_shows_a_real_rating_when_one_exists() {
 # --- ranking ----------------------------------------------------------------
 
 test_ranking_groups_by_size_class_largest_first() {
-  local classes
+  # Asserted as an INVARIANT over whatever classes the catalog produces, not as
+  # a fixed list of three. The fixed list was really an assertion that no
+  # catalogued model is unrunnable at 20 GB with no offload, which was true
+  # until a 117.6B row existed and then failed here rather than where the
+  # assumption lived.
+  #
+  # The contract score_rank documents is: each class appears once, as a
+  # contiguous group, in this order. Unsupported last, so a user can see why a
+  # model they expected is missing.
+  local canonical=" large medium small unsupported " classes c pos prev=0 seen=" "
   classes="$(score_rank 20000 | cut -f1 | uniq)"
-  assert_eq "$classes" "large
-medium
-small" "classes must appear in size order, not alphabetically"
+  [[ -n "$classes" ]] || { _fail "score_rank emitted nothing"; return 1; }
+
+  while IFS= read -r c; do
+    [[ "$seen" != *" $c "* ]] \
+      || { _fail "class '$c' appears in two separate groups -- not contiguous"; return 1; }
+    seen+="$c "
+
+    # Position of this class within the canonical order.
+    pos=0
+    case "$c" in
+      large) pos=1 ;; medium) pos=2 ;; small) pos=3 ;; unsupported) pos=4 ;;
+      *) _fail "unknown size class '$c' (expected one of:$canonical)"; return 1 ;;
+    esac
+    (( pos > prev )) \
+      || { _fail "class '$c' came after a later class -- got: $(tr '\n' ' ' <<<"$classes")"; return 1; }
+    prev="$pos"
+  done <<<"$classes"
+  return 0
+}
+
+test_a_model_too_big_for_ram_and_vram_is_unsupported_not_merely_large() {
+  # The catalog now contains a model that genuinely does not fit a 20 GB card
+  # with nothing to offload into, which is what makes the branch above
+  # reachable with real data rather than only with a synthetic table.
+  local no_offload with_offload
+  no_offload="$(score_rank 20000 0 | awk -F'\t' '$3 == "laguna-s-2.1" { print $1 }')"
+  assert_eq "$no_offload" "unsupported" "117.6B on a 20 GB card with no RAM to spill into" || return 1
+
+  # Same card, but with system RAM for the experts: it becomes merely large.
+  with_offload="$(score_rank 20000 96000 | awk -F'\t' '$3 == "laguna-s-2.1" { print $1 }')"
+  assert_ne "$with_offload" "unsupported" "the same model with 96 GB of offload must be runnable"
 }
 
 test_scores_descend_within_each_class() {
@@ -460,9 +497,13 @@ test_ties_on_score_and_popularity_fall_back_to_the_id() {
 }
 
 test_the_best_per_class_is_the_head_of_each_group() {
-  local best full
+  local best full want
   best="$(score_best_per_class 20000)"
-  assert_eq "$(printf '%s\n' "$best" | wc -l)" "3" "one line per size class" || return 1
+  # One line per class the ranking actually produced -- checked against the
+  # ranking rather than against a hardcoded 3, which silently encoded "this
+  # catalog has no unrunnable model" into a test about grouping.
+  want="$(score_rank 20000 | cut -f1 | sort -u | wc -l)"
+  assert_eq "$(printf '%s\n' "$best" | wc -l)" "$want" "one line per size class" || return 1
   full="$(score_rank 20000 | awk -F'\t' '$1=="medium" { print; exit }')"
   assert_contains "$best" "$(printf '%s' "$full" | cut -f3)" \
     "the medium winner must match the top of the medium group"
