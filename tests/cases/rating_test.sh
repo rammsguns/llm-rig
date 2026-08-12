@@ -65,7 +65,7 @@ test_the_first_four_fields_never_contain_a_separator() {
   while IFS=';' read -r id weight kind expect _; do
     [[ -n "$id" ]] || continue
     assert_matches "$weight" '^[0-9]+$' "$id weight" || return 1
-    assert_matches "$kind" '^[a-z]+$' "$id kind" || return 1
+    assert_matches "$kind" '^[a-z-]+$' "$id kind" || return 1
     assert_ne "$expect" "" "$id expect" || return 1
   done < <(rate_tasks)
 }
@@ -77,15 +77,26 @@ test_task_ids_are_unique() {
   assert_eq "$uniq" "$total" "duplicate task id"
 }
 
+RATE_KINDS=(answer tool oneword json-only diff-only)
+
 test_every_task_kind_is_one_the_grader_implements() {
-  local kind
+  local kind k ok
   while IFS= read -r kind; do
     [[ -n "$kind" ]] || continue
-    case "$kind" in
-      answer|match|json|tool) ;;
-      *) _fail "unknown task kind '$kind' -- rate_grade would return 2"; return 1 ;;
-    esac
+    ok=0
+    for k in "${RATE_KINDS[@]}"; do [[ "$kind" == "$k" ]] && { ok=1; break; }; done
+    (( ok )) || { _fail "unknown task kind '$kind' -- rate_grade would return 2"; return 1; }
   done < <(rate_tasks | cut -d';' -f3)
+}
+
+test_every_kind_the_grader_implements_is_used_by_a_task() {
+  # The other direction. An unused kind is untested code in the one place
+  # where untested code decides whether a model passed.
+  local k used
+  used="$(rate_tasks | cut -d';' -f3 | sort -u)"
+  for k in "${RATE_KINDS[@]}"; do
+    printf '%s\n' "$used" | grep -qxF "$k" || { _fail "kind '$k' is implemented but unused"; return 1; }
+  done
 }
 
 test_tool_tasks_are_weighted_double() {
@@ -172,8 +183,118 @@ test_a_negated_answer_does_not_pass() {
 }
 
 test_answers_are_case_insensitive() {
+  run rate_grade regex-match "$(text_response "No")"
+  assert_ok "No matches no"
+}
+
+# --- grading: the strict format kinds ---------------------------------------
+# These three tasks ARE the format check. Everything the lenient normaliser
+# forgives -- prose, fences, quotes, trailing punctuation -- must fail here,
+# or the suite claims to measure output-format compliance while measuring
+# nothing of the sort.
+
+test_oneword_accepts_exactly_the_word() {
+  run rate_grade format-oneword "$(text_response "bash")"
+  assert_ok "the bare word" || return 1
   run rate_grade format-oneword "$(text_response "Bash")"
-  assert_ok "Bash matches bash"
+  assert_ok "case is not a formatting failure" || return 1
+  run rate_grade format-oneword "$(text_response $'  bash\n')"
+  assert_ok "surrounding whitespace is transport, not prose"
+}
+
+test_oneword_rejects_a_sentence_a_fence_or_punctuation() {
+  local bad
+  for bad in \
+    "It is bash." \
+    "bash." \
+    'The answer is bash' \
+    '`bash`' \
+    '"bash"' \
+    $'```\nbash\n```' \
+    $'bash\n\nIt renames the files.' \
+    "shell script"
+  do
+    run rate_grade format-oneword "$(text_response "$bad")"
+    assert_fails "must reject [$bad]" || return 1
+  done
+}
+
+test_oneword_does_not_go_through_the_lenient_normaliser() {
+  # The regression the review caught: the last-line normaliser turns
+  # "Let me think.\n\nbash." into "bash", so a task whose entire subject is
+  # formatting passed on a response that ignored the format.
+  run rate_grade format-oneword "$(text_response $'Let me think.\n\nbash.')"
+  assert_fails "prose plus a punctuated answer" || return 1
+  # ... and the same response would still pass a lenient answer task, which is
+  # what makes the two kinds different rather than one of them wrong.
+  assert_eq "$(rate_normalise_answer $'Let me think.\n\nbash.')" "bash" \
+    "the normaliser itself is unchanged, and still lenient by design"
+}
+
+test_json_only_requires_a_bare_object() {
+  run rate_grade format-json "$(text_response '{"language":"python","functions":["parse"]}')"
+  assert_ok "a bare object" || return 1
+  run rate_grade format-json "$(text_response $'\n  {"language":"python","functions":["parse"]}  \n')"
+  assert_ok "surrounding whitespace only"
+}
+
+test_json_only_rejects_a_fence_or_any_prose() {
+  local bad
+  for bad in \
+    $'```json\n{"language":"python","functions":["parse"]}\n```' \
+    $'```\n{"language":"python","functions":["parse"]}\n```' \
+    'Here it is: {"language":"python","functions":["parse"]}' \
+    $'{"language":"python","functions":["parse"]}\n\nLet me know if you need more.' \
+    '[{"language":"python","functions":["parse"]}]'
+  do
+    run rate_grade format-json "$(text_response "$bad")"
+    assert_fails "must reject [$bad]" || return 1
+  done
+}
+
+test_json_only_still_checks_the_content() {
+  run rate_grade format-json "$(text_response '{"language":"ruby","functions":["parse"]}')"
+  assert_fails "well-formatted and wrong is still wrong"
+}
+
+test_diff_only_accepts_a_diff_and_nothing_else() {
+  run rate_grade format-diff "$(text_response $'--- a.txt\n+++ b.txt\n@@ -1 +1 @@\n-foo\n+bar')"
+  assert_ok "a clean unified diff" || return 1
+  run rate_grade format-diff \
+    "$(text_response $'diff --git a/a.txt b/a.txt\nindex 1234567..89abcde 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-foo\n+bar')"
+  assert_ok "git-style headers are still only a diff"
+}
+
+test_diff_only_rejects_a_preamble_or_a_trailing_explanation() {
+  # A model that cannot suppress its preamble cannot be trusted to emit a
+  # patch a tool will apply.
+  run rate_grade format-diff \
+    "$(text_response $'Here is the diff you asked for:\n\n--- a.txt\n+++ b.txt\n@@ -1 +1 @@\n-foo\n+bar')"
+  assert_fails "preamble" || return 1
+  run rate_grade format-diff \
+    "$(text_response $'--- a.txt\n+++ b.txt\n@@ -1 +1 @@\n-foo\n+bar\n\nThat replaces foo with bar.')"
+  assert_fails "trailing explanation" || return 1
+  run rate_grade format-diff \
+    "$(text_response $'```diff\n--- a.txt\n+++ b.txt\n@@ -1 +1 @@\n-foo\n+bar\n```')"
+  assert_fails "a fence is not diff syntax"
+}
+
+test_diff_only_requires_the_change_to_be_made() {
+  # Structure alone is not enough: a well-formed diff that does not add the
+  # line asked for did not do the task.
+  run rate_grade format-diff "$(text_response $'--- a.txt\n+++ b.txt\n@@ -1 +1 @@\n-foo\n+baz')"
+  assert_fails "the wrong replacement" || return 1
+  run rate_grade format-diff "$(text_response $'--- a.txt\n+++ b.txt\n@@ -1 +1 @@\n-foo\n+ bar')"
+  assert_fails "an added line that is not exactly +bar"
+}
+
+test_no_strict_kind_calls_the_lenient_normaliser() {
+  # Structural, so a future edit cannot quietly reintroduce the bug: the
+  # normaliser may be referenced only by the `answer` branch.
+  local body
+  body="$(sed -n '/^rate_grade()/,/^}/p' "$REPO_ROOT/lib/rate.sh")"
+  assert_eq "$(grep -c 'rate_normalise_answer' <<<"$body")" "1" \
+    "exactly one call, in the answer branch"
 }
 
 # --- grading: tools ---------------------------------------------------------
@@ -212,31 +333,9 @@ test_a_tool_call_among_several_blocks_passes() {
 
 # --- grading: json and shape ------------------------------------------------
 
-test_a_bare_json_object_passes() {
-  run rate_grade format-json "$(text_response '{"language":"python","functions":["parse"]}')"
-  assert_ok "bare JSON"
-}
-
-test_a_fenced_json_object_passes() {
-  run rate_grade format-json "$(text_response $'```json\n{"language":"python","functions":["parse"]}\n```')"
-  assert_ok "fenced JSON"
-}
-
-test_json_with_the_wrong_content_fails() {
-  run rate_grade format-json "$(text_response '{"language":"ruby","functions":["parse"]}')"
-  assert_fails "wrong language"
-}
-
 test_json_task_fails_on_unparseable_output() {
   run rate_grade format-json "$(text_response 'It is python, with one function called parse.')"
   assert_fails "prose is not JSON"
-}
-
-test_a_unified_diff_passes_and_prose_does_not() {
-  run rate_grade format-diff "$(text_response $'--- a.txt\n+++ b.txt\n@@ -1 +1 @@\n-foo\n+bar')"
-  assert_ok "a real diff" || return 1
-  run rate_grade format-diff "$(text_response 'Change foo to bar in a.txt.')"
-  assert_fails "a description of a diff"
 }
 
 test_the_diff_task_requires_a_hunk_header() {
@@ -425,6 +524,127 @@ test_an_unrated_model_still_scores_at_the_neutral_50() {
   assert_eq "$(score_coding qwen3-4b)" "50" "unknown means neutral, not zero"
 }
 
+# --- runtime identity -------------------------------------------------------
+# A rating is only reproducible if you know what was running. The served alias
+# does not say which quant, which llama.cpp build, or which context produced
+# it -- the same alias fronts different weights after any re-run of
+# 30-models.sh. Every field is read from something that exists, or is the
+# string `unavailable`; none is inferred from another.
+
+# A config in the shape 40-serve.sh generates.
+write_cfg() {
+  mkdir -p "$RIG_DIR/etc"
+  cat >"$RIG_DIR/etc/llama-swap.yaml" <<'CFG'
+startPort: 9100
+models:
+  "qwen3-4b":
+    # Qwen3-4B-Q5_K_M.gguf  (~2835 MB) -- pinned to GPU0
+    cmd: |
+      CUDA_VISIBLE_DEVICES=0 llama-server ${base}
+      -m /models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf
+    ttl: 900
+    aliases: ["qwen3-4b-local"]
+
+  "qwen3-coder-30b-a3b-instruct":
+    cmd: |
+      llama-server ${base}
+      -m /models/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
+      --tensor-split 0.5,0.5 --n-cpu-moe 7
+    ttl: 900
+    aliases: ["qwen3-coder-30b-a3b-instruct-local"]
+CFG
+  printf '%s' "$RIG_DIR/etc/llama-swap.yaml"
+}
+
+test_the_weights_come_from_the_config_not_the_catalog() {
+  local cfg; cfg="$(write_cfg)"
+  assert_eq "$(rate_swap_gguf "$cfg" qwen3-4b)" \
+    "/models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf" "the -m path"
+}
+
+test_one_model_cannot_borrow_another_models_weights() {
+  # The parse has to stop at the next model key. If it runs on, every model
+  # after the first reports the first one's file.
+  local cfg; cfg="$(write_cfg)"
+  assert_eq "$(rate_swap_gguf "$cfg" qwen3-coder-30b-a3b-instruct)" \
+    "/models/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf" \
+    "the second model's own weights"
+}
+
+test_an_unknown_model_or_missing_config_is_unavailable_not_a_guess() {
+  local cfg; cfg="$(write_cfg)"
+  assert_eq "$(rate_swap_gguf "$cfg" not-served)" "unavailable" "unknown model" || return 1
+  assert_eq "$(rate_swap_gguf "$SANDBOX/nope.yaml" qwen3-4b)" "unavailable" "no config"
+}
+
+test_the_quant_is_read_off_the_file_on_disk() {
+  # Not from the catalog's preference: that is what was ASKED for, and the
+  # reason to record it at all is that the two can differ.
+  assert_eq "$(rate_quant_of /models/x/Qwen3-4B-Q5_K_M.gguf)" "Q5_K_M" "K quant" || return 1
+  assert_eq "$(rate_quant_of Devstral-Small-2507-IQ4_XS.gguf)" "IQ4_XS" "I quant" || return 1
+  assert_eq "$(rate_quant_of model-Q8_0.gguf)" "Q8_0" "legacy quant" || return 1
+  assert_eq "$(rate_quant_of some-model-BF16.gguf)" "BF16" "unquantised"
+}
+
+test_a_filename_with_no_quant_is_unavailable() {
+  assert_eq "$(rate_quant_of /models/mystery.gguf)" "unavailable" "no quant in the name" || return 1
+  assert_eq "$(rate_quant_of unavailable)" "unavailable" "an unavailable path stays unavailable"
+}
+
+test_the_per_model_serving_flags_are_recorded() {
+  local cfg flags; cfg="$(write_cfg)"
+  flags="$(rate_swap_flags "$cfg" qwen3-coder-30b-a3b-instruct)"
+  assert_contains "$flags" "--n-cpu-moe 7" "offload level" || return 1
+  assert_contains "$flags" "--tensor-split 0.5,0.5" "split" || return 1
+  assert_not_contains "$flags" "-m /models" "the weights are recorded on their own line"
+}
+
+test_a_pinned_gpu_counts_as_a_serving_flag() {
+  # CUDA_VISIBLE_DEVICES changes what the measurement measures as surely as
+  # any --flag does.
+  local cfg; cfg="$(write_cfg)"
+  assert_contains "$(rate_swap_flags "$cfg" qwen3-4b)" "CUDA_VISIBLE_DEVICES=0" "pinning"
+}
+
+test_the_llamacpp_revision_is_read_from_the_build_record() {
+  printf 'abc1234def\n' >"$RIG_DIR/.llamacpp-rev"
+  assert_eq "$(rate_llamacpp_rev "$RIG_DIR")" "abc1234def" "the recorded commit" || return 1
+  rm -f "$RIG_DIR/.llamacpp-rev"
+  assert_eq "$(rate_llamacpp_rev "$RIG_DIR")" "unavailable" "no build record"
+}
+
+test_the_live_context_is_matched_to_the_model_being_rated() {
+  # With several models loaded, taking the first server that answers records
+  # some other model's context. That is worse than recording nothing.
+  local cfg; cfg="$(write_cfg)"
+  {
+    printf '*\t127.0.0.1:9100/props\t200\t{"model_path":"/models/other/Other-Q4_K_M.gguf","default_generation_settings":{"n_ctx":8192}}\n'
+    printf '*\t127.0.0.1:9101/props\t200\t{"model_path":"/models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf","default_generation_settings":{"n_ctx":65536}}\n'
+  } >"$MOCK_ROUTES"
+  assert_eq "$(rate_live_ctx "$cfg" /models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf)" "65536" \
+    "the context of the server serving these weights"
+}
+
+test_no_matching_upstream_means_unavailable() {
+  local cfg; cfg="$(write_cfg)"
+  printf '*\t/props\t200\t{"model_path":"/models/other/Other-Q4_K_M.gguf","default_generation_settings":{"n_ctx":8192}}\n' >"$MOCK_ROUTES"
+  assert_eq "$(rate_live_ctx "$cfg" /models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf)" "unavailable" \
+    "another model's 8192 must not be recorded as this one's"
+}
+
+test_no_props_at_all_means_unavailable() {
+  local cfg; cfg="$(write_cfg)"
+  : >"$MOCK_ROUTES"
+  assert_eq "$(rate_live_ctx "$cfg" /models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf)" "unavailable" \
+    "nothing answered"
+}
+
+test_unavailable_weights_cannot_produce_a_live_context() {
+  local cfg; cfg="$(write_cfg)"
+  printf '*\t/props\t200\t{"model_path":"/models/x.gguf","default_generation_settings":{"n_ctx":8192}}\n' >"$MOCK_ROUTES"
+  assert_eq "$(rate_live_ctx "$cfg" unavailable)" "unavailable" "nothing to match against"
+}
+
 # --- the artifact -----------------------------------------------------------
 
 write_artifact() {
@@ -476,8 +696,16 @@ test_curl_appears_in_exactly_one_function() {
   # Same rule as lib/hfmeta.sh: if the network call is in one place, every
   # other function can be tested without a server, and the suite behaves
   # identically inside tests/isolated.sh.
-  assert_eq "$(grep -c 'curl ' "$REPO_ROOT/lib/rate.sh")" "1" \
-    "curl belongs in rate_call and nowhere else"
+  #
+  # Counted by function rather than by line: _rate_http invokes curl twice,
+  # once per method, and that is still one place. What must not happen is a
+  # second function growing its own call.
+  local everywhere inside
+  everywhere="$(grep -c '^[[:space:]]*code=$(curl' "$REPO_ROOT/lib/rate.sh")"
+  inside="$(sed -n '/^_rate_http()/,/^}/p' "$REPO_ROOT/lib/rate.sh" \
+            | grep -c '^[[:space:]]*code=$(curl')"
+  assert_eq "$everywhere" "$inside" "every curl call must be inside _rate_http" || return 1
+  assert_gt "$inside" "0" "and _rate_http must actually make one"
 }
 
 test_a_call_posts_to_v1_messages_and_returns_the_body() {
@@ -536,6 +764,41 @@ test_the_script_writes_an_artifact_and_a_pasteable_row() {
   with_rating "$row"
   run catalog_validate
   assert_ok "the printed row must validate: ${CATALOG_ERRORS:-}"
+}
+
+test_the_artifact_records_what_was_actually_running() {
+  write_cfg >/dev/null
+  printf 'abc1234def\n' >"$RIG_DIR/.llamacpp-rev"
+  serve_model 6
+  # /props answers for the weights the config names, so the live context is
+  # establishable rather than unavailable.
+  printf '*\t127.0.0.1:9100/props\t200\t{"model_path":"/models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf","default_generation_settings":{"n_ctx":65536}}\n' \
+    >>"$MOCK_ROUTES"
+  drive ""
+  assert_ok "the run must complete: $RUN_OUTPUT" || return 1
+
+  local art
+  art="$(cat "$(rate_latest_artifact "$HOME")")"
+  assert_contains "$art" "llama.cpp revision: abc1234def" "the build" || return 1
+  assert_contains "$art" "weights: Qwen3-4B-Q5_K_M.gguf" "the file on disk" || return 1
+  assert_contains "$art" "quant: Q5_K_M" "the quant it was served at" || return 1
+  assert_contains "$art" "CUDA_VISIBLE_DEVICES=0" "the serving flags" || return 1
+  assert_contains "$art" "live n_ctx: 65536" "what the server reported" || return 1
+  assert_contains "$art" "quant=Q5_K_M" "and the RESULT line carries the quant"
+}
+
+test_missing_runtime_identity_is_marked_not_omitted() {
+  # No config, no build record, no /props. Every field must say so: a blank
+  # is indistinguishable from a field nobody thought to record.
+  serve_model 6
+  drive ""
+  assert_ok "the run must still complete" || return 1
+  local art
+  art="$(cat "$(rate_latest_artifact "$HOME")")"
+  assert_contains "$art" "llama.cpp revision: unavailable" "no build record" || return 1
+  assert_contains "$art" "weights: unavailable" "no config" || return 1
+  assert_contains "$art" "quant: unavailable" "nothing to derive it from" || return 1
+  assert_contains "$art" "live n_ctx: unavailable" "nothing answered /props"
 }
 
 test_a_model_that_answers_everything_wrong_still_produces_a_row() {

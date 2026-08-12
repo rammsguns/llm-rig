@@ -82,6 +82,8 @@ fi
 
 # --- run --------------------------------------------------------------------
 
+CFG="${LLAMA_SWAP_CFG:-$RIG_DIR/etc/llama-swap.yaml}"
+
 {
   printf 'llm-rig local coding rating  %s\n' "$STAMP"
   printf 'suite: v%s (%s tasks, total weight %s)\n' "$RATE_SUITE_VERSION" "$NTASKS" "$TOTAL_W"
@@ -89,6 +91,12 @@ fi
   printf 'sampling: temperature=%s seed=%s max_tokens=%s repeats=%s\n' \
     "$RATE_TEMPERATURE" "$RATE_SEED" "$RATE_MAX_TOKENS" "$RATE_REPEATS"
   printf 'grading: text only. No model output is executed.\n'
+  # Runtime identity. A rating is only reproducible if you know what was
+  # running: the served alias does not say which quant, which llama.cpp build
+  # or which context produced it. Anything that cannot be read is recorded as
+  # `unavailable` rather than guessed.
+  printf 'llama.cpp revision: %s\n' "$(rate_llamacpp_rev "$RIG_DIR")"
+  printf 'llama-swap config: %s\n' "$( [[ -f "$CFG" ]] && printf '%s' "$CFG" || printf '%s' "$RATE_UNAVAILABLE" )"
   printf '\n'
 } > "$ARTIFACT"
 
@@ -103,10 +111,19 @@ while IFS= read -r served; do
     cid=""
   fi
 
-  c_info "$served${cid:+  (catalog: $cid)}"
+  # Read before the suite runs, except the live context: that needs the model
+  # loaded, which the first task does.
+  gguf="$(rate_swap_gguf "$CFG" "$served")"
+  quant="$(rate_quant_of "$gguf")"
+  flags="$(rate_swap_flags "$CFG" "$served")"
+
+  c_info "$served${cid:+  (catalog: $cid)}  quant=$quant"
   {
     printf 'model: %s\n' "$served"
     printf 'catalog-id: %s\n' "${cid:-none}"
+    printf '  weights: %s\n' "$( [[ "$gguf" == "$RATE_UNAVAILABLE" ]] && printf '%s' "$gguf" || printf '%s' "${gguf##*/}" )"
+    printf '  quant: %s\n' "$quant"
+    printf '  serving flags: %s\n' "$flags"
   } >> "$ARTIFACT"
 
   got_w=0; answered=0; flips=0
@@ -153,8 +170,13 @@ while IFS= read -r served; do
   value="$(rate_value "$got_w" "$TOTAL_W")"
   conf="$(rate_confidence "$answered" "$NTASKS" "$RATE_REPEATS" "$flips")"
 
-  printf 'RESULT %s value=%s weight=%s/%s answered=%s/%s flips=%s confidence=%s\n\n' \
-    "${cid:-$served}" "$value" "$got_w" "$TOTAL_W" "$answered" "$NTASKS" "$flips" "$conf" \
+  # Now, while the model is still loaded, ask the server what it actually has.
+  # /props is the only source for this; the config says what was asked for.
+  ctx="$(rate_live_ctx "$CFG" "$gguf")"
+  printf '  live n_ctx: %s\n' "$ctx" >> "$ARTIFACT"
+
+  printf 'RESULT %s value=%s quant=%s weight=%s/%s answered=%s/%s flips=%s confidence=%s\n\n' \
+    "${cid:-$served}" "$value" "$quant" "$got_w" "$TOTAL_W" "$answered" "$NTASKS" "$flips" "$conf" \
     >> "$ARTIFACT"
 
   c_ok "$served  value=$value  weight=$got_w/$TOTAL_W  confidence=$conf"

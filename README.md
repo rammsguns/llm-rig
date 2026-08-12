@@ -311,6 +311,9 @@ things about it are deliberate and constrain what it can claim:
   Claude Code backend. Tool tasks carry double weight, and all three tools are
   offered on every one of them, so a model that always calls the first tool
   fails two of the three.
+- **Format tasks are graded strictly; comprehension tasks are not.** The
+  distinction is deliberate and is what makes "obey an output format" a claim
+  the score actually measures — see the table below.
 - **It is comparable across models on your machine and nowhere else.** That is
   the comparison the ranking needs, and it is why the method is called
   `local-benchmark` rather than `benchmark`.
@@ -318,11 +321,50 @@ things about it are deliberate and constrain what it can claim:
   on one machine does not settle how good a model is at coding. A single pass
   is `low`; two clean repeats are `medium`; `high` is not reachable from here.
 
+#### Two grading regimes, on purpose
+
+| Kind | Tasks | Graded on |
+| --- | --- | --- |
+| `answer` | 6 | The last non-empty line, normalised. Fences, quotes, trailing punctuation and preceding prose are stripped: the question is whether the model knows the answer. |
+| `tool` | 3 | A `tool_use` block satisfying a jq filter. Wrapping text is irrelevant — the block either exists with the right arguments or it does not. |
+| `oneword` | 1 | **The whole response.** Trimmed of surrounding whitespace, it must be exactly the word. A fence, a full stop or a sentence around it is the failure being measured. |
+| `json-only` | 1 | **The whole response.** It must parse as a JSON object on its own — no fence, no prose — and satisfy a jq filter. |
+| `diff-only` | 1 | **The whole response.** At least one `@@` hunk header, every non-empty line valid diff syntax, and the required line present. A preamble fails. |
+
+The lenient normaliser would otherwise turn `Let me think.\n\nbash.` into
+`bash` and pass a task whose entire subject is formatting. A strict kind may
+not call it at all, and a test enforces that structurally, so the bug cannot
+come back quietly. A model that cannot suppress its preamble cannot be trusted
+to emit a patch a tool will apply — that is the thing `diff-only` measures.
+
 Sampling is pinned — temperature 0, fixed seed — and `--repeats` is what checks
 that the pinning held. A task that does not give the same verdict every time
 counts as unstable, and one unstable task drops the whole run to `low`: a model
 that answers differently at temperature 0 is telling you the measurement is
 not stable.
+
+#### The artifact records what was running
+
+A served alias does not identify a runtime. `qwen3-4b` fronts whatever GGUF
+`30-models.sh` last downloaded, built by whatever `20-build-llamacpp.sh` last
+compiled, at whatever context `40-serve.sh` last configured — so two runs that
+disagree could otherwise produce the same catalog row. Each run therefore
+records:
+
+| Field | Read from |
+| --- | --- |
+| llama.cpp revision | `.llamacpp-rev`, written by the build |
+| weights | the `-m` path in the generated `llama-swap.yaml`, per model |
+| quant | the filename **on disk**, not the catalog's preference — the reason to record it is that the two can differ |
+| serving flags | the per-model flags in the same config, including `CUDA_VISIBLE_DEVICES` |
+| live `n_ctx` | `/props` on the upstream serving *those* weights |
+
+Anything that cannot be read is written as `unavailable`. The live context is
+matched by model path rather than taken from the first server that answers:
+with several models loaded, the first answer is some other model's context,
+and recording that is worse than recording nothing. The quant also appears on
+the `RESULT` line, so two ratings taken at different quants cannot be compared
+by accident.
 
 The script **does not edit the catalog**. It prints rows to paste:
 
