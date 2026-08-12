@@ -181,6 +181,23 @@ Both scripts take `--dry-run`, which needs no `sudo` and changes nothing:
 ./19-os-revert.sh --dry-run   # everything that would be put back
 ```
 
+## Reproducibility of the stack itself
+
+The measurements on this page describe a specific pair of binaries. `llama.cpp`
+is built from a revision recorded in `.llamacpp-rev`, and **llama-swap is
+pinned** to a version whose SHA-256 is recorded in `lib/swap.sh` — it used to be
+whatever `releases/latest` returned that day, unverified, so two rebuilds of the
+"same" stack could differ in a component sitting directly in the request path.
+
+Neither pin is a claim that a newer version is worse. It is a claim that when a
+number on this page changes, it should be possible to tell whether the workload
+changed or the software did.
+
+The same reasoning runs the other way for the OS settings above: pinning the
+software is only half of a reproducible measurement if the machine underneath it
+has drifted, which is why `19-os-revert.sh` restores what was captured rather
+than what the defaults are supposed to be.
+
 ## Known rough edges
 
 - **The single-card trick has no candidate.** See [Models](#models).
