@@ -151,6 +151,36 @@ reaches equilibrium temperature.
 - **`--split-mode row`** — fails to load without P2P.
 - **Power capping** — measured strictly worse on this chassis.
 
+## Rolling the OS tuning back
+
+Every setting on this page is applied by `10-os-tune.sh`, and every one of them
+is captured **before** it is changed, to `/var/lib/llm-rig/os-tune.state`
+(root-owned, `0600`). `19-os-revert.sh` restores from that capture and from
+nothing else.
+
+That matters most for the settings whose "default" is not a fixed value:
+
+| Setting | What the old revert wrote | What it should be |
+| --- | --- | --- |
+| CPU governor | `schedutil`, always | Whatever each CPU had — which on a laptop under `system76-power` is not necessarily the same across cores |
+| THP | `madvise`, always | Whatever the machine had; `never` is a legitimate prior state and used to be silently changed to `madvise` |
+| GPU power limit | The **maximum** | The captured limit. Restoring the maximum *raises* the cap on a machine that had deliberately lowered it — the opposite of a rollback |
+| GPU persistence | Off | Whatever it was. A box running `nvidia-persistenced` already had it on |
+| `/etc/sysctl.d/99-llm-inference.conf` | `rm -f` | Removed only if llm-rig created it and it still holds what llm-rig wrote; a pre-existing file is restored byte for byte from a backup |
+
+The power-limit case is the one worth dwelling on, because this page is the
+reason the tuning sets it at all: the measurements below conclude that 100% is
+right *for this chassis*. Someone who read them, disagreed, and capped their
+card at 120W would have had that decision quietly undone by a revert that
+"restored" the maximum.
+
+Both scripts take `--dry-run`, which needs no `sudo` and changes nothing:
+
+```bash
+./10-os-tune.sh --dry-run     # every intended mutation, with its current value
+./19-os-revert.sh --dry-run   # everything that would be put back
+```
+
 ## Reproducibility of the stack itself
 
 The measurements on this page describe a specific pair of binaries. `llama.cpp`
@@ -162,6 +192,11 @@ whatever `releases/latest` returned that day, unverified, so two rebuilds of the
 Neither pin is a claim that a newer version is worse. It is a claim that when a
 number on this page changes, it should be possible to tell whether the workload
 changed or the software did.
+
+The same reasoning runs the other way for the OS settings above: pinning the
+software is only half of a reproducible measurement if the machine underneath it
+has drifted, which is why `19-os-revert.sh` restores what was captured rather
+than what the defaults are supposed to be.
 
 ## Known rough edges
 

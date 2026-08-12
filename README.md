@@ -37,6 +37,7 @@ chmod +x *.sh
 source ~/.bashrc
 ./00-specs.sh            # read-only. writes ~/llm-specs.txt, prints the tier plan
 ./10-os-tune.sh          # sudo. GPU persistence, power, governor, THP, sysctls
+                         #   --dry-run first if you want to see the plan
 ./20-build-llamacpp.sh   # compiles for your compute capability. 5–20 min. out-of-tree
 ./30-models.sh           # resolves + downloads 3 GGUFs matched to your budget
 ./40-serve.sh            # llama-swap config + systemd + firewall
@@ -59,7 +60,7 @@ claude
 | `./71-verify-runtime.sh` | Query the **running** server's `/props` — confirms live `n_ctx`, flash-attn, KV cache types. Trust this over the config file. Grades its evidence; see below. |
 | `./70-thermal-sweep.sh` | Re-derive the best power limit for your chassis under a heat-soaked load. |
 | `./80-try-bigger.sh <hf-repo> [quant]` | Assess, download, auto-tune `--n-cpu-moe` and benchmark a model **larger than VRAM**. Empirically finds the lowest working offload level. `--list` sizes it without downloading. |
-| `./19-os-revert.sh` | Undo `10-os-tune.sh`. |
+| `./19-os-revert.sh` | Undo `10-os-tune.sh`, restoring the values captured before it ran — not assumed defaults. See [Rollback](#what-reversible-means). |
 
 `80-try-bigger.sh` exists because with lots of system RAM, an MoE far larger than VRAM is
 viable — attention stays on the GPU, expert tensors go to CPU, and only a few billion
@@ -78,8 +79,10 @@ There are **two tables**, and the split is the point.
 active parameters, architecture, native context, licence, capabilities and
 quant preferences. Every row was checked against the publisher's own repository
 or model card, and carries the `fact_method` used, a `fact_source` URL you can
-open, and the `verified_at` date. The catalog is capped at 15 rows — it is
-curated by hand, and a longer list cannot be kept honest.
+open, and the `verified_at` date. The catalog is capped at 17 rows — it is
+curated by hand, and a longer list cannot be kept honest. The cap can be
+raised, but not quietly: `CATALOG_MAX_ROWS` carries the date and reason for
+every change, and past roughly twenty the answer is to retire rows instead.
 
 `catalog_ratings()` holds *judgements*: how good a model is at coding, with a
 `rating_value`, `rating_date`, `rating_method`, `rating_source` and
@@ -129,6 +132,53 @@ Validate the table at any time:
 ```bash
 bash -c 'source lib/models.sh; catalog_validate || printf "%s" "$CATALOG_ERRORS"'
 ```
+
+### Laguna, and what a mirror is not
+
+Two rows were added on 2026-08-12: **Laguna XS 2.1** (33.4B total, 2.7B active,
+262k context) and **Laguna S 2.1** (117.6B total, 7.8B active, 1M context),
+both MoE, both `openmdw-1.1`. Four things about them are worth stating, because
+each is a place the table's assumptions had not been tested.
+
+**They are Poolside's, not Unsloth's.** Unsloth mirrors S 2.1 as GGUF and is
+where most people meet the model, but `canonical_repo` names the original
+publisher — and Unsloth does not mirror XS 2.1 at all, so the mirror is not
+even a consistent answer. Poolside publishes GGUFs for both itself.
+
+**The active parameter counts are computed, not copied.** The names say A3B and
+A8B; `config.json` says 2.7B and 7.8B. The formula is written above
+`catalog_rows()` so you can repeat it. This matters because the speed score is
+built on the active count, and rounding it up claims the model is slower than
+it is.
+
+**Unsloth's `UD-` quants are not the plain quants they are named after.** They
+allocate bits per tensor, so `UD-Q2_K_XL` measures 2.70 bits per weight where
+plain `Q2_K` is 3.35 — a 75 GB difference on a 118B model, in the direction
+that says it fits. Only the four this repo references have bits-per-weight
+entries, each measured from the published files rather than estimated; an
+unlisted one fails loudly instead of guessing.
+
+**Their ratings are `unknown` even though a vendor number exists.** Poolside
+ships `.eval_results/swe-bench_verified.yaml` in the model repo claiming 70.9%
+resolved for XS 2.1. No other row here has a SWE-bench figure, so recording it
+would not rank Laguna against the catalog — it would rank *published a number*
+against *did not*, and the result would look like a quality judgement while
+measuring disclosure practice.
+
+One consequence to be aware of: with every coding rating still `unknown`, the
+quality term does no discriminating work, so the ranking runs on freshness,
+hardware fit, speed and features. On a 31 GB machine that makes Laguna XS 2.1
+the top `medium` pick ahead of `qwen3-coder-30b`, on metadata alone. That is
+the existing design behaving as designed, and it is an argument for finishing
+the local benchmark, not for hand-weighting the table.
+
+Running them here: XS 2.1 at `Q4_K_M` is 18.9 GiB and needs both cards
+(`-sm layer`); S 2.1 at `UD-Q4_K_XL` is 68.4 GiB and runs with the experts in
+system RAM via `-ncmoe`, which is cheap precisely because only 7.8B parameters
+are active per token. Support for the architecture reached mainline llama.cpp
+in [PR #25165](https://github.com/ggml-org/llama.cpp/pull/25165), merged
+2026-07-22 — a build older than that will not load either model. Poolside's
+DFlash speculative decoding is *not* upstream and lives only on their fork.
 
 ### Live repository metadata
 
@@ -547,10 +597,54 @@ only if you know why the check is wrong.
 
 ## Rollback
 
-- OS tuning: `./19-os-revert.sh`
+- OS tuning: `./19-os-revert.sh` — see [what "reversible" means](#what-reversible-means) below
 - Services: `sudo systemctl disable --now llama-swap` (and `litellm`, if present)
 - Ollama: weights were moved to `~/.ollama.removed-<date>` and
   `~/ollama-models.removed-<date>`, not deleted
+
+### What "reversible" means
+
+`10-os-tune.sh` captures the **effective prior value of every setting it
+changes**, one at a time, immediately before changing it. The capture goes to
+`/var/lib/llm-rig/os-tune.state`, root-owned and `0600`. `19-os-revert.sh`
+restores from that file and from nothing else.
+
+This is a stronger claim than the one this README used to make. The old revert
+wrote fixed defaults — `THP=madvise`, `governor=schedutil`, power at maximum,
+persistence off — and `rm -f`'d three paths under `/etc` it had never proven it
+owned. On a machine that already had a governor policy, a THP setting, or its
+own `99-llm-inference.conf`, that was not a rollback. It was a second round of
+configuration, and in the file case a deletion of somebody else's work.
+
+| Rule | What it prevents |
+| --- | --- |
+| Capture happens before the first mutation, per setting | A crash halfway through still leaves an exact record of what changed |
+| Capture is append-once | A second tune re-recording *llm-rig's own* values as the ones to restore — which turns the rollback into a no-op |
+| A pre-existing file is backed up byte for byte before being overwritten, and restored byte for byte | Losing configuration that was there first |
+| A file that cannot be backed up is not overwritten at all | Overwriting something we could not preserve |
+| A file we wrote is deleted only if it still holds what we wrote | Deleting your edits — an edit is a claim of ownership |
+| Per-CPU governors are captured and restored individually | Flattening a machine that deliberately ran different governors on different cores |
+| An unreadable prior value is recorded as `unknown` and never "restored" | Substituting a guess for a value nobody read |
+
+Both scripts take `--dry-run`, which prints every intended mutation with its
+current value and needs no `sudo`:
+
+```bash
+./10-os-tune.sh --dry-run
+./19-os-revert.sh --dry-run
+```
+
+```
+  THP enabled                        madvise -> always
+  governor cpu0                      schedutil -> performance
+  GPU 0 power limit (W)              140 (already set)
+  /etc/sysctl.d/99-llm-inference.conf  YOURS -> backed up, then overwritten
+```
+
+Reverting twice is a no-op rather than an error, and a revert that could not
+finish keeps the state file so a later run can complete it. If a setting cannot
+be restored, that is reported and the exit status is non-zero — the one thing
+this must never do is report success for a rollback that did not happen.
 
 ## License
 
@@ -558,4 +652,6 @@ only if you know why the check is wrong.
 
 Note that `10-os-tune.sh` takes `sudo` and changes system state — GPU power and
 persistence, CPU governor, transparent hugepages, and sysctls. Read it before running
-it, as you should with any script that asks for root. `19-os-revert.sh` undoes it.
+it, as you should with any script that asks for root. `./10-os-tune.sh --dry-run` prints
+everything it would change without using `sudo` at all, and `19-os-revert.sh` puts back the
+values it captured — see [what that guarantees](#what-reversible-means).
