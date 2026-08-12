@@ -64,10 +64,14 @@ du -sh "$HOME/ollama-models" 2>/dev/null || true
 # 30-models.sh uses. Previously this section read an undefined $TIER, which
 # under `set -u` aborted the report right here -- and its hardcoded copy had
 # drifted into recommending models that are never downloaded.
-if (( BUDGET_OK )) && plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB"; then
+if (( BUDGET_OK )) && plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB" "$GPU_CC"; then
   c_info "Recommended plan for tier: $PLAN_TIER  (usable budget ${FIT_TOTAL_MB} MB)"
   printf '  %s\n\n' "$PLAN_NOTE"
-  printf '  Runtime: %s\n\n' "$PLAN_RUNTIME"
+  printf '  Runtime: %s\n' "$PLAN_RUNTIME"
+  # Printed as its own line rather than folded into the runtime sentence: it is
+  # a judgement about an alternative this rig does not use, and it is the line
+  # most likely to be wrong first, as new hardware ships.
+  printf '  %s\n\n' "$PLAN_VLLM"
   echo "  Models ./30-models.sh will fetch for this machine:"
   echo
   printf '    %-2s %-32s %-14s %8s %-6s %-7s %-11s %s\n' \

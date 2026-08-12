@@ -15,6 +15,9 @@ _LLMRIG_MODELS_SH=1
 # shellcheck source=lib/catalog.sh
 source "$(dirname "${BASH_SOURCE[0]}")/catalog.sh"
 
+# shellcheck source=lib/runtime.sh
+source "$(dirname "${BASH_SOURCE[0]}")/runtime.sh"
+
 # A quant preference is an ORDERED alternation: "IQ3_XXS|Q3_K_S" means "take
 # IQ3_XXS if the repo has it, otherwise Q3_K_S".
 #
@@ -115,10 +118,18 @@ quant_include_pattern() {
 # report still advertised models that were never downloaded, and in two cases
 # never existed.
 #
-#   plan_for_budget <fit_total_mb> [moe_offload_mb]
+#   plan_for_budget <fit_total_mb> [moe_offload_mb] [gpu_cc]
 #
 # Sets PLAN_TIER, PLAN_SEARCH_{1,2,3}, PLAN_Q_{1,2,3}, PLAN_RUNTIME, PLAN_NOTE,
-# and PLAN_MOE_NOTE.
+# PLAN_MOE_NOTE and PLAN_VLLM.
+#
+# gpu_cc is the GPU compute capability ("8.6"), and it is a separate argument
+# from the budget because it answers a separate question. The tier decides
+# WHICH MODELS fit; the capability decides WHICH RUNTIME can exploit them. The
+# two used to be conflated -- every tier carried a hardcoded opinion about
+# vLLM, sized on VRAM alone -- and on a 31 GB Ampere pair that produced advice
+# that was confidently wrong. See lib/runtime.sh. Omitted, PLAN_VLLM says the
+# capability was not assessed rather than guessing at one.
 #
 # Thresholds are on FIT_TOTAL_MB -- usable VRAM after the KV reserve -- not on
 # installed VRAM. Sizing off installed memory is what once recommended a 49 GB
@@ -129,7 +140,7 @@ quant_include_pattern() {
 # budget decision rather than a property of the model: the same 30B MoE wants
 # IQ3 on a 8 GB card and Q6_K on a 48 GB one.
 plan_for_budget() {
-  local fit_total="$1" moe_offload="${2:-0}"
+  local fit_total="$1" moe_offload="${2:-0}" gpu_cc="${3:-}"
   # Cleared up front so a failure two calls ago cannot be read back as this
   # call's diagnosis. Read by 00-specs.sh and 30-models.sh, which shellcheck
   # cannot see from inside this file.
@@ -141,7 +152,7 @@ plan_for_budget() {
     PLAN_ID_1="qwen3-coder-30b"; PLAN_Q_1="IQ3_XXS|Q3_K_S"
     PLAN_ID_2="qwen3-4b";        PLAN_Q_2="Q5_K_M"
     PLAN_ID_3="qwen3-1.7b";      PLAN_Q_3="Q8_0"
-    PLAN_RUNTIME="llama.cpp + llama-swap. vLLM is not viable -- it needs the whole model resident."
+    PLAN_RUNTIME="llama.cpp + llama-swap."
     PLAN_NOTE="Claude Code needs 32k context minimum, and the KV cache at that length
   will take a large share of this card. The primary pick is a MoE precisely
   because only ~3B params are active per token, so CPU expert offload stays
@@ -170,7 +181,7 @@ plan_for_budget() {
     PLAN_ID_1="qwen3-coder-30b"; PLAN_Q_1="Q6_K|Q5_K_M"
     PLAN_ID_2="qwen3-32b";       PLAN_Q_2="Q5_K_M"
     PLAN_ID_3="devstral-small";  PLAN_Q_3="Q5_K_M"
-    PLAN_RUNTIME="llama.cpp + llama-swap now; vLLM is worth measuring once you settle on one model."
+    PLAN_RUNTIME="llama.cpp + llama-swap."
     PLAN_NOTE="Enough headroom to spend it on quantization quality rather than more
   parameters -- a higher quant of a right-sized model beats a squeezed larger one."
 
@@ -179,9 +190,16 @@ plan_for_budget() {
     PLAN_ID_1="llama-3.3-70b";   PLAN_Q_1="IQ4_XS|Q4_K_S"
     PLAN_ID_2="qwen3-coder-30b"; PLAN_Q_2="Q6_K"
     PLAN_ID_3="qwen3-32b";       PLAN_Q_3="Q5_K_M"
-    PLAN_RUNTIME="vLLM with prefix caching is worth evaluating at this scale; llama.cpp + llama-swap still works."
+    PLAN_RUNTIME="llama.cpp + llama-swap."
     PLAN_NOTE="Large enough to run a frontier-class open model resident."
   fi
+
+  # The runtime advice, computed rather than hardcoded per tier. Kept out of
+  # PLAN_RUNTIME so a caller can print or suppress it independently: it is a
+  # judgement about an alternative, where PLAN_RUNTIME states what this rig
+  # actually uses.
+  # shellcheck disable=SC2034  # documented return channel, read by callers
+  PLAN_VLLM="$(vllm_advice "$gpu_cc" "$fit_total" "$moe_offload")"
 
   # With plenty of system RAM, a MoE far larger than VRAM is viable via
   # --n-cpu-moe, because only the active experts must be resident.
@@ -223,7 +241,7 @@ plan_for_budget() {
 
   # These are the function's return values -- callers read them. Exporting
   # states that contract (and is what detect_hw already does for its outputs).
-  export PLAN_TIER PLAN_RUNTIME PLAN_NOTE PLAN_MOE_NOTE \
+  export PLAN_TIER PLAN_RUNTIME PLAN_NOTE PLAN_MOE_NOTE PLAN_VLLM \
          PLAN_ID_1 PLAN_ID_2 PLAN_ID_3 \
          PLAN_SEARCH_1 PLAN_SEARCH_2 PLAN_SEARCH_3 \
          PLAN_REPO_1 PLAN_REPO_2 PLAN_REPO_3 \

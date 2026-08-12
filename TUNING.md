@@ -145,7 +145,37 @@ reaches equilibrium temperature.
 - **LiteLLM** — unnecessary once llama-server proved to speak Anthropic natively.
   Retained only as an automatic fallback.
 - **vLLM** — its wins are prefix caching (already have 90×) and continuous batching
-  (single user). Tensor-parallel without NVLink would run over PCIe.
+  (single user). Tensor-parallel without NVLink would run over PCIe. Re-examined
+  2026-08-12 against the hardware rather than the workload, and the hardware is the
+  stronger argument of the two:
+  - **No expert offload.** vLLM holds the whole model in VRAM; there is no
+    `--n-cpu-moe` equivalent. A 118B MoE that llama.cpp runs out of the 109 GB of
+    system RAM here does not run slower under vLLM, it does not run. On this box that
+    is the difference between having a frontier-class model and not.
+  - **sm_86 has no native FP8 and no NVFP4.** FP8 has two floors, not one, and they
+    are easy to conflate. Native W8A8 arithmetic starts at Ada (sm_89); *loading* an
+    FP8 checkpoint works from sm_75 (Turing) upward, dequantized weight-only through
+    FP8 Marlin as W8A16 — the memory saving without the arithmetic. Ampere sits above
+    the loading floor and below the compute one, so INT4/INT8 Marlin plus weight-only
+    FP8 is the whole vLLM menu here. NVFP4 is Blackwell (sm_100+).
+    ([vLLM FP8 docs](https://docs.vllm.ai/en/stable/features/quantization/fp8/))
+  - **The two cards are not symmetric.** ~16376 and ~15352 MiB free; whichever drives
+    the desktop loses ~1 GB. Tensor parallel sizes to the smaller and assumes they
+    match.
+
+  What would change the answer: one Blackwell card with ≥48 GB. Both halves are load
+  bearing. NVFP4 without the capacity is a faster way to run a model small enough to
+  be the wrong model — vLLM must hold the whole thing resident, so kernels alone never
+  carry the argument. Then NVFP4 plus Poolside's DFlash speculative decoding — which is
+  *not* in mainline llama.cpp — makes vLLM the better stack and llama.cpp the
+  compromise.
+
+  Until then the recommendation is computed rather than assumed: `lib/runtime.sh`
+  derives it from the detected compute capability *and* the weight-resident budget,
+  and `00-specs.sh` prints the verdict with the capability named so the claim can be
+  checked rather than believed. The 48 GB gate there is measured on the budget left
+  for weights after the KV reserve, which makes it stricter than a 48 GB sticker
+  price — deliberate, since nobody here has run a Blackwell box.
 - **Speculative decoding** — at 120 t/s the MoE is bandwidth-saturated; a draft model
   would consume VRAM better spent on KV cache.
 - **`--split-mode row`** — fails to load without P2P.
