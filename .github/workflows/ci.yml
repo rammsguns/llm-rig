@@ -18,13 +18,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install ShellCheck
+      - name: Install ShellCheck and jq
+        # jq is installed HERE, before the isolated run, and not inside it:
+        # the no-network step has no route to a package mirror, so a missing
+        # dependency there would surface as an unrelated test failure.
         run: |
-          if ! command -v shellcheck >/dev/null 2>&1; then
+          missing=()
+          command -v shellcheck >/dev/null 2>&1 || missing+=(shellcheck)
+          command -v jq >/dev/null 2>&1 || missing+=(jq)
+          if (( ${#missing[@]} )); then
             sudo apt-get update -qq
-            sudo apt-get install -y -qq shellcheck
+            sudo apt-get install -y -qq "${missing[@]}"
           fi
           shellcheck --version
+          jq --version
 
       - name: Show environment
         run: |

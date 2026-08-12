@@ -99,6 +99,40 @@ Validate the table at any time:
 bash -c 'source lib/models.sh; catalog_validate || printf "%s" "$CATALOG_ERRORS"'
 ```
 
+### Live repository metadata
+
+[`lib/hfmeta.sh`](lib/hfmeta.sh) fetches the things that actually change —
+downloads, likes, when the GGUF repository was last touched, and the real file
+inventory with per-shard sizes. Results are cached under `HF_HOME` for 24
+hours, so a normal session makes no repeated API calls.
+
+Every load reports where its data came from, because a download count from
+last month should not be presented as current:
+
+| `HFMETA_SOURCE` | Meaning |
+| --- | --- |
+| `fresh` | Just fetched from the API. |
+| `cached` | From the cache, inside the 24-hour TTL. |
+| `stale` | The network was unreachable, so an **expired** entry was used. |
+| `missing` | Nothing cached and no network — no figures are reported at all. |
+
+Offline, the rig degrades to `stale` and keeps working. With nothing cached it
+reports no numbers rather than inventing them.
+
+Note the naming: everything here is `gguf_repo_created` / `gguf_repo_last_modified`.
+Those are the **quantizer's** dates, not the model's. Quantizers re-upload
+whenever they rebuild, so a GGUF repo's `lastModified` routinely runs a year
+ahead of the model inside it — for the fixture in the test suite, 14 months.
+Model age comes from the catalog's `release_date` and from nowhere else.
+
+```bash
+# Inspect what the rig knows about a repo
+bash -c 'source lib/hfmeta.sh; hfmeta_summary unsloth/Qwen3-4B-GGUF; echo'
+
+# Force a refresh
+bash -c 'source lib/hfmeta.sh; hfmeta_cache_clear'
+```
+
 ## Configuration
 
 Everything is derived from detected hardware, and everything is overridable by

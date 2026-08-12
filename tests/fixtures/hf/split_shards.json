@@ -1,0 +1,15 @@
+{
+  "id": "unsloth/Llama-3.3-70B-Instruct-GGUF",
+  "author": "unsloth",
+  "likes": 903,
+  "downloads": 412300,
+  "createdAt": "2024-12-07T11:00:00.000Z",
+  "lastModified": "2026-08-01T08:30:00.000Z",
+  "tags": ["gguf"],
+  "siblings": [
+    { "rfilename": "README.md", "size": 6120 },
+    { "rfilename": "Llama-3.3-70B-Instruct-IQ4_XS-00001-of-00002.gguf", "size": 21474836480 },
+    { "rfilename": "Llama-3.3-70B-Instruct-IQ4_XS-00002-of-00002.gguf", "size": 17179869184 },
+    { "rfilename": "Llama-3.3-70B-Instruct-Q4_K_S.gguf", "size": 40802189312 }
+  ]
+}
