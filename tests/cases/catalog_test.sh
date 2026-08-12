@@ -749,5 +749,111 @@ test_every_row_cites_a_source_on_the_publishers_own_domain() {
   return 0
 }
 
+# --- the Laguna rows --------------------------------------------------------
+# These two are the first rows whose publisher is not one of the four the
+# catalog started with, the first under a licence other than the usual set, and
+# the first to use a quantizer's dynamic quant names. Each of those is a place
+# the table's assumptions could quietly not hold.
+
+test_laguna_is_attributed_to_poolside_not_to_its_quantizer() {
+  # The likeliest wrong edit here: Unsloth mirrors Laguna S 2.1 as GGUF and is
+  # where most people first meet the model, so `unsloth/...` reads as the
+  # obvious repo. canonical_repo means the ORIGINAL publisher, and Unsloth does
+  # not mirror XS 2.1 at all, so the mirror is not even a consistent answer.
+  assert_eq "$(catalog_get laguna-xs-2.1 canonical_repo)" "poolside/Laguna-XS-2.1" "XS publisher" || return 1
+  assert_eq "$(catalog_get laguna-s-2.1  canonical_repo)" "poolside/Laguna-S-2.1"  "S publisher"  || return 1
+
+  # And the fact_source with it: citing the mirror would make the row
+  # unverifiable against the publisher, which is what fact_source is for.
+  local id src
+  for id in laguna-xs-2.1 laguna-s-2.1; do
+    src="$(catalog_get "$id" fact_source)"
+    [[ "$src" != *unsloth* ]] \
+      || { _fail "$id cites the Unsloth mirror ($src) as its source of fact"; return 1; }
+  done
+  return 0
+}
+
+test_laguna_facts_match_the_publishers_config() {
+  # Every number here is re-checkable with one curl against the fact_source.
+  assert_eq "$(catalog_get laguna-xs-2.1 params_b)" "33.4"    "XS total params"  || return 1
+  assert_eq "$(catalog_get laguna-xs-2.1 context)"  "262144"  "XS context"       || return 1
+  assert_eq "$(catalog_get laguna-s-2.1  params_b)" "117.6"   "S total params"   || return 1
+  assert_eq "$(catalog_get laguna-s-2.1  context)"  "1048576" "S context"        || return 1
+  assert_eq "$(catalog_get laguna-s-2.1  license)"  "openmdw-1.1" "S licence, as declared"
+}
+
+test_laguna_active_params_are_computed_not_copied_from_the_name() {
+  # The names say A3B and A8B. config.json says 2.7B and 7.8B, and the speed
+  # score is only as good as this number. A row that rounds up here claims the
+  # model is slower than it is.
+  assert_eq "$(catalog_get laguna-xs-2.1 active_params_b)" "2.7" "XS active" || return 1
+  assert_eq "$(catalog_get laguna-s-2.1  active_params_b)" "7.8" "S active"
+}
+
+test_laguna_size_estimates_match_the_published_gguf_bytes() {
+  # The estimator is only trustworthy if it agrees with reality, and these two
+  # rows are the check: measured totals from the GGUF repos on 2026-08-12 are
+  # 20,274 MB (XS Q4_K_M) and 73,395 MB (S UD-Q4_K_XL). Both must land within
+  # 3%, which is tighter than any decision made on the number.
+  local id quant want est lo hi
+  while read -r id quant want; do
+    est="$(catalog_est_size_mb "$id" "$quant")" || { _fail "no estimate for $id at $quant"; return 1; }
+    lo=$(( want * 97 / 100 )); hi=$(( want * 103 / 100 ))
+    (( est >= lo && est <= hi )) \
+      || { _fail "$id at $quant estimated $est MB, measured $want MB -- outside 3%"; return 1; }
+  done <<'MEASURED'
+laguna-xs-2.1 Q4_K_M     20274
+laguna-s-2.1  UD-Q4_K_XL 73395
+MEASURED
+  return 0
+}
+
+test_ud_quants_are_not_confused_with_their_plain_namesakes() {
+  # Unsloth's dynamic quants allocate bits per tensor, so UD-Q2_K_XL is 2.70
+  # bpw where plain Q2_K is 3.35. Reusing the plain figure would misestimate
+  # Laguna S by tens of gigabytes -- in the direction that says it fits.
+  local ud plain
+  ud="$(catalog_quant_bpw_x100 UD-Q2_K_XL)"
+  plain="$(catalog_quant_bpw_x100 Q2_K)"
+  assert_ne "$ud" "$plain" "UD-Q2_K_XL must not inherit Q2_K's bits-per-weight" || return 1
+  assert_lt "$ud" "$plain" "the dynamic quant is the smaller of the two"
+}
+
+test_an_unmeasured_ud_quant_fails_rather_than_guessing() {
+  # Only the four UD quants this repo references are listed. An unlisted one
+  # must fail, not fall through to a plausible default -- sizing a 70 GB
+  # download off an invented number is the failure this table exists to avoid.
+  if catalog_quant_bpw_x100 UD-Q5_K_XL >/dev/null 2>&1; then
+    _fail "UD-Q5_K_XL is not measured here and must not return a bits-per-weight"
+    return 1
+  fi
+  return 0
+}
+
+test_a_row_may_name_a_single_quant_with_no_fallback() {
+  # Poolside publishes exactly two GGUFs of XS 2.1 -- Q4_K_M and BF16 -- so the
+  # row has no second preference. An alternation is the norm, not a
+  # requirement, and inventing an IQ4_XS fallback that the repo does not carry
+  # would make select_quant_file match some other file instead of failing.
+  assert_eq "$(catalog_get laguna-xs-2.1 quant_prefs)" "Q4_K_M" "no fallback, because there is none" || return 1
+  assert_eq "$(catalog_preferred_quant laguna-xs-2.1)" "Q4_K_M" "and it resolves" || return 1
+  quant_pattern_valid "Q4_K_M" || { _fail "a single-alternative pattern must be valid"; return 1; }
+  return 0
+}
+
+test_laguna_ratings_stay_unknown_despite_a_published_vendor_number() {
+  # Poolside ships .eval_results/swe-bench_verified.yaml claiming 70.9% for XS.
+  # No other row in this catalog has a SWE-bench figure, so recording it would
+  # rank disclosure practice rather than quality. The rule has to hold when
+  # there IS a number available, or it is not a rule.
+  local id
+  for id in laguna-xs-2.1 laguna-s-2.1; do
+    assert_eq "$(catalog_rating_get "$id" rating_value)"  "unknown" "$id rating" || return 1
+    assert_eq "$(catalog_rating_get "$id" rating_method)" "none"    "$id method" || return 1
+  done
+  return 0
+}
+
 run_suite
 suite_exit

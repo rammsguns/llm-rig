@@ -445,5 +445,27 @@ test_selecting_fewer_than_three_models_downloads_fewer_than_three() {
     "and must not read past the end of the selection arrays"
 }
 
+test_the_menu_cap_is_not_lower_than_the_catalog_cap() {
+  # selector_build drops everything past SELECT_MAX_LISTED without saying so.
+  # While the two caps are equal that is unreachable; if the catalog cap is
+  # ever raised alone, catalogued models would vanish from the only list a user
+  # sees, and no existing test would notice. This is that test.
+  (( SELECT_MAX_LISTED >= CATALOG_MAX_ROWS )) || {
+    _fail "SELECT_MAX_LISTED ($SELECT_MAX_LISTED) is below CATALOG_MAX_ROWS ($CATALOG_MAX_ROWS): \
+$(( CATALOG_MAX_ROWS - SELECT_MAX_LISTED )) catalogued model(s) could never be offered"
+    return 1
+  }
+  return 0
+}
+
+test_every_runnable_catalogue_row_reaches_the_menu() {
+  # The invariant above, exercised against the real catalog on hardware that
+  # can run all of it: menu entries plus unsupported entries must account for
+  # every row, with nothing lost to the cap in between.
+  selector_build 26000 102000 || { _fail "selector_build produced nothing"; return 1; }
+  local shown=$(( ${#SELECT_ROWS[@]} + ${#SELECT_UNSUPPORTED[@]} ))
+  assert_eq "$shown" "$(catalog_count)" "every catalog row is either offered or explained"
+}
+
 run_suite
 suite_exit
