@@ -109,7 +109,11 @@ CATALOG_FACT_METHODS=(hf-api card-stated vendor-blog derived)
 #
 #   none             no comparable evidence; rating_value must be "unknown"
 #   vendor-benchmark a number the publisher reports for its own model
-#   local-benchmark  measured on this machine by lib/bench.sh
+#   local-benchmark  measured on this machine by 61-rate-models.sh, against
+#                    the suite in lib/rate.sh, at the quant this rig serves.
+#                    Comparable across models HERE and nowhere else, which is
+#                    the comparison the ranking needs. Its source is the
+#                    artifact basename, not a URL -- see the validator.
 CATALOG_RATING_METHODS=(none vendor-benchmark local-benchmark)
 
 CATALOG_RATING_CONFIDENCE=(none low medium high)
@@ -650,8 +654,26 @@ catalog_validate_ratings_into() {
         || errs+="rating row $n ($id): method '$method' claims evidence but value is unknown"$'\n'
       [[ "$conf" != "none" ]] \
         || errs+="rating row $n ($id): method '$method' claims evidence but confidence is 'none'"$'\n'
-      [[ "$source" == https://* ]] \
-        || errs+="rating row $n ($id): rating_source '$source' must be an https URL"$'\n'
+      # What counts as a source depends on the method, because the two kinds of
+      # evidence live in different places. A vendor benchmark is published and
+      # must be linkable. A local benchmark is a file in the runner's own
+      # $HOME -- there is no URL for it, and inventing an https address so the
+      # field validates would be a fabrication in the one column whose whole
+      # job is to say where a number came from.
+      #
+      # `file:<basename>`, not an absolute path: the artifact is in the $HOME
+      # of whoever ran it, and a path from someone else's machine would not
+      # resolve on yours. The basename is what you look for in your own.
+      case "$method" in
+        local-benchmark)
+          [[ "$source" == file:*.txt && "$source" != *"/"* ]] \
+            || errs+="rating row $n ($id): rating_source '$source' must be 'file:<artifact>.txt' -- a basename under \$HOME, produced by 61-rate-models.sh"$'\n'
+          ;;
+        *)
+          [[ "$source" == https://* ]] \
+            || errs+="rating row $n ($id): rating_source '$source' must be an https URL"$'\n'
+          ;;
+      esac
       if [[ ! "$rdate" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || ! date -d "$rdate" +%Y-%m-%d >/dev/null 2>&1; then
         errs+="rating row $n ($id): rating_date '$rdate' is not a real ISO date"$'\n'
       fi

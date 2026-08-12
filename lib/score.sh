@@ -209,20 +209,29 @@ score_trust() {
 # than collapsed, because they fail independently:
 #
 #   facts    the catalog row was confirmed against the publisher
-#   rating   a coding rating exists, with a method and a source behind it
+#   rating   a coding rating exists, and the rating itself is not `low`
 #   live     download counts and file listings are current, not stale or absent
 #
 #   3 of 3  high      2  medium      0 or 1  low
+#
+# The rating counts only at `medium` or better, and that qualifier is
+# load-bearing. 61-rate-models.sh returns `low` for a single unrepeated pass,
+# or when any task errored -- exactly the runs that establish least. Counting
+# those the same as a repeated, complete measurement would let a hurried run
+# raise the confidence of the ranking it feeds.
 #
 # Today every row has verified facts and no rating, so a model with current
 # live data reaches medium and no further. That ceiling is deliberate: nothing
 # should report high confidence while a quarter of the weight rests on a
 # neutral placeholder.
 score_confidence() {
-  local id="$1" live_source="${2:-missing}" value evidence=0
+  local id="$1" live_source="${2:-missing}" value rconf evidence=0
   catalog_facts_verified "$id" && evidence=$(( evidence + 1 ))
   value="$(catalog_rating_get "$id" rating_value)" || return 1
-  [[ "$value" != "unknown" ]] && evidence=$(( evidence + 1 ))
+  rconf="$(catalog_rating_get "$id" rating_confidence)" || return 1
+  if [[ "$value" != "unknown" && ( "$rconf" == "medium" || "$rconf" == "high" ) ]]; then
+    evidence=$(( evidence + 1 ))
+  fi
   case "$live_source" in fresh|cached) evidence=$(( evidence + 1 )) ;; esac
 
   if   (( evidence >= 3 )); then printf 'high'
