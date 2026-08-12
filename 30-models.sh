@@ -5,12 +5,20 @@
 # so this doesn't rot and doesn't depend on me guessing a repo path. It prints
 # candidates and picks the best match; override with:
 #   PICK_1=unsloth/Some-Repo-GGUF ./30-models.sh
+#
+# Models are chosen from a ranked menu. To run without prompting, give menu
+# positions:
+#   MODEL_SELECTION=1,3 ./30-models.sh
 set -uo pipefail
 RIG_SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # BASH_SOURCE, not $0: this file is sourced by the fixture tests, where $0
 # is the test runner rather than this script.
 source "$RIG_SRC_DIR/lib/detect.sh"
 source "$RIG_SRC_DIR/lib/models.sh"
+# The ranked menu and the answer-parsing. Kept in a library because that is the
+# part worth testing, and it cannot be tested from inside a script whose next
+# step downloads tens of gigabytes.
+source "$RIG_SRC_DIR/lib/select.sh"
 # Search HF for GGUF repos matching a name, preferring known-good quantizers.
 # Tries progressively looser search terms, because exact model naming (hyphens,
 # dots, version suffixes) varies between publishers and a strict query returns
@@ -123,32 +131,71 @@ plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB" \
   || die "${PLAN_ERROR:-could not resolve a plan for this budget}"
 c_info "Tier: $PLAN_TIER"
 
-# Printed from the same catalog rows 00-specs.sh reads, so the report and the
-# download cannot describe different models.
-echo
-printf '  %-2s %-32s %-14s %8s %-6s %s\n' '#' MODEL QUANT 'EST MB' ARCH LICENCE
-for n in 1 2 3; do
-  s="PLAN_SEARCH_$n"; q="PLAN_Q_$n"; sz="PLAN_SIZE_$n"; a="PLAN_ARCH_$n"; l="PLAN_LICENSE_$n"
-  printf '  %-2s %-32s %-14s %8s %-6s %s\n' \
-    "$n." "${!s}" "${!q}" "${!sz}" "${!a}" "${!l}"
-done
-echo "  (estimated sizes, from parameter count and bits-per-weight)"
-echo
-# Arrays rather than SEARCH_1/2/3 + ${!indirect}: same behaviour, but the data
-# flow is visible to a reader (and to ShellCheck) instead of being assembled
-# from variable names at runtime.
-SEARCHES=("$PLAN_SEARCH_1" "$PLAN_SEARCH_2" "$PLAN_SEARCH_3")
-QUANTS=("$PLAN_Q_1" "$PLAN_Q_2" "$PLAN_Q_3")
-
 if [[ -n "$PLAN_MOE_NOTE" ]]; then
   c_info "${RAM_GB}GB RAM detected"
   printf '     %s\n' "$PLAN_MOE_NOTE" >&2
 fi
 
+# --- the ranked menu --------------------------------------------------------
+# Every catalog model, scored against THIS machine's budget and grouped into
+# hardware-relative classes. The tier plan above still sets the quant for each
+# class; what changed is that the user picks the models rather than being given
+# three.
+echo
+selector_build "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB" \
+  || die "no model in the catalog can run within a ${FIT_TOTAL_MB} MB weight budget.
+     Lower the context with CTX=32768 to free some of the KV reserve, or add VRAM."
+selector_render "$FIT_TOTAL_MB"
+
+# MODEL_SELECTION preselects without prompting, which is what makes this script
+# usable from a script. Set it to menu positions: MODEL_SELECTION=1,3
+DEFAULT_SELECTION="$(selector_default_selection)"
+echo
+if [[ -n "${MODEL_SELECTION:-}" ]]; then
+  c_info "MODEL_SELECTION=$MODEL_SELECTION (chosen without prompting)"
+  selector_parse "$MODEL_SELECTION" || die "MODEL_SELECTION is invalid: $SELECT_ERROR"
+else
+  # An empty answer takes the recommendation. Re-prompting is bounded: a
+  # non-interactive run with no MODEL_SELECTION reaches EOF, and looping on
+  # that would spin forever rather than fail.
+  while :; do
+    read -rp "Choose up to $SELECT_MAX_PICKS models by number [default $DEFAULT_SELECTION]: " answer || answer=""
+    [[ -n "${answer// /}" ]] || answer="$DEFAULT_SELECTION"
+    selector_parse "$answer" && break
+    c_warn "$SELECT_ERROR"
+    [[ -t 0 ]] || die "no usable selection, and stdin is not a terminal to ask again"
+  done
+fi
+
+# Recorded so a run can be reproduced exactly, and exported because the later
+# stages of the rig read it.
+MODEL_SELECTION="$(IFS=,; printf '%s' "${SELECT_PICKS[*]}")"
+export MODEL_SELECTION
+c_ok "selection: $MODEL_SELECTION"
+
+# Arrays rather than SEARCH_1/2/3 + ${!indirect}: same behaviour, but the data
+# flow is visible to a reader (and to ShellCheck) instead of being assembled
+# from variable names at runtime.
+SEARCHES=(); QUANTS=()
+for n in "${SELECT_PICKS[@]}"; do
+  id="$(selector_id_at "$n")"
+  SEARCHES+=("$(catalog_model_name "$id")")
+  # The quant comes from the ranked row, which is the best rung that fits this
+  # budget -- not from the tier table, which only knows the class.
+  QUANTS+=("$(selector_quant_at "$n")")
+  printf '    %s. %-34s %-8s %s\n' "$n" "$(catalog_model_name "$id")" \
+    "$(selector_quant_at "$n")" "$(selector_class_at "$n")"
+done
+echo
+
 # Per-pick quant overrides, then validate every expression before any network
 # work. An invalid override should fail here, not silently match nothing after
 # a long resolve.
-for i in 0 1 2; do
+# The slots are the CHOSEN models, one to three of them -- not a fixed three.
+# Iterating 0..2 over a shorter selection would read past the end of the array,
+# which under `set -u` aborts with an unbound-variable message that says
+# nothing about what the user did wrong.
+for i in "${!QUANTS[@]}"; do
   ov="Q$(( i + 1 ))_OVERRIDE"
   [[ -n "${!ov:-}" ]] && QUANTS[i]="${!ov}"
   if ! quant_pattern_valid "${QUANTS[i]}"; then
@@ -167,7 +214,7 @@ fi
 c_info "Resolving repos on HuggingFace"
 echo
 REPOS=()
-for i in 0 1 2; do
+for i in "${!SEARCHES[@]}"; do
   n=$(( i + 1 ))
   search="${SEARCHES[i]}"
   p_var="PICK_$n"
@@ -192,7 +239,7 @@ echo
 read -rp "Proceed with downloads into $MODELS_DIR? [y/N] " ok
 [[ "${ok,,}" == y ]] || { c_warn "aborted"; exit 0; }
 
-for i in 0 1 2; do
+for i in "${!SEARCHES[@]}"; do
   [[ -n "${REPOS[i]:-}" ]] || continue
   fetch "${REPOS[i]}" "${QUANTS[i]}" "Model $(( i + 1 ))" || true
 done

@@ -72,13 +72,34 @@ Model metadata lives in one place, [`lib/catalog.sh`](lib/catalog.sh), and both
 lists, which drifted: the report recommended models the downloader never
 fetched, and in two cases models that did not exist.
 
-Each row carries the canonical repository, release date, total and active
-parameters, architecture, native context, licence, capabilities, quant
-preferences, an estimated size, and a **provenance** value saying where those
-facts came from. The catalog is capped at 15 rows — it is curated by hand, and
-a longer list cannot be kept honest.
+There are **two tables**, and the split is the point.
 
-Two distinctions the schema enforces, because both have bitten this project:
+`catalog_rows()` holds *facts*: canonical repository, release date, total and
+active parameters, architecture, native context, licence, capabilities and
+quant preferences. Every row was checked against the publisher's own repository
+or model card, and carries the `fact_method` used, a `fact_source` URL you can
+open, and the `verified_at` date. The catalog is capped at 15 rows — it is
+curated by hand, and a longer list cannot be kept honest.
+
+`catalog_ratings()` holds *judgements*: how good a model is at coding, with a
+`rating_value`, `rating_date`, `rating_method`, `rating_source` and
+`rating_confidence`. These are a different kind of claim, cannot be confirmed
+the same way, and so are kept somewhere else entirely.
+
+**Every rating currently reads `unknown`, and that is the honest answer.**
+Publishers report different benchmarks, public leaderboards disagree and are
+not reproducible here, and sorting one vendor's SWE-bench figure against
+another's HumanEval figure produces an ordering that means nothing. The
+validator enforces the consequence in both directions: a value cannot be
+recorded without a method and a source behind it, and a method claiming
+evidence cannot be recorded without a value. Filling these in is the deferred
+local-benchmark work.
+
+This replaced a single `coding_score` column carrying values from 42 to 88 with
+no source, no date and no method — weighted at 25% of the recommendation.
+
+Three distinctions the schema enforces, because all three have bitten this
+project:
 
 - **`release_date` is the model's, not the GGUF repository's.** A quantizer
   re-uploads whenever they rebuild, so the repo's `lastModified` can be months
@@ -86,12 +107,22 @@ Two distinctions the schema enforces, because both have bitten this project:
   GGUF repository dates are live data and are kept under different names.
 - **Sizes are estimates**, derived from parameter count and bits-per-weight,
   and are labelled as such everywhere they surface. They answer "will this
-  fit", not "how many bytes will I download".
+  fit", not "how many bytes will I download". They are *derived* from
+  `params_b` rather than stored, so the table cannot assert a size that
+  contradicts its own parameter count.
+- **Capabilities are only what a primary source states.** `tools` means the
+  chat template implements tool calls or the card says so — not that the model
+  is probably fine at it. `-` is a legitimate answer.
 
-`provenance: unverified` means a row is believed correct but has not been
-checked against the publisher's model card. Those rows are listed in the specs
-report rather than quietly presented as fact. **Every row currently ships as
-`unverified`** — see the schema notes in the file.
+Verifying the table against the publishers corrected four classes of error, all
+of which had been feeding the recommendation:
+
+| What was wrong | Rows affected | Effect |
+|---|---|---|
+| Context length | 8 of 15 | Qwen3 dense models claimed 131072; `config.json` says 40960. Qwen2.5-Coder claimed 131072; it is 32768. Both inflated the feature score, which bands on exactly those numbers. |
+| Tool support | 2 | Gemma 3 was credited with tool calling. Its chat template has no tool branch — 40 points of feature score for a capability it does not have. |
+| Parameter counts | 15 | Marketing numbers rather than loaded weights. Qwen3-1.7B totals 2.0B once embeddings are counted. |
+| Licence identifiers | 1 | `llama-3.3` where Meta declares `llama3.3`. |
 
 Validate the table at any time:
 
@@ -133,16 +164,126 @@ bash -c 'source lib/hfmeta.sh; hfmeta_summary unsloth/Qwen3-4B-GGUF; echo'
 bash -c 'source lib/hfmeta.sh; hfmeta_cache_clear'
 ```
 
+### How models are ranked
+
+[`lib/score.sh`](lib/score.sh) scores every catalog model 0–100 against your
+actual budget, and ranks them **within** each size class rather than in one
+global list — on a small card a 4B genuinely outscores a 70B, and you still
+want to see them in separate groups.
+
+The classes are **relative to your hardware**, measured as estimated weights
+against your usable weight budget:
+
+| Class | Share of budget | Meaning |
+| --- | --- | --- |
+| Small | ≤ 40% | Fastest, leaves room for a long context and a second model. |
+| Medium | 41–80% | **Recommended.** The balance this rig is tuned for. |
+| Large | > 80% | Fits tightly, or runs by offloading and is slower. |
+| Unsupported | — | Will not run here at any quant, even with RAM to offload into. Shown, but never offered. |
+
+The same model therefore moves between classes on different machines, which is
+the entire point: Devstral Small is `large` on a 14 GB budget and `small` on a
+40 GB one. Fixed parameter-count bands could not express that — they gave an
+8 GB laptop and a 64 GB workstation the same three groups, with every "medium"
+model unrunnable on the laptop.
+
+| Component | Weight | What it measures |
+| --- | --- | --- |
+| Hardware fit | 30% | Does it run here, and with how much headroom. |
+| Coding / agent | 25% | Coding quality, from the ratings table — **neutral 50 for every model today**, because no comparable evidence exists. |
+| Tools / context | 15% | Tool use, agentic capability, usable context length. |
+| Speed | 15% | Driven by **active** parameters, plus an offload penalty. |
+| Freshness | 10% | Age of the **model** — never the GGUF repo's timestamp. |
+| Repository trust | 5% | Reputation of the account publishing the GGUF. |
+
+**Popularity carries no weight.** Download counts reward whatever has been
+popular longest, which is mostly a measure of age and of being the default in
+someone's tutorial. It is used only to break an exact tie.
+
+Every score is explainable and every score states its own confidence:
+
+```bash
+bash -c 'source lib/score.sh; score_explain qwen3-coder-30b 20000 Q4_K_M unsloth 412300 fresh'
+```
+
+```
+qwen3-coder-30b  (large, Q4_K_M, moe)
+  hardware fit              70  x 30%  =    21
+  coding / agent            50  x 25%  =    12
+  tools / context          100  x 15%  =    15
+  speed                     80  x 15%  =    12
+  freshness                 50  x 10%  =     5
+  repository trust         100  x  5%  =     5
+  TOTAL                     70
+  confidence             medium   (facts: hf-api, checked 2026-08-11; live data: fresh)
+  rating basis            none   (no comparable evidence; scored at the neutral 50)
+  popularity             412300   (tie-breaker only, no weight)
+```
+
+The printed contributions are the ones actually summed, so the breakdown always
+reconciles with the total. The two provenance lines are separate because the
+claims are: the facts behind the size and the context are confirmed against the
+publisher, the rating behind a quarter of the weight is not.
+
+Confidence counts three independent kinds of evidence — verified facts, a
+sourced rating, and current live data. Three of three is `high`, two is
+`medium`, fewer is `low`. **Nothing reaches `high` today**, because no model has
+a rating; that ceiling lifts on its own once local benchmarking lands.
+
+Note what the neutral rating does to the ranking: with the quality term equal
+for every model, the total is driven by fit and speed, so the smallest model
+that fits tends to win outright. That is why the default recommendation leads
+with a **Medium** model rather than the top of the list — scoring alone would
+point a 48 GB workstation at a 4B.
+
+```bash
+# The whole shortlist for a 20 GB usable budget
+bash -c 'source lib/score.sh; score_rank 20000'
+
+# Just the best in each size class
+bash -c 'source lib/score.sh; score_best_per_class 20000'
+```
+
+### Choosing models
+
+`30-models.sh` shows the ranked list and asks for **one to three** models by
+number. [`lib/select.sh`](lib/select.sh) builds and parses that menu; it is a
+library rather than inline script because the menu and the answer-parsing are
+where a selector goes wrong, and none of that is testable from inside a script
+whose next step downloads tens of gigabytes.
+
+```
+  Medium: RECOMMENDED -- 40-80% of the budget, the balance this rig is tuned for
+  6.  Devstral-Small-2507                IQ4_XS      12537  67    confidence: low
+  7.  Mistral-Small-3.2-24B-Instruct-2506 IQ4_XS     12750  62    confidence: low
+  8.  Qwen3-14B                          Q4_K_M       8935  62    confidence: low
+
+  Small: under 40% of the budget -- fastest, leaves room for a long context
+  11. Qwen3-1.7B                         Q8_0         2125  71    confidence: low
+```
+
+- MoEs are labelled with their **activated** parameter count, because that is
+  what governs generation speed and the cost of offloading.
+- Models that cannot run here are listed **without a number**, so the menu
+  cannot offer something that will not download.
+- The default press-return answer takes one model from each class, Medium
+  first.
+- `MODEL_SELECTION=1,6` runs the whole thing without prompting, and is exported
+  afterwards so a run can be reproduced exactly. Duplicate, out-of-range and
+  non-numeric answers are refused by name rather than with "invalid input".
+
 ## Configuration
 
 Everything is derived from detected hardware, and everything is overridable by
 environment variable.
 
 ```bash
+# Choose from the ranked menu without being prompted, by menu position
+MODEL_SELECTION=1,6 ./30-models.sh
+
 # Pin exact model repos, skipping the live HuggingFace resolver
 PICK_1=unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF \
-PICK_2=unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF \
-PICK_3=unsloth/Qwen3.6-27B-GGUF \
+PICK_2=unsloth/Devstral-Small-2507-GGUF \
   ./30-models.sh
 
 # Override the quant preference for any pick
