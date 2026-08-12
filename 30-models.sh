@@ -116,8 +116,24 @@ c_info "Weight budget: ${FIT_TOTAL_MB} MB split / ${FIT_SINGLE_MB} MB single-GPU
 
 # Tier selection lives in lib/models.sh so the specs report and this downloader
 # can never disagree about what the hardware should run.
-plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB"
+# A tier that names a model missing from lib/catalog.sh is a bug in the tier
+# table, and it stops the run here rather than resolving to nothing after a
+# long search.
+plan_for_budget "$FIT_TOTAL_MB" "$MOE_OFFLOAD_MB" \
+  || die "${PLAN_ERROR:-could not resolve a plan for this budget}"
 c_info "Tier: $PLAN_TIER"
+
+# Printed from the same catalog rows 00-specs.sh reads, so the report and the
+# download cannot describe different models.
+echo
+printf '  %-2s %-32s %-14s %8s %-6s %s\n' '#' MODEL QUANT 'EST MB' ARCH LICENCE
+for n in 1 2 3; do
+  s="PLAN_SEARCH_$n"; q="PLAN_Q_$n"; sz="PLAN_SIZE_$n"; a="PLAN_ARCH_$n"; l="PLAN_LICENSE_$n"
+  printf '  %-2s %-32s %-14s %8s %-6s %s\n' \
+    "$n." "${!s}" "${!q}" "${!sz}" "${!a}" "${!l}"
+done
+echo "  (estimated sizes, from parameter count and bits-per-weight)"
+echo
 # Arrays rather than SEARCH_1/2/3 + ${!indirect}: same behaviour, but the data
 # flow is visible to a reader (and to ShellCheck) instead of being assembled
 # from variable names at runtime.
