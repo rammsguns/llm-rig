@@ -586,6 +586,59 @@ A source-built binary records `built from source at <tag> (digest recorded, not
 verified)`. Go builds are not bit-identical across toolchains, so its digest is
 a record of what was produced, not evidence that it matches anything.
 
+### Two quants in one directory is a question, not a default
+
+`40-serve.sh` names a served model after the **directory** its weights sit in —
+`Qwen3-Coder-30B-A3B-Instruct-GGUF/` becomes `qwen3-coder-30b-a3b-instruct`.
+The key has to be stable, because `catalog_ratings()` joins to it by name.
+
+Put two quantisations in that one directory and both files derive the same key.
+The generated YAML would then declare one model twice, and a parser either
+rejects it or silently keeps the last one — which is the worse outcome, because
+the stack comes back up serving a different quant under a name whose every
+recorded measurement was taken at the old one.
+
+Note what that does *not* trip: the provenance gate would report `complete`,
+because every required field is populated — just populated with a model nobody
+chose. **Completeness and correctness are different properties.**
+
+So generation refuses, and says what it found:
+
+```
+  XX qwen3-coder-30b-a3b-instruct: 2 candidates, and no selection says which one:
+        <models-dir>/Qwen3-Coder-30B-A3B-Instruct-GGUF/…-Q4_K_M.gguf
+        <models-dir>/Qwen3-Coder-30B-A3B-Instruct-GGUF/…-UD-Q5_K_XL.gguf
+      settle it with:  --select qwen3-coder-30b-a3b-instruct=<exact path above>
+```
+
+Name the exact file to settle it:
+
+```bash
+./40-serve.sh --select qwen3-coder-30b-a3b-instruct=<models-dir>/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
+```
+
+`--select` may be repeated, and it takes a **path, not a preference**. Nothing
+picks by sort order, mtime, size, or what the catalog would rather have: those
+all silently produce an answer, and a silent answer is what caused this. A
+selection naming an unknown key, a file that does not exist, a file belonging
+to another key, or a later shard of a split model is refused with the reason,
+and every bad selection in one invocation is reported together rather than one
+per run.
+
+Three properties worth knowing:
+
+- **It fails before anything changes.** The check runs above `ensure_gpus_idle`,
+  because unloading resident models is already a change to what the machine is
+  serving. An ambiguous directory aborts while the running stack is still
+  intact — not after the GPUs are freed and the config is half-replaced.
+- **The config is replaced atomically.** It is generated beside the real file,
+  read back and checked against the resolved plan — every key declared once,
+  every `-m` path the one that was chosen — and only then renamed over the
+  canonical path. A verification failure leaves the existing config in place.
+- **Split models are unaffected.** A `-00001-of-00003` set is one candidate;
+  llama.cpp opens the rest itself, and counting the other shards would make
+  every split model collide with itself.
+
 ## Configuration
 
 Everything is derived from detected hardware, and everything is overridable by
