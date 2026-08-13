@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Mock system76-power. Records the call; changes nothing.
+set -uo pipefail
+printf 'system76-power %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+# `system76-power profile` with no argument REPORTS; with one it SETS.
+if [[ "${1:-}" == "profile" && -z "${2:-}" ]]; then
+  printf 'Power Profile: %s\n' "${MOCK_S76_PROFILE:-Balanced}"
+fi
+exit 0

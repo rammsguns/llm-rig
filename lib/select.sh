@@ -18,11 +18,17 @@ _LLMRIG_SELECT_SH=1
 # shellcheck source=lib/score.sh
 source "$(dirname "${BASH_SOURCE[0]}")/score.sh"
 
-# The menu never offers more than this many models. The catalog is capped at 15
-# rows, so today the two are the same number -- but a user reads a list of
-# fifteen, and would not read a list of fifty, so the limit is stated here as
-# well rather than inherited by accident.
-SELECT_MAX_LISTED=15
+# The menu never offers more than this many models. Kept EQUAL to
+# CATALOG_MAX_ROWS -- a test enforces it -- because selector_build drops
+# everything past this cap silently, and a model that is in the catalog but
+# never reaches the menu is invisible in the one place a user would look for it.
+#
+# The number is still written here rather than read from the catalog: it is a
+# statement about what a person will read, and if the catalog ever grows to
+# fifty the right response is to paginate the menu, not to print fifty lines.
+# Two limits that must agree, and a test that says so, makes that a decision
+# rather than an accident.
+SELECT_MAX_LISTED=17
 
 # How many models can be chosen at once. Downloading more than three at a time
 # is a request to fill the disk.

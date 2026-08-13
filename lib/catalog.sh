@@ -121,7 +121,15 @@ CATALOG_RATING_CONFIDENCE=(none low medium high)
 # The cap is a design constraint, not an accident: this list is curated by
 # hand, and a list longer than this cannot be kept honest. Enforced by
 # catalog_validate.
-CATALOG_MAX_ROWS=15
+#
+# Raised 15 -> 17 on 2026-08-12 for the two Laguna rows. Raising it is allowed;
+# raising it QUIETLY is not, which is why the reason is written down. If this
+# ever needs to go past ~20, the answer is to retire rows instead: re-verifying
+# every fact on every row is the work the cap exists to keep finite.
+#
+# lib/select.sh keeps SELECT_MAX_LISTED equal to this, so that a model in the
+# catalog is always a model the menu will actually offer.
+CATALOG_MAX_ROWS=17
 
 # --- the facts table --------------------------------------------------------
 # id;canonical_repo;release_date;params_b;active_params_b;arch;context;license;capabilities;quant_prefs;fact_method;fact_source;verified_at
@@ -147,6 +155,20 @@ CATALOG_MAX_ROWS=15
 # one decimal. It is not the number in the model's name: Qwen3-1.7B totals
 # 2.0B once embeddings are counted, and the size estimate has to weigh the
 # bytes that actually get loaded.
+#
+# `active_params_b` for a MoE follows the same rule, and for the same reason it
+# is COMPUTED from config.json rather than copied out of the model's name. The
+# name rounds; the speed score does not want a rounded number. From config:
+#
+#   per layer  attention  h*(nq + 2*nkv)*hd + nq*hd*h
+#              routed     top_k * 3 * h * moe_intermediate_size
+#              shared     3 * h * shared_expert_intermediate_size
+#              router     h * num_experts
+#   plus       embeddings vocab * h, twice when tie_word_embeddings is false
+#
+# For Laguna XS 2.1 that gives 2.7B where the name says A3B, and for S 2.1
+# 7.8B where the name says A8B. Both check out against the total the same
+# formula predicts, to within 1.5% of the safetensors count.
 catalog_rows() {
   # Comments and blank lines are stripped so the table can be annotated.
   sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'CATALOG'
@@ -165,6 +187,16 @@ gemma-3-12b;google/gemma-3-12b-it;2025-03-01;12.2;12.2;dense;131072;gemma;vision
 llama-3.3-70b;meta-llama/Llama-3.3-70B-Instruct;2024-12-06;70.6;70.6;dense;131072;llama3.3;tools;IQ3_M|IQ3_XXS;card-stated;https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct;2026-08-11
 mistral-small-3.2;mistralai/Mistral-Small-3.2-24B-Instruct-2506;2025-06-19;24.0;24.0;dense;131072;apache-2.0;tools,vision;IQ4_XS|Q4_K_S;hf-api;https://huggingface.co/api/models/mistralai/Mistral-Small-3.2-24B-Instruct-2506;2026-08-11
 phi-4;microsoft/phi-4;2024-12-11;14.7;14.7;dense;16384;mit;reasoning;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/microsoft/phi-4;2026-08-11
+# Laguna is Poolside's, not Unsloth's. Unsloth mirrors S 2.1 as GGUF and does
+# NOT mirror XS 2.1 at all, so canonical_repo points at Poolside either way --
+# which is the rule anyway, but here it is easy to get wrong.
+#
+# Neither row carries a plain-Q4 alternative because neither publisher shipped
+# one. XS has exactly two GGUFs, Q4_K_M and BF16; S is UD quants throughout.
+# A fallback naming a quant that does not exist is worse than no fallback: it
+# turns "this repo has no Q4" into a download of something else.
+laguna-xs-2.1;poolside/Laguna-XS-2.1;2026-06-20;33.4;2.7;moe;262144;openmdw-1.1;coding,agentic,tools,reasoning;Q4_K_M;hf-api;https://huggingface.co/api/models/poolside/Laguna-XS-2.1;2026-08-12
+laguna-s-2.1;poolside/Laguna-S-2.1;2026-07-13;117.6;7.8;moe;1048576;openmdw-1.1;coding,agentic,tools,reasoning;UD-Q4_K_XL|UD-Q3_K_XL;hf-api;https://huggingface.co/api/models/poolside/Laguna-S-2.1;2026-08-12
 CATALOG
 }
 
@@ -211,6 +243,20 @@ gemma-3-12b;unknown;-;none;-;none
 llama-3.3-70b;unknown;-;none;-;none
 mistral-small-3.2;unknown;-;none;-;none
 phi-4;unknown;-;none;-;none
+# Both Laguna rows say `unknown` even though a vendor number was available and
+# would have validated: Poolside ships .eval_results/swe-bench_verified.yaml in
+# the model repo, claiming 70.9% resolved for XS 2.1.
+#
+# It is not recorded, and the reason is the one at the top of this table. No
+# other row here has a SWE-bench figure. Entering one for the only two rows
+# that have it does not rank Laguna against the catalog -- it ranks "published
+# a number" against "did not", and the ordering that falls out would look like
+# a quality judgement while measuring disclosure practice.
+#
+# When lib/bench.sh has run these two on this machine, the same suite that ran
+# every other row, they get a local-benchmark rating like everything else.
+laguna-xs-2.1;unknown;-;none;-;none
+laguna-s-2.1;unknown;-;none;-;none
 RATINGS
 }
 
@@ -321,6 +367,25 @@ catalog_quant_bpw_x100() {
     Q6_K)           printf '656' ;;
     Q8_0)           printf '850' ;;
     F16|FP16)       printf '1600' ;;
+    # Unsloth "UD" dynamic quants. These are NOT the same as the plain quant of
+    # the same name: the bits are allocated per tensor by an importance pass, so
+    # UD-Q2_K_XL lands at 2.70 bpw where plain Q2_K is 3.35. Guessing one from
+    # the other would misestimate a 118B model by 75 GB.
+    #
+    # Measured, not estimated -- summed file bytes from the published GGUF repo
+    # divided by the safetensors parameter count of the source model:
+    #
+    #   unsloth/Laguna-S-2.1-GGUF over 117,561,977,600 params, 2026-08-12
+    #     UD-Q2_K_XL   39,685 MB   2.701      UD-Q3_K_XL   54,094 MB   3.681
+    #     UD-IQ3_XXS   44,283 MB   3.013      UD-Q4_K_XL   73,395 MB   4.994
+    #
+    # Only the four this repo actually references are listed. An unlisted quant
+    # returning status 1 is the correct outcome: it makes catalog_est_size_mb
+    # fail loudly rather than size a download off a number nobody measured.
+    UD-Q2_K_XL)     printf '270' ;;
+    UD-IQ3_XXS)     printf '301' ;;
+    UD-Q3_K_XL)     printf '368' ;;
+    UD-Q4_K_XL)     printf '499' ;;
     *)              return 1 ;;
   esac
 }

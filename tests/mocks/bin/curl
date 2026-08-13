@@ -34,7 +34,7 @@ if [[ "$METHOD" == "GET" ]]; then
   done
 fi
 
-STATUS=""; BODY=""
+STATUS=""; BODY=""; BODY_FILE=""
 if [[ -f "${MOCK_ROUTES:-/nonexistent}" ]]; then
   while IFS=$'\t' read -r r_method r_url r_status r_body; do
     [[ -z "${r_url:-}" ]] && continue
@@ -42,7 +42,12 @@ if [[ -f "${MOCK_ROUTES:-/nonexistent}" ]]; then
     [[ "$URL" == *"$r_url"* ]] || continue
     STATUS="$r_status"
     if [[ "$r_body" == @* ]]; then
-      BODY="$(cat "${r_body#@}" 2>/dev/null)"
+      # Kept as a path, not slurped into a variable. A command substitution
+      # strips trailing newlines and cannot carry NUL bytes, so a fixture that
+      # is a tarball or any other binary comes out corrupted -- which looks
+      # exactly like a checksum failure in whatever is under test.
+      BODY_FILE="${r_body#@}"
+      BODY=""
     else
       # Routes are single-line; \n in a route body becomes a real newline.
       BODY="$(printf '%b' "$r_body")"
@@ -58,6 +63,10 @@ if [[ -z "$STATUS" ]]; then
 fi
 
 emit_body() {
+  if [[ -n "${BODY_FILE:-}" ]]; then
+    if [[ -n "$OUT" ]]; then cp "$BODY_FILE" "$OUT"; else cat "$BODY_FILE"; fi
+    return
+  fi
   if [[ -n "$OUT" ]]; then
     printf '%s' "$BODY" >"$OUT"
   else

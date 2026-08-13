@@ -145,11 +145,88 @@ reaches equilibrium temperature.
 - **LiteLLM** — unnecessary once llama-server proved to speak Anthropic natively.
   Retained only as an automatic fallback.
 - **vLLM** — its wins are prefix caching (already have 90×) and continuous batching
-  (single user). Tensor-parallel without NVLink would run over PCIe.
+  (single user). Tensor-parallel without NVLink would run over PCIe. Re-examined
+  2026-08-12 against the hardware rather than the workload, and the hardware is the
+  stronger argument of the two:
+  - **No expert offload.** vLLM holds the whole model in VRAM; there is no
+    `--n-cpu-moe` equivalent. A 118B MoE that llama.cpp runs out of the 109 GB of
+    system RAM here does not run slower under vLLM, it does not run. On this box that
+    is the difference between having a frontier-class model and not.
+  - **sm_86 has no native FP8 and no NVFP4.** FP8 has two floors, not one, and they
+    are easy to conflate. Native W8A8 arithmetic starts at Ada (sm_89); *loading* an
+    FP8 checkpoint works from sm_75 (Turing) upward, dequantized weight-only through
+    FP8 Marlin as W8A16 — the memory saving without the arithmetic. Ampere sits above
+    the loading floor and below the compute one, so INT4/INT8 Marlin plus weight-only
+    FP8 is the whole vLLM menu here. NVFP4 is Blackwell (sm_100+).
+    ([vLLM FP8 docs](https://docs.vllm.ai/en/stable/features/quantization/fp8/))
+  - **The two cards are not symmetric.** ~16376 and ~15352 MiB free; whichever drives
+    the desktop loses ~1 GB. Tensor parallel sizes to the smaller and assumes they
+    match.
+
+  What would change the answer: one Blackwell card with ≥48 GB. Both halves are load
+  bearing. NVFP4 without the capacity is a faster way to run a model small enough to
+  be the wrong model — vLLM must hold the whole thing resident, so kernels alone never
+  carry the argument. Then NVFP4 plus Poolside's DFlash speculative decoding — which is
+  *not* in mainline llama.cpp — makes vLLM the better stack and llama.cpp the
+  compromise.
+
+  Until then the recommendation is computed rather than assumed: `lib/runtime.sh`
+  derives it from the detected compute capability *and* the weight-resident budget,
+  and `00-specs.sh` prints the verdict with the capability named so the claim can be
+  checked rather than believed. The 48 GB gate there is measured on the budget left
+  for weights after the KV reserve, which makes it stricter than a 48 GB sticker
+  price — deliberate, since nobody here has run a Blackwell box.
 - **Speculative decoding** — at 120 t/s the MoE is bandwidth-saturated; a draft model
   would consume VRAM better spent on KV cache.
 - **`--split-mode row`** — fails to load without P2P.
 - **Power capping** — measured strictly worse on this chassis.
+
+## Rolling the OS tuning back
+
+Every setting on this page is applied by `10-os-tune.sh`, and every one of them
+is captured **before** it is changed, to `/var/lib/llm-rig/os-tune.state`
+(root-owned, `0600`). `19-os-revert.sh` restores from that capture and from
+nothing else.
+
+That matters most for the settings whose "default" is not a fixed value:
+
+| Setting | What the old revert wrote | What it should be |
+| --- | --- | --- |
+| CPU governor | `schedutil`, always | Whatever each CPU had — which on a laptop under `system76-power` is not necessarily the same across cores |
+| THP | `madvise`, always | Whatever the machine had; `never` is a legitimate prior state and used to be silently changed to `madvise` |
+| GPU power limit | The **maximum** | The captured limit. Restoring the maximum *raises* the cap on a machine that had deliberately lowered it — the opposite of a rollback |
+| GPU persistence | Off | Whatever it was. A box running `nvidia-persistenced` already had it on |
+| `/etc/sysctl.d/99-llm-inference.conf` | `rm -f` | Removed only if llm-rig created it and it still holds what llm-rig wrote; a pre-existing file is restored byte for byte from a backup |
+
+The power-limit case is the one worth dwelling on, because this page is the
+reason the tuning sets it at all: the measurements below conclude that 100% is
+right *for this chassis*. Someone who read them, disagreed, and capped their
+card at 120W would have had that decision quietly undone by a revert that
+"restored" the maximum.
+
+Both scripts take `--dry-run`, which needs no `sudo` and changes nothing:
+
+```bash
+./10-os-tune.sh --dry-run     # every intended mutation, with its current value
+./19-os-revert.sh --dry-run   # everything that would be put back
+```
+
+## Reproducibility of the stack itself
+
+The measurements on this page describe a specific pair of binaries. `llama.cpp`
+is built from a revision recorded in `.llamacpp-rev`, and **llama-swap is
+pinned** to a version whose SHA-256 is recorded in `lib/swap.sh` — it used to be
+whatever `releases/latest` returned that day, unverified, so two rebuilds of the
+"same" stack could differ in a component sitting directly in the request path.
+
+Neither pin is a claim that a newer version is worse. It is a claim that when a
+number on this page changes, it should be possible to tell whether the workload
+changed or the software did.
+
+The same reasoning runs the other way for the OS settings above: pinning the
+software is only half of a reproducible measurement if the machine underneath it
+has drifted, which is why `19-os-revert.sh` restores what was captured rather
+than what the defaults are supposed to be.
 
 ## Known rough edges
 
