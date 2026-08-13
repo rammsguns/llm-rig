@@ -220,10 +220,10 @@ score_trust() {
 # those the same as a repeated, complete measurement would let a hurried run
 # raise the confidence of the ranking it feeds.
 #
-# Today every row has verified facts and no rating, so a model with current
-# live data reaches medium and no further. That ceiling is deliberate: nothing
-# should report high confidence while a quarter of the weight rests on a
-# neutral placeholder.
+# Every row has verified facts, and exactly one has a rating, so `high` is
+# reachable for that row with current live data and for nothing else. The
+# ceiling on the rest is deliberate: nothing should report high confidence
+# while a quarter of its weight rests on a neutral placeholder.
 score_confidence() {
   local id="$1" live_source="${2:-missing}" value rconf evidence=0
   catalog_facts_verified "$id" && evidence=$(( evidence + 1 ))

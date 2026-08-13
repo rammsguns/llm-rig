@@ -203,11 +203,12 @@ CATALOG
 # --- the ratings table ------------------------------------------------------
 # id;rating_value;rating_date;rating_method;rating_source;rating_confidence
 #
-# EVERY RATING IS CURRENTLY `unknown`, AND THAT IS THE HONEST ANSWER.
+# ONE ROW IS MEASURED. THE REST ARE `unknown`, AND THAT IS THE HONEST ANSWER.
 #
-# What a rating would have to be to appear here: a number, from a named source,
+# What a rating has to be to appear here: a number, from a named source,
 # produced by a stated method, comparable across every row it is ranked
-# against. No such number exists for these fifteen models today.
+# against. Exactly one row clears that bar today -- qwen3-coder-30b, measured
+# on this machine by 61-rate-models.sh. Every other row is a placeholder.
 #
 #   - Publishers report benchmarks selectively and on different suites. Taking
 #     one vendor's SWE-bench figure and another's HumanEval figure and sorting
@@ -218,17 +219,24 @@ CATALOG
 #     none of the above. It was written from memory, carried 25% of the
 #     recommendation weight, and had no source, date or method attached.
 #
-# So the column says `unknown`, score_coding substitutes a neutral value that
-# discriminates between nothing, and confidence drops accordingly. A ranking
-# that admits it cannot separate two models on quality is more useful than one
-# that separates them on a number somebody made up.
+# So an unmeasured column says `unknown`, score_coding substitutes a neutral
+# value that discriminates between nothing, and confidence drops accordingly.
+# A ranking that admits it cannot separate two models on quality is more useful
+# than one that separates them on a number somebody made up.
 #
-# The route to filling this in is local-benchmark: measure on this machine,
-# with lib/bench.sh, and write the measurement and its date. That is deferred
-# work, not missing work.
+# Which means the measured row must be read for what it is. One 93 against
+# sixteen neutral 50s does not say qwen3-coder-30b is the best coder in the
+# table; it says it is the only one anybody has measured. It now outranks
+# laguna-xs-2.1 -- a model whose coding component is still a placeholder --
+# and that gap is evidence, not a comparison. The ordering only becomes a
+# quality judgement once the rows being compared are measured too.
+#
+# The route to filling in the rest is the same one: measure on this machine
+# with 61-rate-models.sh, and record the value, date, source and confidence it
+# produces. That is deferred work, not missing work.
 catalog_ratings() {
   sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'RATINGS'
-qwen3-coder-30b;unknown;-;none;-;none
+qwen3-coder-30b;93;2026-08-13;local-benchmark;file:llm-rating-20260813-1621.txt;medium
 qwen3-30b-a3b;unknown;-;none;-;none
 devstral-small;unknown;-;none;-;none
 qwen3-32b;unknown;-;none;-;none
