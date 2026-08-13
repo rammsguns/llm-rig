@@ -830,6 +830,7 @@ It grades every claim by how it was established, and never conflates the grades:
 | `[configured]` | The flag is in the generated config. Says what was *asked for*. |
 | `[live]` | The running server reported it via `/props`. Strongest. |
 | `[benchmark]` | Inferred from timings measured **on this machine**. |
+| `[runtime]` | Which `llama-swap` binary is installed, read off the binary itself. |
 
 If no benchmark artifact exists it reports **"not measured"** rather than substituting a
 figure from anywhere else, and a `--flash-attn` line in the config never on its own
@@ -838,8 +839,24 @@ establishes that flash attention is active.
 ```bash
 ./71-verify-runtime.sh --measure              # take a bounded measurement now
 ./71-verify-runtime.sh --require props        # exit non-zero unless established
+./71-verify-runtime.sh --require pin          # exit non-zero unless it matches the pin
 ./71-verify-runtime.sh --require flash-attn --require props
 ```
+
+**Runtime drift.** `lib/swap.sh` pins a `llama-swap` version, and a full
+[`./40-serve.sh`](40-serve.sh) run installs it — so the pin is enforced only by running the
+thing that also stops the service and replaces the binary. That is the wrong tool when a
+measurement is in flight, and it is how this machine ended up sitting two releases behind
+its own pin for three days without anything noticing. The `[runtime]` section reports the
+comparison on its own: installed version, pinned version and where the pin came from, plus
+the install record as a **separate** line, because matching the pin says nothing about who
+put the binary there or whether its bytes were ever verified. It reads, and changes
+nothing — on drift it names the command that reconciles it rather than running it.
+
+`--require pin` fails on drift *and* on a binary that will not report a version. Those are
+different problems — "install it" versus "find out what this is" — and
+`swap_pin_drift` distinguishes them by exit status (`1` versus `2`) for callers that need
+to.
 
 `--require` turns it into a gate: non-zero when the assertion cannot be **established**,
 which is not the same as it being false. Upstream ports are derived from the generated

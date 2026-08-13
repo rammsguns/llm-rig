@@ -23,10 +23,24 @@ API="$TEST_ROOT/fixtures/api"
 setup_test() {
   mock_init
   services_active "llama-swap"
+  # The script reads the llama-swap binary directly, by absolute path, so a
+  # mock on PATH does not shadow it. Point it into the sandbox: this host has a
+  # real llama-swap in /usr/local/bin, and a suite that can execute the real
+  # install target is testing the machine rather than the code.
+  mkdir -p "$SANDBOX/bin"
+  export SWAP_BIN="$SANDBOX/bin/llama-swap"
+  export SWAP_RECORD="$RIG_DIR/etc/llama-swap.installed"
   # shellcheck source=/dev/null
   source "$REPO_ROOT/lib/detect.sh"
   # shellcheck source=/dev/null
   source "$REPO_ROOT/lib/bench.sh"
+}
+
+# A llama-swap that reports the version it is told to, so drift can be staged
+# without an install.
+install_fake_swap() {
+  printf '#!/usr/bin/env bash\necho "llama-swap %s (build abc)"\n' "$1" >"$SWAP_BIN"
+  chmod +x "$SWAP_BIN"
 }
 
 write_config() {
@@ -273,6 +287,104 @@ test_missing_config_fails_with_guidance() {
   run_verify
   assert_fails "no config means nothing to verify" || return 1
   assert_contains "$RUN_OUTPUT" "40-serve.sh" "remediation"
+}
+
+# --- runtime drift against the pin (#40) ------------------------------------
+
+test_the_sandbox_binary_is_never_the_real_one() {
+  # The guard the swap suite learned to need. If this ever points at
+  # /usr/local/bin, every test below is reading the developer's machine.
+  assert_contains "$SWAP_BIN" "$SANDBOX" "the binary under test is in the sandbox" || return 1
+  assert_ne "$SWAP_BIN" "/usr/local/bin/llama-swap" "and never the real one"
+}
+
+test_the_installed_and_pinned_versions_are_both_reported() {
+  write_config
+  install_fake_swap v248
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify
+  assert_contains "$RUN_OUTPUT" "v248" "what is installed" || return 1
+  assert_contains "$RUN_OUTPUT" "pinned" "and what was expected"
+}
+
+test_drift_is_reported_without_changing_anything() {
+  # The whole point of putting this in the verify script rather than the serve
+  # script: it is the thing you can safely run while a measurement is in
+  # flight. #40 exists because a full serve run would have replaced the binary
+  # underneath one.
+  write_config
+  install_fake_swap v248
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  local before; before="$(sha256sum "$SWAP_BIN" | cut -d' ' -f1)"
+  run_verify
+  assert_contains "$RUN_OUTPUT" "Nothing has been changed" "says so" || return 1
+  assert_eq "$(sha256sum "$SWAP_BIN" | cut -d' ' -f1)" "$before" "and means it" || return 1
+  assert_not_called 'curl .*github' "no release was fetched" || return 1
+  [[ -f "$SWAP_RECORD" ]] && { _fail "an install record was written"; return 1; }
+  return 0
+}
+
+test_drift_names_the_command_that_reconciles_it() {
+  # Reporting drift without saying what fixes it is how #40 was found by
+  # accident in the first place.
+  write_config
+  install_fake_swap v248
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify
+  assert_contains "$RUN_OUTPUT" "40-serve.sh" "the reconciling command"
+}
+
+test_require_pin_fails_on_drift() {
+  write_config
+  install_fake_swap v248
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require pin
+  assert_fails "drift must fail a gate that asked for the pin" || return 1
+  assert_contains "$RUN_OUTPUT" "could NOT be established" "diagnostic"
+}
+
+test_require_pin_succeeds_when_the_pinned_version_is_installed() {
+  write_config
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/lib/swap.sh"
+  install_fake_swap "$SWAP_VERSION"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require pin
+  assert_ok "the pinned version establishes the assertion"
+}
+
+test_require_pin_fails_when_no_binary_answers() {
+  # Unreadable is not the same as wrong, but it is equally not established.
+  write_config
+  rm -f "$SWAP_BIN"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require pin
+  assert_fails "an absent runtime cannot satisfy a pin assertion"
+}
+
+test_a_binary_llm_rig_did_not_install_is_disclosed() {
+  # Matching the pin says nothing about who put the binary there or whether
+  # its bytes were ever verified. Those are separate claims and are reported
+  # separately.
+  write_config
+  install_fake_swap v248
+  rm -f "$SWAP_RECORD"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify
+  assert_contains "$RUN_OUTPUT" "llm-rig did not install this binary" "disclosed"
+}
+
+test_a_record_disagreeing_with_the_binary_is_flagged() {
+  # Someone replaced the binary by hand after llm-rig installed it. The record
+  # is then a statement about a file that no longer exists.
+  write_config
+  install_fake_swap v248
+  mkdir -p "$(dirname "$SWAP_RECORD")"
+  printf 'version\tv249\nsha256\tdeadbeef\nsource\trelease tarball\ninstalled_at\t2026-08-01T00:00:00Z\n' \
+    >"$SWAP_RECORD"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify
+  assert_contains "$RUN_OUTPUT" "replaced by something other than llm-rig" "flagged"
 }
 
 run_suite

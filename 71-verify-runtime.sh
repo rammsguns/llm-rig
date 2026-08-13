@@ -10,19 +10,26 @@
 #   [benchmark]  inferred from timings measured ON THIS MACHINE. Without an
 #                artifact the answer is "not measured" -- never a substituted
 #                figure from somewhere else.
+#   [runtime]    which llama-swap binary is installed, and whether it is the
+#                one this llm-rig revision pins. Read directly off the binary.
 #
 # Usage:
 #   ./71-verify-runtime.sh
 #   ./71-verify-runtime.sh --measure            # run a bounded live benchmark
 #   ./71-verify-runtime.sh --require props      # non-zero unless established
+#   ./71-verify-runtime.sh --require pin        # non-zero unless it matches
 #   ./71-verify-runtime.sh --require flash-attn --require props
 #
 # --require makes this usable as a gate: it exits non-zero when the requested
 # assertion cannot be ESTABLISHED, which is not the same as being false.
+#
+# Nothing here installs, downloads or replaces anything, including the runtime
+# check: it reports drift and names the command that reconciles it.
 set -uo pipefail
 RIG_SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$RIG_SRC_DIR/lib/detect.sh"
 source "$RIG_SRC_DIR/lib/bench.sh"
+source "$RIG_SRC_DIR/lib/swap.sh"
 
 CFG="$RIG_DIR/etc/llama-swap.yaml"
 MEASURE=0
@@ -33,7 +40,7 @@ while (( $# )); do
     --measure)   MEASURE=1 ;;
     --require)   shift; REQUIRE+=("${1:-}") ;;
     --require=*) REQUIRE+=("${1#--require=}") ;;
-    -h|--help)   sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)   sed -n '2,27p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *)           die "unknown argument: $1" ;;
   esac
   shift
@@ -43,6 +50,47 @@ done
 EV_PROPS=""
 EV_FLASH_ATTN=""
 EV_BENCH=""
+EV_PIN=""
+
+# --- 0. which router binary is installed ------------------------------------
+# Before any question about flags, the question of which llama-swap is
+# answering them. This is read off the binary itself rather than taken from the
+# install record, because the record says what llm-rig put there and the
+# binary says what is there.
+drift="$(swap_pin_drift)"; drift_rc=$?
+# The verdict is discarded here: it is the same information as the exit status,
+# and branching on one while printing the other is how the two drift apart.
+IFS=$'\t' read -r _ installed pinned <<<"$drift"
+c_info "[runtime] llama-swap binary at $SWAP_BIN"
+printf '    %-14s %s\n' "installed" "$installed" >&2
+printf '    %-14s %s (%s)\n' "pinned" "$pinned" "$(swap_pin_origin)" >&2
+
+# The install record is a separate claim and is reported separately: matching
+# the pin says nothing about who installed it or whether the bytes were ever
+# verified.
+if rec_ver="$(swap_record_get version 2>/dev/null)"; then
+  printf '    %-14s %s, %s, %s\n' "record" "$rec_ver" \
+    "$(swap_record_get source 2>/dev/null || printf 'source unrecorded')" \
+    "$(swap_record_get installed_at 2>/dev/null || printf 'undated')" >&2
+  [[ "$rec_ver" == "$installed" ]] || c_warn \
+    "the install record says $rec_ver but the binary reports $installed -- it was
+     replaced by something other than llm-rig"
+else
+  printf '    %-14s %s\n' "record" "none -- llm-rig did not install this binary" >&2
+fi
+
+case "$drift_rc" in
+  0) EV_PIN="binary reports $installed, matching the pin"
+     c_ok "[runtime] llama-swap $installed matches the pin" ;;
+  1) c_warn "[runtime] llama-swap $installed is installed; this llm-rig revision pins $pinned.
+     Nothing has been changed. A full ./40-serve.sh run reconciles it by
+     installing the pinned version -- which stops the service and replaces the
+     binary, so do not run it underneath a measurement in progress." ;;
+  *) c_warn "[runtime] no llama-swap version could be read from $SWAP_BIN.
+     Nothing has been changed. Either it is not installed, or it is something
+     that does not answer --version." ;;
+esac
+echo
 
 # --- 1. what the config asks for -------------------------------------------
 c_info "[configured] flags in $CFG"
@@ -179,6 +227,7 @@ fi
 # --- summary ----------------------------------------------------------------
 echo
 c_info "Evidence summary"
+printf '    %-14s %s\n' "pin"         "${EV_PIN:-not established}" >&2
 printf '    %-14s %s\n' "props"       "${EV_PROPS:-not established}" >&2
 printf '    %-14s %s\n' "flash-attn"  "${EV_FLASH_ATTN:-not established}" >&2
 printf '    %-14s %s\n' "benchmark"   "${EV_BENCH:-not established}" >&2
@@ -190,7 +239,11 @@ for want in "${REQUIRE[@]}"; do
     props)       ev="$EV_PROPS" ;;
     flash-attn)  ev="$EV_FLASH_ATTN" ;;
     bench)       ev="$EV_BENCH" ;;
-    *)           die "unknown assertion: $want (known: props, flash-attn, bench)" ;;
+    # Established means "read, and equal to the pin". Drift and an unreadable
+    # binary both fail it, for the same reason --require exists: the assertion
+    # could not be established, whatever the reason.
+    pin)         ev="$EV_PIN" ;;
+    *)           die "unknown assertion: $want (known: props, flash-attn, bench, pin)" ;;
   esac
   if [[ -n "$ev" ]]; then
     c_ok "required '$want' established -- $ev"
