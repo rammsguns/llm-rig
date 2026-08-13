@@ -349,13 +349,22 @@ test_a_published_vendor_rating_must_still_be_linkable() {
   assert_eq "$VALIDATE_STATUS" 0 "a vendor figure with a URL must validate: $VALIDATE_ERRORS"
 }
 
-test_no_row_currently_claims_a_coding_rating() {
-  # Documents the shipped state: every rating is unknown, and deliberately so.
-  # If a future edit adds one, this test fails and forces the author to look at
-  # whether it has a method, a date and a source behind it.
-  local rated
-  rated="$(catalog_ratings | awk -F';' '$2 != "unknown" { print $1 }')"
-  assert_eq "$rated" "" "no rating may be claimed without evidence; found: $rated"
+test_no_row_claims_a_rating_without_evidence() {
+  # This used to assert that no row carried a rating at all, which was true
+  # until qwen3-coder-30b was measured. What it was actually guarding is the
+  # rule underneath: a number may appear here only with a method, a source, a
+  # date and a confidence behind it. So check that rule against every rated
+  # row, which keeps working as more rows get measured. The count of measured
+  # rows is pinned separately, in test_exactly_one_rating_row_is_measured.
+  local id value rdate method source conf bad=""
+  while IFS=';' read -r id value rdate method source conf; do
+    [[ "$value" == "unknown" ]] && continue
+    [[ "$method" != "none" ]] || bad+="$id: value $value with no method"$'\n'
+    [[ "$source" != "-"    ]] || bad+="$id: value $value with no source"$'\n'
+    [[ "$rdate"  != "-"    ]] || bad+="$id: value $value with no date"$'\n'
+    [[ "$conf"   != "none" ]] || bad+="$id: value $value with no confidence"$'\n'
+  done < <(catalog_ratings)
+  assert_eq "$bad" "" "no rating may be claimed without evidence"
 }
 
 test_the_facts_schema_no_longer_carries_a_rating_column() {
@@ -862,6 +871,29 @@ test_laguna_ratings_stay_unknown_despite_a_published_vendor_number() {
     assert_eq "$(catalog_rating_get "$id" rating_method)" "none"    "$id method" || return 1
   done
   return 0
+}
+
+test_the_measured_rating_row_is_the_one_that_was_produced() {
+  # Pinned in full. The value, the date, the method, the artifact name and the
+  # confidence were all produced by one run of 61-rate-models.sh, and a rating
+  # row is only auditable if the reader can find that run again -- so an edit
+  # to any single field has to be deliberate.
+  local row
+  row="$(catalog_ratings | awk -F';' '$1=="qwen3-coder-30b"')"
+  assert_eq "$row" \
+    "qwen3-coder-30b;93;2026-08-13;local-benchmark;file:llm-rating-20260813-1621.txt;medium" \
+    "the measured row"
+}
+
+test_exactly_one_rating_row_is_measured() {
+  # The leaderboard caveat, as a test. One measured row against sixteen
+  # placeholders means the ordering is mostly still a statement about hardware
+  # fit, and anything written about the ranking has to say so. When a second
+  # model is measured this fails, which is the reminder to go and update that
+  # wording rather than let it quietly become false.
+  local measured
+  measured="$(catalog_ratings | awk -F';' '$4 != "none" { print $1 }')"
+  assert_eq "$measured" "qwen3-coder-30b" "the only row backed by a measurement"
 }
 
 run_suite

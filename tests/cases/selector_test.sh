@@ -335,15 +335,23 @@ test_the_selection_is_reproducible_from_model_selection() {
 
 # --- unknown ratings --------------------------------------------------------
 
-test_every_offered_model_reports_low_confidence_while_ratings_are_unknown() {
-  # The honest consequence of shipping no ratings, surfaced on the menu rather
-  # than buried. If this ever stops being true, it is because evidence landed.
-  local line conf
+test_every_unrated_model_reports_low_confidence_on_the_menu() {
+  # The honest consequence of shipping mostly-unknown ratings, surfaced on the
+  # menu rather than buried. Every row without a rating is `low`; the measured
+  # one is checked separately below, because it stopped being low the moment
+  # the evidence landed -- which is the whole point of recording it.
+  local line conf id rated=0
   for line in "${SELECT_ROWS[@]}"; do
+    id="$(printf '%s' "$line" | cut -f3)"
     conf="$(printf '%s' "$line" | cut -f5)"
-    assert_eq "$conf" "low" "no rating evidence means low confidence" || return 1
+    if [[ "$(catalog_rating_get "$id" rating_value)" == "unknown" ]]; then
+      assert_eq "$conf" "low" "no rating evidence means low confidence for $id" || return 1
+    else
+      rated=$(( rated + 1 ))
+      assert_ne "$conf" "low" "a measured rating must show on the menu for $id" || return 1
+    fi
   done
-  return 0
+  assert_eq "$rated" 1 "exactly one offered model is measured today"
 }
 
 test_the_menu_states_the_confidence_rather_than_only_the_score() {
@@ -386,9 +394,15 @@ R
 # --- stale and offline live metadata ----------------------------------------
 
 test_stale_live_metadata_does_not_raise_confidence() {
+  # Read a named unrated row rather than the head of the list. The head is now
+  # the one measured model, for which fresh live data is the *third* kind of
+  # evidence and lifts it to `high` -- a different transition from the
+  # low -> medium one this test is about.
   local fresh stale
-  fresh="$( SCORE_LIVE_SOURCE=fresh score_rank "$BUDGET" "$OFFLOAD" | head -1 | cut -f5 )"
-  stale="$( SCORE_LIVE_SOURCE=stale score_rank "$BUDGET" "$OFFLOAD" | head -1 | cut -f5 )"
+  fresh="$( SCORE_LIVE_SOURCE=fresh score_rank "$BUDGET" "$OFFLOAD" \
+            | awk -F'\t' '$3=="qwen3-4b" { print $5 }' )"
+  stale="$( SCORE_LIVE_SOURCE=stale score_rank "$BUDGET" "$OFFLOAD" \
+            | awk -F'\t' '$3=="qwen3-4b" { print $5 }' )"
   assert_eq "$fresh" "medium" "current live data is worth something" || return 1
   assert_eq "$stale" "low"    "an expired cache entry is not evidence"
 }

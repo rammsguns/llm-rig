@@ -99,18 +99,24 @@ every change, and past roughly twenty the answer is to retire rows instead.
 `rating_confidence`. These are a different kind of claim, cannot be confirmed
 the same way, and so are kept somewhere else entirely.
 
-**Every rating currently reads `unknown`, and that is the honest answer.**
-Publishers report different benchmarks, public leaderboards disagree and are
-not reproducible here, and sorting one vendor's SWE-bench figure against
-another's HumanEval figure produces an ordering that means nothing. The
-validator enforces the consequence in both directions: a value cannot be
-recorded without a method and a source behind it, and a method claiming
-evidence cannot be recorded without a value.
+**One rating is measured; the other sixteen read `unknown`, and that is the
+honest answer.** Publishers report different benchmarks, public leaderboards
+disagree and are not reproducible here, and sorting one vendor's SWE-bench
+figure against another's HumanEval figure produces an ordering that means
+nothing. The validator enforces the consequence in both directions: a value
+cannot be recorded without a method and a source behind it, and a method
+claiming evidence cannot be recorded without a value.
 
-Filling them in is what [`./61-rate-models.sh`](61-rate-models.sh) is for — it
-measures the models **you** serve and prints rows you can paste in. The shipped
-table stays `unknown` because the shipped table cannot contain your
-measurements. See [Rating the models you serve](#rating-the-models-you-serve).
+The exception is `qwen3-coder-30b`, measured here at 93 with
+[`./61-rate-models.sh`](61-rate-models.sh) on 2026-08-13 — three repeats, no
+disagreement between them, against a named artifact. That is the only kind of
+number this table accepts.
+
+Filling in the rest is what [`./61-rate-models.sh`](61-rate-models.sh) is for —
+it measures the models **you** serve and prints rows you can paste in. Rows for
+models you do not serve stay `unknown`, because the shipped table cannot
+contain your measurements. See
+[Rating the models you serve](#rating-the-models-you-serve).
 
 This replaced a single `coding_score` column carrying values from 42 to 88 with
 no source, no date and no method — weighted at 25% of the recommendation.
@@ -179,12 +185,14 @@ would not rank Laguna against the catalog — it would rank *published a number*
 against *did not*, and the result would look like a quality judgement while
 measuring disclosure practice.
 
-One consequence to be aware of: with every coding rating still `unknown`, the
-quality term does no discriminating work, so the ranking runs on freshness,
-hardware fit, speed and features. On a 31 GB machine that makes Laguna XS 2.1
-the top `medium` pick ahead of `qwen3-coder-30b`, on metadata alone. That is
-the existing design behaving as designed, and it is an argument for running
-the local benchmark, not for hand-weighting the table.
+One consequence to be aware of: with sixteen of seventeen coding ratings still
+`unknown`, the quality term barely discriminates, so the ranking runs mostly on
+freshness, hardware fit, speed and features. On a 31 GB machine that used to
+make Laguna XS 2.1 the top `medium` pick ahead of `qwen3-coder-30b`, on
+metadata alone. Benchmarking `qwen3-coder-30b` reversed that — 84 against 81 —
+but the two are still not being compared like for like: one has a measured
+coding score and the other a neutral placeholder. Running the benchmark is what
+fixes that, for Laguna and for the rest of the table.
 
 Running them here: XS 2.1 at `Q4_K_M` is 18.9 GiB and needs both cards
 (`-sm layer`); S 2.1 at `UD-Q4_K_XL` is 68.4 GiB and runs with the experts in
@@ -254,7 +262,7 @@ model unrunnable on the laptop.
 | Component | Weight | What it measures |
 | --- | --- | --- |
 | Hardware fit | 30% | Does it run here, and with how much headroom. |
-| Coding / agent | 25% | Coding quality, from the ratings table — **neutral 50 for every model today**, because no comparable evidence exists. |
+| Coding / agent | 25% | Coding quality, from the ratings table — measured for `qwen3-coder-30b`, **neutral 50 for every other row**, because no comparable evidence exists yet. |
 | Tools / context | 15% | Tool use, agentic capability, usable context length. |
 | Speed | 15% | Driven by **active** parameters, plus an offload penalty. |
 | Freshness | 10% | Age of the **model** — never the GGUF repo's timestamp. |
@@ -273,27 +281,29 @@ bash -c 'source lib/score.sh; score_explain qwen3-coder-30b 20000 Q4_K_M unsloth
 ```
 qwen3-coder-30b  (large, Q4_K_M, moe)
   hardware fit              70  x 30%  =    21
-  coding / agent            50  x 25%  =    12
+  coding / agent            93  x 25%  =    23
   tools / context          100  x 15%  =    15
   speed                     80  x 15%  =    12
   freshness                 50  x 10%  =     5
   repository trust         100  x  5%  =     5
-  TOTAL                     70
-  confidence             medium   (facts: hf-api, checked 2026-08-11; live data: fresh)
-  rating basis            none   (no comparable evidence; scored at the neutral 50)
+  TOTAL                     81
+  confidence              high   (facts: hf-api, checked 2026-08-11; live data: fresh)
+  rating basis           medium   (local-benchmark, 2026-08-13)
   popularity             412300   (tie-breaker only, no weight)
 ```
 
 The printed contributions are the ones actually summed, so the breakdown always
 reconciles with the total. The two provenance lines are separate because the
 claims are: the facts behind the size and the context are confirmed against the
-publisher, the rating behind a quarter of the weight is not.
+publisher, and the rating behind a quarter of the weight is confirmed — or, for
+every other row, is not.
 
 Confidence counts three independent kinds of evidence — verified facts, a
 sourced rating, and current live data. Three of three is `high`, two is
-`medium`, fewer is `low`. **Nothing reaches `high` on the shipped table**,
-because no model has a rating; that ceiling lifts on its own once you record
-one with [`./61-rate-models.sh`](61-rate-models.sh).
+`medium`, fewer is `low`. **`qwen3-coder-30b` is the only row that can reach
+`high`**, because it is the only one with a rating; every other row is capped
+at `medium` until you record one with
+[`./61-rate-models.sh`](61-rate-models.sh).
 
 The rating counts only when the rating itself is `medium` or better, and that
 qualifier is load-bearing: a single unrepeated benchmark pass is recorded as
@@ -301,10 +311,16 @@ qualifier is load-bearing: a single unrepeated benchmark pass is recorded as
 ranking it feeds.
 
 Note what the neutral rating does to the ranking: with the quality term equal
-for every model, the total is driven by fit and speed, so the smallest model
-that fits tends to win outright. That is why the default recommendation leads
-with a **Medium** model rather than the top of the list — scoring alone would
-point a 48 GB workstation at a 4B.
+across sixteen of the seventeen rows, the total is driven mostly by fit and
+speed, so the smallest model that fits tends to win outright. That is why the
+default recommendation leads with a **Medium** model rather than the top of the
+list — scoring alone would point a 48 GB workstation at a 4B.
+
+It also means the one measured row has to be read carefully. `qwen3-coder-30b`
+now leads the `medium` class on this rig at 84 against Laguna XS 2.1's 81, but
+that is a measured 93 beating a neutral 50, not one model beating another on
+coding. The comparison only becomes a quality judgement when both rows have
+been measured.
 
 ```bash
 # The whole shortlist for a 20 GB usable budget

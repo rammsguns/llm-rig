@@ -90,9 +90,9 @@ test_an_unrated_model_scores_neutral_not_zero() {
   # Zero would rank a model nobody has measured below one measured and found
   # bad. Neutral says what is actually true: this component cannot separate
   # them.
-  assert_eq "$(catalog_rating_get qwen3-coder-30b rating_value)" "unknown" \
+  assert_eq "$(catalog_rating_get qwen3-4b rating_value)" "unknown" \
     "precondition: this model is currently unrated" || return 1
-  assert_eq "$(score_coding qwen3-coder-30b)" "$SCORE_NEUTRAL_CODING" \
+  assert_eq "$(score_coding qwen3-4b)" "$SCORE_NEUTRAL_CODING" \
     "an unknown rating scores neutral"
 }
 
@@ -101,7 +101,7 @@ test_the_absence_of_a_rating_is_reported_not_just_absorbed() {
   # SCORE_CODING_KNOWN is what carries that, and it must survive score_model --
   # which computes its components in subshells, where a second return value is
   # exactly the sort of thing that gets lost.
-  score_model qwen3-coder-30b 20000 || { _fail "scoring failed"; return 1; }
+  score_model qwen3-4b 20000 || { _fail "scoring failed"; return 1; }
   assert_eq "$SCORE_CODING_KNOWN" "0" "an unrated model must be flagged as unrated"
 }
 
@@ -262,9 +262,9 @@ test_verified_facts_plus_current_live_data_reach_medium() {
 }
 
 test_high_confidence_is_unreachable_while_ratings_are_unknown() {
-  # The ceiling that matters: nothing may report high confidence while a
-  # quarter of the weight rests on a neutral placeholder. Today no combination
-  # of live-data freshness can get there.
+  # The ceiling that matters: an unrated model may not report high confidence,
+  # because a quarter of its weight rests on a neutral placeholder. No
+  # combination of live-data freshness can get such a model there.
   local src
   for src in fresh cached stale missing; do
     local c; c="$(score_confidence qwen3-4b "$src")"
@@ -404,13 +404,20 @@ test_a_small_model_can_outscore_a_large_one_without_reordering_the_classes() {
   # The point of ranking inside classes: a 4B may well score higher than a 70B
   # on a small card, and it still must not be listed above it. The user asked
   # for the best in each class, not one global list.
+  #
+  # 16000 rather than 20000: the property needs a budget where a small model
+  # really does outscore the large head, and at 20000 the large head is now
+  # qwen3-coder-30b, whose measured rating carries it past every small model.
+  # The precondition below is asserted rather than assumed, so if a future
+  # measurement removes the gap here too, this fails loudly instead of testing
+  # nothing.
   local large_score small_score
-  large_score="$(score_rank 20000 | awk -F'\t' '$1=="large"  { print $2; exit }')"
-  small_score="$(score_rank 20000 | awk -F'\t' '$1=="small" { print $2; exit }')"
+  large_score="$(score_rank 16000 | awk -F'\t' '$1=="large"  { print $2; exit }')"
+  small_score="$(score_rank 16000 | awk -F'\t' '$1=="small" { print $2; exit }')"
   assert_gt "$small_score" "$large_score" \
     "at this budget the small model genuinely scores higher" || return 1
   # ...and yet large is still printed first.
-  assert_eq "$(score_rank 20000 | head -1 | cut -f1)" "large" \
+  assert_eq "$(score_rank 16000 | head -1 | cut -f1)" "large" \
     "class order is by size, never by score"
 }
 
@@ -517,6 +524,75 @@ test_the_budget_changes_the_ranking() {
   big_budget="$(score_rank 60000 | awk -F'\t' '$1=="medium" { print $3; exit }')"
   assert_ne "$tiny_budget" "$big_budget" \
     "the top medium model on a 6 GB card should not also be the top on a 60 GB one"
+}
+
+# --- the first measured rating ----------------------------------------------
+#
+# qwen3-coder-30b is the one row in the ratings table backed by a measurement
+# rather than a placeholder. These pin what that measurement does to the
+# ranking, so a later edit to the row, to the weights, or to any component
+# cannot move it without saying so.
+
+# The machine the measurement was taken on: two cards, 29671 MB between them.
+# Written out rather than detected, because a test that asks the local machine
+# what it has is a test that means something different on every machine.
+SCORE_MEASURED_BUDGET=29671
+
+test_the_measured_rating_reaches_the_score_instead_of_the_placeholder() {
+  assert_eq "$(catalog_rating_get qwen3-coder-30b rating_value)" "93" \
+    "precondition: the measured row is the one from the 2026-08-13 run" || return 1
+  score_model qwen3-coder-30b "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
+  assert_eq "$SCORE_C_CODING" "93" "the recorded value, not the neutral 50" || return 1
+  assert_eq "$SCORE_CODING_KNOWN" "1" "and flagged as evidence rather than absence"
+}
+
+test_the_measured_model_totals_eighty_four_on_the_rig_it_was_measured_on() {
+  # The whole point of recording a rating is that it changes a number. This is
+  # that number: 73 with the placeholder, 84 with the measurement.
+  score_model qwen3-coder-30b "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
+  assert_eq "$SCORE_TOTAL" "84" "total on the measuring machine"
+}
+
+test_the_measured_model_leads_its_size_class() {
+  local top
+  top="$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3; exit }')"
+  assert_eq "$top" "qwen3-coder-30b" "first in the class this machine can run"
+}
+
+test_it_is_the_measurement_that_puts_it_in_front() {
+  # The counterfactual, because "it ranks first" on its own does not say why.
+  # With the same row back to `unknown` it drops behind laguna-xs-2.1 -- whose
+  # coding component is still a placeholder. So the lead is one measured model
+  # ahead of an unmeasured one, which is a statement about evidence and not
+  # about which model writes better code.
+  local top_unrated
+  top_unrated="$(
+    # Shadow the table with a copy of itself, one row reverted. Every other row
+    # has to survive: score_rank walks all of catalog_ids and skips any model
+    # whose rating row it cannot read.
+    eval "$(declare -f catalog_ratings | sed '1s/^catalog_ratings/catalog_ratings_shipped/')"
+    catalog_ratings() {
+      catalog_ratings_shipped \
+        | sed 's/^qwen3-coder-30b;.*/qwen3-coder-30b;unknown;-;none;-;none/'
+    }
+    score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3; exit }'
+  )"
+  assert_eq "$top_unrated" "laguna-xs-2.1" \
+    "without the measurement the unmeasured model is back on top"
+}
+
+test_the_measured_row_reports_medium_confidence_on_its_own() {
+  # Two of the three kinds of evidence: verified facts and a sourced rating at
+  # medium or better. Live download data is the third and is not in play here.
+  assert_eq "$(score_confidence qwen3-coder-30b missing)" "medium" \
+    "a measurement without live data is medium, not high"
+}
+
+test_the_measured_row_can_reach_high_confidence_with_live_data() {
+  # The ceiling lifts for this row and only this row, which is what a rating
+  # is for. Nothing else in the table can get here.
+  assert_eq "$(score_confidence qwen3-coder-30b fresh)" "high" \
+    "verified facts + a sourced rating + current live data"
 }
 
 run_suite

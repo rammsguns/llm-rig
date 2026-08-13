@@ -74,10 +74,10 @@ selector_quant_at() { _selector_field "${SELECT_ROWS[$(( $1 - 1 ))]}" 4; }
 # Medium first, and that is a product decision rather than a consequence of the
 # scores: a medium model uses the hardware without leaving the context starved,
 # which is what this rig is for. The score alone would not produce that answer
-# -- with every coding rating currently `unknown`, the quality term does no
-# discriminating work and the smallest model that fits tends to win on
-# hardware fit and speed. Recommending purely on the total would therefore
-# point a 48 GB workstation at a 4B model.
+# -- with sixteen of seventeen coding ratings still `unknown`, the quality term
+# does almost no discriminating work and the smallest model that fits tends to
+# win on hardware fit and speed. Recommending purely on the total would
+# therefore point a 48 GB workstation at a 4B model.
 #
 # So: the best medium, then the best large, then the best small. Capped at
 # SELECT_MAX_PICKS, and only ever from the supported list.
