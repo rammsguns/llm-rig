@@ -671,8 +671,9 @@ free VRAM, and a full run gets that by stopping llama-swap. Config-only will
 not: stopping the daemon *is* the change the mode promises not to make, and it
 is the worst one available, because a running llama-swap holds the only copy of
 the config it was started with. Replace the file while it is stopped and the
-previous configuration is simply gone. So if anything is holding VRAM, the run
-refuses before writing anything and hands you the sequence:
+previous configuration is simply gone. So if `llama-server` or `llama-swap` is
+holding any VRAM at all, the run refuses before writing anything and hands you
+the sequence:
 
 ```bash
 sudo systemctl stop llama-swap
@@ -682,6 +683,17 @@ sudo systemctl start llama-swap
 
 Same flags echoed back, because a `--select` path retyped by hand is how the
 wrong quant ends up being served.
+
+Anything *else* holding VRAM is judged by amount rather than refused outright.
+`nvidia-smi` enumerates graphics contexts alongside compute ones, so on a
+machine with a display attached the list is never empty — a compositor, a
+browser and a couple of terminals came to ~620 MiB on the rig this was written
+for, against a smallest served model of ~13.7 GB. Up to **2048 MiB** in total
+is reported and tolerated; above that the run refuses, because sizing against
+what is left would produce bogus `--n-cpu-moe` values. That refusal does *not*
+suggest stopping llama-swap — doing so would not release a byte of someone
+else's job. A usage figure `nvidia-smi` cannot report is read as the worst case
+and refused.
 
 Nothing else creates `logs/` in this mode either — it belongs to the service,
 which config-only does not install.

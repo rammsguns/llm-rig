@@ -18,7 +18,11 @@
 # decisions, and a run that only needed the first should not perform the second.
 # It will not free the GPUs for you either -- sizing needs idle VRAM, the only
 # way to get it is stopping llama-swap, and that is the change this mode exists
-# to avoid. If something is resident it refuses and tells you how to re-run.
+# to avoid. A resident model is therefore refused, with the sequence to re-run.
+# A desktop session is not: a compositor, a browser and a couple of terminals
+# hold a few hundred MiB between them on any machine with a display attached, so
+# unrelated processes are tolerated up to 2048 MiB in total and refused above
+# it, where sizing really would skew.
 set -uo pipefail
 source "$(dirname "$0")/lib/detect.sh"
 # Pinned + verified llama-swap install; see the header of lib/swap.sh.
@@ -37,7 +41,7 @@ while (( $# )); do
     --select)      shift; SELECTIONS+=("${1:-}") ;;
     --select=*)    SELECTIONS+=("${1#--select=}") ;;
     --config-only) CONFIG_ONLY=1 ;;
-    -h|--help)     sed -n '2,21p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,25p' "$0"; exit 0 ;;
     *)             die "unknown argument: $1" ;;
   esac
   shift
@@ -63,6 +67,17 @@ fi
 # Re-running this while llama-swap holds a model resident would measure ~3GB free
 # and compute a NEGATIVE weight budget, producing a config full of bogus
 # --n-cpu-moe values. Free the GPUs before sizing anything.
+
+# How much VRAM unrelated processes may hold before --config-only refuses to
+# size against what is left. An observed desktop session -- compositor, portal,
+# file manager, editor, two terminals, Chrome and Electron -- came to ~620 MiB;
+# the smallest model this repo serves is ~13.7 GB. 2048 MiB sits an order of
+# magnitude clear of both, so it separates "a display is attached" from "someone
+# else is using the card" without needing to guess which is which.
+# Deliberately not overridable from the environment: it is a safety floor, and
+# a knob to raise it is a knob to defeat it.
+readonly CONFIG_ONLY_HOLD_LIMIT_MB=2048
+
 if (( CONFIG_ONLY )); then
   # ensure_gpus_idle frees VRAM by running `sudo systemctl stop llama-swap`.
   # That is the one change this mode promises not to make, and it is the worst
@@ -72,18 +87,76 @@ if (( CONFIG_ONLY )); then
   #
   # Sizing still needs idle GPUs, so this cannot simply skip the check. Look
   # without touching, and make the operator decide.
+  #
+  # "Any holder at all" is too strict to be usable, though. gpu_holders reads
+  # nvidia-smi --query-compute-apps, which enumerates graphics contexts as well
+  # as compute ones, so on a workstation with a display attached it is never
+  # empty: a compositor, a file manager, a browser and a couple of terminals
+  # come to a few hundred MiB between them. Refusing on that refuses always,
+  # and tells the operator to stop llama-swap, which would not release a byte
+  # of it. Distinguish the two hazards instead.
   holders="$(gpu_holders)"
   if [[ -n "$holders" ]]; then
-    c_warn "Processes currently holding VRAM:"
-    echo "$holders" | sed 's/^/     /' >&2
-    die "--config-only will not stop anything to free them, and sizing a config
-     against ~3GB of visible VRAM would produce bogus --n-cpu-moe values.
+    service_held=""
+    other_mb=0
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      # nvidia-smi's CSV writer replaces commas inside a process name with '?',
+      # so the first and last fields survive even a Chrome command line.
+      used="${line##*,}"
+      name="${line#*,}"; name="${name%,*}"
+      [[ "$used" =~ ^[[:space:]]*([0-9]+)[[:space:]]+MiB[[:space:]]*$ ]] || die \
+        "cannot read how much VRAM this process is holding:
 
-     Nothing has been changed. Make the GPUs idle yourself and re-run:
+     $line
+
+     Refusing rather than guessing: an unreadable figure could be 0 MiB or a
+     resident model, and those call for opposite decisions. Nothing has been
+     changed."
+      mb="${BASH_REMATCH[1]}"
+      case "$name" in
+        *llama-server*|*llama-swap*) service_held+="$line"$'\n' ;;
+        *)                           other_mb=$(( other_mb + mb )) ;;
+      esac
+    done <<<"$holders"
+
+    # Hazard 1: our own stack is resident. The only way to clear it is stopping
+    # the service, which is the change this mode exists not to make, so refuse
+    # and hand back the sequence. Any amount counts -- a partially loaded model
+    # is still a model, and the config it came from is still the only copy.
+    if [[ -n "$service_held" ]]; then
+      c_warn "llama-swap is holding VRAM:"
+      printf '%s' "$service_held" | sed 's/^/     /' >&2
+      die "--config-only will not stop the service to free it. The running
+     daemon holds the only copy of the config it was started with, so stopping
+     it to generate a replacement destroys what a config-only run exists to
+     preserve.
+
+     Nothing has been changed. Free the GPUs yourself and re-run:
 
          sudo systemctl stop llama-swap
          $0 $(printf '%q ' "${ORIG_ARGS[@]}")
          sudo systemctl start llama-swap"
+    fi
+
+    # Hazard 2: something else is holding enough to skew sizing. Stopping
+    # llama-swap would not help, so do not suggest it -- that advice is what
+    # made the strict version of this check both useless and misleading.
+    if (( other_mb > CONFIG_ONLY_HOLD_LIMIT_MB )); then
+      c_warn "Processes currently holding VRAM:"
+      echo "$holders" | sed 's/^/     /' >&2
+      die "${other_mb} MiB is held by processes this script has no business
+     stopping, over the ${CONFIG_ONLY_HOLD_LIMIT_MB} MiB this mode tolerates.
+     Sizing against what is left would produce bogus --n-cpu-moe values, and
+     stopping llama-swap would not release any of it.
+
+     Nothing has been changed. Clear them yourself and re-run:
+
+         $0 $(printf '%q ' "${ORIG_ARGS[@]}")"
+    fi
+
+    (( other_mb )) && c_warn "${other_mb} MiB held by unrelated processes; \
+under the ${CONFIG_ONLY_HOLD_LIMIT_MB} MiB limit, so sizing continues"
   fi
 else
   ensure_gpus_idle
