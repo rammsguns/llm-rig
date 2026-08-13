@@ -349,5 +349,89 @@ test_an_unknown_argument_is_refused() {
   assert_contains "$RUN_OUTPUT" "unknown argument" "says so"
 }
 
+# --- --config-only (#39) -----------------------------------------------------
+# "Make the config say something different" and "replace the runtime" are
+# separate decisions. A run that only needed the first must not perform the
+# second -- which is what blocked #33, where the installed llama-swap is behind
+# the repo's pin and a full run would have upgraded it mid-measurement.
+
+test_config_only_writes_the_config() {
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "config-only must succeed: $RUN_OUTPUT" || return 1
+  assert_contains "$(cat "$RIG_DIR/etc/llama-swap.yaml")" '"phi-4":' "the config is written"
+}
+
+test_config_only_touches_no_service_binary_or_firewall() {
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "runs" || return 1
+  assert_not_called 'systemctl' "the service" || return 1
+  assert_not_called 'ufw' "the firewall" || return 1
+  assert_not_called '(^| )install ' "the binary install" || return 1
+  assert_not_called 'tee +/etc/systemd' "the unit file"
+}
+
+test_config_only_leaves_a_mismatched_binary_alone() {
+  # The #33 case: installed version and pinned version disagree. A full run
+  # would replace the binary; --config-only must not, and must say so.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "runs" || return 1
+  assert_contains "$RUN_OUTPUT" "leaving llama-swap" "says the runtime is untouched"
+}
+
+test_config_only_says_what_it_did_not_do_and_how_to_finish() {
+  # Stopping short quietly is worse than not having the mode: the operator
+  # reads "configured", walks away, and the daemon serves the old config from
+  # memory until something restarts it hours later.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "runs" || return 1
+  assert_contains "$RUN_OUTPUT" "still holds the PREVIOUS config" "warns it is not live" || return 1
+  assert_contains "$RUN_OUTPUT" "systemctl restart llama-swap" "and names the command"
+}
+
+test_config_only_generates_the_same_file_as_a_full_run() {
+  # One generator with a mode, not two generators that will drift apart.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "the full run must succeed: $RUN_OUTPUT" || return 1
+  cp "$RIG_DIR/etc/llama-swap.yaml" "$RIG_DIR/full.yaml"
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "the config-only run must succeed: $RUN_OUTPUT" || return 1
+
+  run diff "$RIG_DIR/full.yaml" "$RIG_DIR/etc/llama-swap.yaml"
+  assert_ok "the two modes must produce an identical config: $RUN_OUTPUT"
+}
+
+test_config_only_composes_with_select() {
+  synth_gpu 20000 1
+  stage_the_collision
+  run bash "$REPO_ROOT/40-serve.sh" --config-only --select "$KEY=$(q4)"
+  assert_ok "both flags together: $RUN_OUTPUT" || return 1
+  local cfg; cfg="$(cat "$RIG_DIR/etc/llama-swap.yaml")"
+  assert_contains "$cfg" "Q4_K_M.gguf" "the selected file" || return 1
+  assert_not_contains "$cfg" "UD-Q5_K_XL" "and not the other one" || return 1
+  assert_not_called 'systemctl' "still no service change"
+}
+
+test_config_only_still_fails_closed_on_a_collision() {
+  synth_gpu 20000 1
+  stage_the_collision
+  mkdir -p "$RIG_DIR/etc"
+  printf 'previous\n' >"$RIG_DIR/etc/llama-swap.yaml"
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_fails "an ambiguous key is still ambiguous in config-only mode" || return 1
+  assert_eq "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "previous" "and nothing was written"
+}
+
 run_suite
 suite_exit
