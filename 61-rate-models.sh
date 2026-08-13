@@ -136,7 +136,7 @@ while IFS= read -r served; do
     printf '  serving flags: %s\n' "$flags"
   } >> "$ARTIFACT"
 
-  got_w=0; answered=0; flips=0
+  got_w=0; answered=0; flips=0; n_incomplete=0
 
   while IFS= read -r task; do
     [[ -n "$task" ]] || continue
@@ -145,15 +145,24 @@ while IFS= read -r served; do
 
     # Each repeat is graded on its own; the task counts as passed only if every
     # repeat passed, and a disagreement is recorded rather than averaged away.
-    passes=0; errors=0
+    passes=0; errors=0; truncs=0
     for (( r = 1; r <= RATE_REPEATS; r++ )); do
       # The reason goes through a file rather than RATE_LAST_ERROR: the
       # response arrives on stdout, so the call is a command substitution, and
       # a variable set inside one does not survive it.
       if resp="$(rate_call "$BASE" "$served" "$tid" 2>"$ERRFILE")"; then
-        if rate_grade "$tid" "$resp"; then
-          passes=$(( passes + 1 ))
-        fi
+        rate_grade "$tid" "$resp"
+        case $? in
+          0) passes=$(( passes + 1 )) ;;
+          3) truncs=$(( truncs + 1 ))
+             # Named in the artifact at the repeat that caused it, because
+             # "3 of 15 answered" on its own does not tell the next reader
+             # whether the model was broken, the server was down, or the
+             # budget was too small.
+             printf '  task %-20s incomplete: %s (stop_reason=%s, max_tokens=%s)\n' \
+               "$tid" "$RATE_TRUNCATED_REASON" "$(rate_stop_reason "$resp")" \
+               "$RATE_MAX_TOKENS" >> "$ARTIFACT" ;;
+        esac
       else
         errors=$(( errors + 1 ))
         printf '  task %-20s error: %s\n' "$tid" \
@@ -163,6 +172,13 @@ while IFS= read -r served; do
 
     if (( errors )); then
       verdict="error"
+    elif (( truncs )); then
+      # Deliberately not `fail`, and deliberately does not increment
+      # `answered`: the model never finished answering, so there is nothing
+      # for it to be wrong about. Leaving `answered` short is what blocks the
+      # catalog row, through the same gate an HTTP error goes through.
+      verdict="incomplete:$RATE_TRUNCATED_REASON"
+      n_incomplete=$(( n_incomplete + 1 ))
     elif (( passes == RATE_REPEATS )); then
       verdict="pass"; got_w=$(( got_w + weight )); answered=$(( answered + 1 ))
     elif (( passes == 0 )); then
@@ -190,8 +206,9 @@ while IFS= read -r served; do
     "$( [[ -z "$missing" ]] && printf 'complete' || printf 'incomplete -- %s not established' "$missing" )" \
     >> "$ARTIFACT"
 
-  printf 'RESULT %s value=%s quant=%s weight=%s/%s answered=%s/%s flips=%s confidence=%s provenance=%s\n\n' \
-    "${cid:-$served}" "$value" "$quant" "$got_w" "$TOTAL_W" "$answered" "$NTASKS" "$flips" "$conf" \
+  printf 'RESULT %s value=%s quant=%s weight=%s/%s answered=%s/%s incomplete=%s flips=%s confidence=%s provenance=%s\n\n' \
+    "${cid:-$served}" "$value" "$quant" "$got_w" "$TOTAL_W" "$answered" "$NTASKS" \
+    "$n_incomplete" "$flips" "$conf" \
     "$( [[ -z "$missing" ]] && printf 'complete' || printf 'missing:%s' "$missing" )" \
     >> "$ARTIFACT"
 
