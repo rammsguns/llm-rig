@@ -16,6 +16,9 @@
 # unit rewrite, no restart, no firewall change. It exists because "make the
 # config say something different" and "replace the runtime" are separate
 # decisions, and a run that only needed the first should not perform the second.
+# It will not free the GPUs for you either -- sizing needs idle VRAM, the only
+# way to get it is stopping llama-swap, and that is the change this mode exists
+# to avoid. If something is resident it refuses and tells you how to re-run.
 set -uo pipefail
 source "$(dirname "$0")/lib/detect.sh"
 # Pinned + verified llama-swap install; see the header of lib/swap.sh.
@@ -25,12 +28,16 @@ source "$(dirname "$0")/lib/serving.sh"
 
 SELECTIONS=()
 CONFIG_ONLY=0
+# Kept so a refusal can hand back the exact command to re-run. The parse loop
+# shifts "$@" away, and a --select path with a space in it must survive being
+# printed and pasted.
+ORIG_ARGS=("$@")
 while (( $# )); do
   case "$1" in
     --select)      shift; SELECTIONS+=("${1:-}") ;;
     --select=*)    SELECTIONS+=("${1#--select=}") ;;
     --config-only) CONFIG_ONLY=1 ;;
-    -h|--help)     sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,21p' "$0"; exit 0 ;;
     *)             die "unknown argument: $1" ;;
   esac
   shift
@@ -56,10 +63,37 @@ fi
 # Re-running this while llama-swap holds a model resident would measure ~3GB free
 # and compute a NEGATIVE weight budget, producing a config full of bogus
 # --n-cpu-moe values. Free the GPUs before sizing anything.
-ensure_gpus_idle
+if (( CONFIG_ONLY )); then
+  # ensure_gpus_idle frees VRAM by running `sudo systemctl stop llama-swap`.
+  # That is the one change this mode promises not to make, and it is the worst
+  # one on offer: the running daemon holds the only copy of the config it was
+  # started with, so stopping it to generate a replacement destroys the thing a
+  # config-only run exists to preserve.
+  #
+  # Sizing still needs idle GPUs, so this cannot simply skip the check. Look
+  # without touching, and make the operator decide.
+  holders="$(gpu_holders)"
+  if [[ -n "$holders" ]]; then
+    c_warn "Processes currently holding VRAM:"
+    echo "$holders" | sed 's/^/     /' >&2
+    die "--config-only will not stop anything to free them, and sizing a config
+     against ~3GB of visible VRAM would produce bogus --n-cpu-moe values.
+
+     Nothing has been changed. Make the GPUs idle yourself and re-run:
+
+         sudo systemctl stop llama-swap
+         $0 $(printf '%q ' "${ORIG_ARGS[@]}")
+         sudo systemctl start llama-swap"
+  fi
+else
+  ensure_gpus_idle
+fi
 detect_hw
 
-mkdir -p "$RIG_DIR/etc" "$RIG_DIR/logs"
+# logs/ belongs to the service, which config-only does not install. Creating it
+# here anyway would make "the config file and nothing else" false in the one
+# mode that claims it.
+mkdir -p "$RIG_DIR/etc"
 
 # --- install llama-swap -----------------------------------------------------
 # Pinned and verified. See lib/swap.sh for why, and for the rules; the short
@@ -337,6 +371,8 @@ if (( CONFIG_ONLY )); then
   printf '        sudo systemctl restart llama-swap\n\n'
   exit 0
 fi
+
+mkdir -p "$RIG_DIR/logs"
 
 # --- systemd service --------------------------------------------------------
 # llama-swap binds LAN-wide; llama-server instances stay on localhost behind it.

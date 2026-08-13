@@ -666,6 +666,26 @@ runtime left alone is exactly the situation where the versions differ.
 It composes with `--select`, and an ambiguous serving key still fails closed
 before anything is written.
 
+**It will not free the GPUs for you.** Generating a config means sizing against
+free VRAM, and a full run gets that by stopping llama-swap. Config-only will
+not: stopping the daemon *is* the change the mode promises not to make, and it
+is the worst one available, because a running llama-swap holds the only copy of
+the config it was started with. Replace the file while it is stopped and the
+previous configuration is simply gone. So if anything is holding VRAM, the run
+refuses before writing anything and hands you the sequence:
+
+```bash
+sudo systemctl stop llama-swap
+./40-serve.sh --config-only --select …
+sudo systemctl start llama-swap
+```
+
+Same flags echoed back, because a `--select` path retyped by hand is how the
+wrong quant ends up being served.
+
+Nothing else creates `logs/` in this mode either — it belongs to the service,
+which config-only does not install.
+
 ## Configuration
 
 Everything is derived from detected hardware, and everything is overridable by
