@@ -12,6 +12,12 @@
 # produces is executed, the suite is twelve text-graded tasks, and the
 # confidence ceiling is `medium` on purpose.
 #
+# A row is printed only for a model whose RUNTIME could be identified as well as
+# measured -- weights, quant, llama.cpp revision and live n_ctx. Twelve passing
+# tasks say the suite ran; they do not say what it ran against. A run that
+# cannot answer that is still written to the artifact, with the missing fields
+# named, and is a diagnostic rather than evidence.
+#
 # Usage:
 #   ./61-rate-models.sh                    # every served model, one pass each
 #   ./61-rate-models.sh --repeats 3        # three passes; disagreement -> low
@@ -36,7 +42,7 @@ while (( $# )); do
     --model)     shift; ONLY="${1:-}" ;;
     --model=*)   ONLY="${1#--model=}" ;;
     --dry-run)   DRY=1 ;;
-    -h|--help)   sed -n '2,21p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)   sed -n '2,27p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *)           die "unknown argument: $1" ;;
   esac
   shift
@@ -83,6 +89,7 @@ fi
 # --- run --------------------------------------------------------------------
 
 CFG="${LLAMA_SWAP_CFG:-$RIG_DIR/etc/llama-swap.yaml}"
+REV="$(rate_llamacpp_rev "$RIG_DIR")"
 
 {
   printf 'llm-rig local coding rating  %s\n' "$STAMP"
@@ -95,8 +102,11 @@ CFG="${LLAMA_SWAP_CFG:-$RIG_DIR/etc/llama-swap.yaml}"
   # running: the served alias does not say which quant, which llama.cpp build
   # or which context produced it. Anything that cannot be read is recorded as
   # `unavailable` rather than guessed.
-  printf 'llama.cpp revision: %s\n' "$(rate_llamacpp_rev "$RIG_DIR")"
+  printf 'llama.cpp revision: %s\n' "$REV"
   printf 'llama-swap config: %s\n' "$( [[ -f "$CFG" ]] && printf '%s' "$CFG" || printf '%s' "$RATE_UNAVAILABLE" )"
+  # Stated in the file itself, so an artifact read a year from now says on its
+  # own terms why it did or did not produce a row.
+  printf 'recordable requires: %s\n' "$(IFS=','; printf '%s' "${RATE_REQUIRED_PROVENANCE[*]}")"
   printf '\n'
 } > "$ARTIFACT"
 
@@ -107,7 +117,7 @@ while IFS= read -r served; do
 
   cid=""
   if ! cid="$(rate_catalog_id "$served")"; then
-    c_warn "$served is not in the catalog -- measuring it, but no rating row can be written"
+    c_warn "$served is not in the catalog -- measuring it anyway"
     cid=""
   fi
 
@@ -175,15 +185,25 @@ while IFS= read -r served; do
   ctx="$(rate_live_ctx "$CFG" "$gguf")"
   printf '  live n_ctx: %s\n' "$ctx" >> "$ARTIFACT"
 
-  printf 'RESULT %s value=%s quant=%s weight=%s/%s answered=%s/%s flips=%s confidence=%s\n\n' \
+  missing="$(rate_provenance_missing "$gguf" "$quant" "$REV" "$ctx")"
+  printf '  provenance: %s\n' \
+    "$( [[ -z "$missing" ]] && printf 'complete' || printf 'incomplete -- %s not established' "$missing" )" \
+    >> "$ARTIFACT"
+
+  printf 'RESULT %s value=%s quant=%s weight=%s/%s answered=%s/%s flips=%s confidence=%s provenance=%s\n\n' \
     "${cid:-$served}" "$value" "$quant" "$got_w" "$TOTAL_W" "$answered" "$NTASKS" "$flips" "$conf" \
+    "$( [[ -z "$missing" ]] && printf 'complete' || printf 'missing:%s' "$missing" )" \
     >> "$ARTIFACT"
 
   c_ok "$served  value=$value  weight=$got_w/$TOTAL_W  confidence=$conf"
 
-  # A model that errored on any task is measured but not offered as a rating:
-  # a partial run is a report, not evidence.
-  if [[ -n "$cid" ]] && (( answered == NTASKS )); then
+  # Measured is not the same as recordable. A run can complete every task and
+  # still be unable to say what it ran against, and a row whose runtime nobody
+  # can reconstruct is a number attached to an alias.
+  if blocked="$(rate_row_blocked "$cid" "$answered" "$NTASKS" "$missing")"; then
+    c_warn "$served: no catalog row -- $blocked"
+    printf '  no catalog row: %s\n' "$blocked" >> "$ARTIFACT"
+  else
     ROWS+="$(rate_row "$cid" "$value" "$TODAY" "$ARTIFACT" "$conf")"$'\n'
   fi
 done < <(printf '%s\n' "$AVAILABLE")
@@ -197,5 +217,5 @@ if [[ -n "$ROWS" ]]; then
   printf '\n'
   c_info "Then re-validate:  bash -c 'source lib/models.sh; catalog_validate || printf \"%%s\" \"\$CATALOG_ERRORS\"'"
 else
-  c_warn "No complete result for any catalogued model -- nothing to record"
+  c_warn "No recordable result -- nothing to record. The artifact says why for each model."
 fi

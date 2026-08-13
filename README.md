@@ -356,7 +356,7 @@ serves**, at the quant they are actually served at, and writes the evidence to
 ./61-rate-models.sh --dry-run          # show the plan, call nothing
 ```
 
-Read [`lib/rate.sh`](lib/rate.sh) before trusting a number out of it. Four
+Read [`lib/rate.sh`](lib/rate.sh) before trusting a number out of it. These
 things about it are deliberate and constrain what it can claim:
 
 - **Nothing the model produces is executed.** The obvious way to grade
@@ -379,6 +379,10 @@ things about it are deliberate and constrain what it can claim:
 - **The confidence ceiling is `medium`.** Twelve text-graded tasks at one quant
   on one machine does not settle how good a model is at coding. A single pass
   is `low`; two clean repeats are `medium`; `high` is not reachable from here.
+- **Completing every task does not earn a catalog row.** A run that cannot say
+  which weights, quant, build and live context produced it is written down as a
+  diagnostic and refused as evidence — see
+  [below](#completing-the-suite-is-not-the-same-as-earning-a-row).
 
 #### Two grading regimes, on purpose
 
@@ -410,13 +414,13 @@ compiled, at whatever context `40-serve.sh` last configured — so two runs that
 disagree could otherwise produce the same catalog row. Each run therefore
 records:
 
-| Field | Read from |
-| --- | --- |
-| llama.cpp revision | `.llamacpp-rev`, written by the build |
-| weights | the `-m` path in the generated `llama-swap.yaml`, per model |
-| quant | the filename **on disk**, not the catalog's preference — the reason to record it is that the two can differ |
-| serving flags | the per-model flags in the same config, including `CUDA_VISIBLE_DEVICES` |
-| live `n_ctx` | `/props` on the upstream serving *those* weights |
+| Field | Read from | Required |
+| --- | --- | --- |
+| llama.cpp revision | `.llamacpp-rev`, written by the build | yes |
+| weights | the `-m` path in the generated `llama-swap.yaml`, per model | yes |
+| quant | the filename **on disk**, not the catalog's preference — the reason to record it is that the two can differ | yes |
+| live `n_ctx` | `/props` on the upstream serving *those* weights | yes |
+| serving flags | the per-model flags in the same config, including `CUDA_VISIBLE_DEVICES` | no — a model can legitimately have none |
 
 Anything that cannot be read is written as `unavailable`. The live context is
 matched by model path rather than taken from the first server that answers:
@@ -424,6 +428,33 @@ with several models loaded, the first answer is some other model's context,
 and recording that is worse than recording nothing. The quant also appears on
 the `RESULT` line, so two ratings taken at different quants cannot be compared
 by accident.
+
+`unavailable` and `none` are different answers and the distinction decides
+whether a row can be written. `none` means the field was read and there was
+nothing there — a model served on every GPU with no overrides genuinely has no
+per-model flags. `unavailable` means the field could not be read at all.
+Writing `unavailable` for both would make a config nobody could open look like
+a deliberately plain one.
+
+#### Completing the suite is not the same as earning a row
+
+Twelve passing tasks say the suite ran. They do not say what it ran against —
+and `qwen3-4b;93;…` with an unidentified runtime is a number attached to an
+alias, which the next re-run of `30-models.sh` silently invalidates. So a run
+is offered as a catalog row only when **all four required fields above** were
+established. Otherwise the artifact is written in full, the `RESULT` line
+carries `provenance=missing:<fields>`, and the script names the gaps instead of
+printing a row:
+
+```
+!! qwen3-4b: no catalog row -- incomplete runtime provenance: weights,quant,live-n_ctx
+```
+
+The requirement is written into the artifact's own header, so a file read a
+year later explains on its own terms why it did or did not produce a row. This
+is not a hypothetical: the first real run of this suite completed 12/12 on
+three models with `etc/llama-swap.yaml` missing, and every field of its
+runtime identity reads `unavailable`.
 
 The script **does not edit the catalog**. It prints rows to paste:
 
@@ -439,7 +470,10 @@ rewrites its own evidence base, so the paste is manual and the run that
 produced it is a file you can open.
 
 A run where any task errored is written down but **not** offered as a row: a
-partial run is a report, not evidence.
+partial run is a report, not evidence. The same applies to a complete run whose
+runtime could not be identified, and to a model that is not in the catalog —
+each of the three prints its own reason rather than a shared "nothing to
+record".
 
 ### The llama-swap binary is pinned and verified
 

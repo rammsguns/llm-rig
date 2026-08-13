@@ -257,6 +257,68 @@ rate_call() {
 
 RATE_UNAVAILABLE='unavailable'
 
+# Read successfully, and there was nothing there.
+#
+# Distinct from `unavailable`, which means the field could not be read at all.
+# A model served on every GPU with no per-model overrides genuinely has no
+# extra flags; a model whose config is missing has flags nobody knows. Writing
+# `unavailable` for both would make a config that cannot be read look like a
+# deliberately plain one, and only one of those two can support a rating.
+RATE_NONE='none'
+
+# The runtime-provenance a rating has to carry before it may be pasted into
+# catalog_ratings().
+#
+# Twelve passing tasks say the suite ran. They do not say what it ran against:
+# without these four, `qwen3-4b;93;...` is a number attached to an alias, and
+# the next person to re-run 30-models.sh or 20-build-llamacpp.sh cannot tell
+# whether they are reproducing the measurement or replacing it. Serving flags
+# are deliberately NOT here -- a model can legitimately have none, which is why
+# they get their own `none` and are recorded rather than required.
+RATE_REQUIRED_PROVENANCE=(weights quant llamacpp-revision live-n_ctx)
+
+# rate_provenance_missing <weights> <quant> <revision> <live-n_ctx>
+#
+# Prints the names of the required fields that were not established, comma
+# separated and in the order above; status 0 when provenance is complete.
+#
+# `none` counts as missing here, and that is not a contradiction with the
+# paragraph above: "there are no weights" is not an identity. Only an optional
+# field can legitimately be empty.
+rate_provenance_missing() {
+  local values=("$@") missing=() i v
+  for i in "${!RATE_REQUIRED_PROVENANCE[@]}"; do
+    v="${values[$i]:-}"
+    case "$v" in
+      ''|"$RATE_UNAVAILABLE"|"$RATE_NONE") missing+=("${RATE_REQUIRED_PROVENANCE[$i]}") ;;
+    esac
+  done
+  (( ${#missing[@]} )) || return 0
+  local IFS=','
+  printf '%s' "${missing[*]}"
+  return 1
+}
+
+# rate_row_blocked <catalog-id> <answered> <total> <missing-provenance>
+#
+# Prints why this run may not be offered as a catalog row, or returns 1 when it
+# may. Every reason names what is wrong, because "no rows to record" at the end
+# of a run that looked like it worked is the least actionable message the
+# script could print.
+rate_row_blocked() {
+  local cid="$1" answered="$2" total="$3" missing="$4"
+  if [[ -z "$cid" ]]; then
+    printf 'not in the catalog'
+  elif (( answered != total )); then
+    printf 'incomplete run: %s of %s tasks answered' "$answered" "$total"
+  elif [[ -n "$missing" ]]; then
+    printf 'incomplete runtime provenance: %s' "$missing"
+  else
+    return 1
+  fi
+  return 0
+}
+
 # rate_swap_gguf <config> <served-name> -- the -m path for that model, or
 # `unavailable`.
 #
@@ -302,14 +364,24 @@ rate_quant_of() {
 # on one line. The generated `${base}` flags are shared by every model and are
 # recorded once in the artifact header; these are the per-model ones that
 # differ, which is where two runs of the "same" model diverge.
+#
+# Three outcomes, and the third is the one worth having: `unavailable` when the
+# config or the model key cannot be read, `none` when the key is there and
+# carries no per-model flags, and the flags themselves otherwise. A model
+# served with no overrides is a fact about the run; a config nobody could open
+# is the absence of one.
 rate_swap_flags() {
-  local cfg="$1" want="$2" flags
+  local cfg="$1" want="$2" out flags found
   [[ -f "$cfg" ]] || { printf '%s' "$RATE_UNAVAILABLE"; return 1; }
-  flags="$(awk -v want="$want" '
+  # Whether the key exists is answered by the same pass that reads the flags,
+  # using the same exact-string comparison -- a separate grep would have to
+  # anchor a model name containing `.` as a regex.
+  out="$(awk -v want="$want" '
     /^  "[^"]+":[[:space:]]*$/ {
       key = $0
       sub(/^  "/, "", key); sub(/":[[:space:]]*$/, "", key)
       in_model = (key == want)
+      if (in_model) found = 1
       next
     }
     in_model && /^[[:space:]]*(ttl|aliases|env|proxy):/ { in_model = 0 }
@@ -319,8 +391,12 @@ rate_swap_flags() {
       # The -m line names the weights, which are recorded separately.
       if (line !~ /^-m[[:space:]]/) printf "%s ", line
     }
-  ' "$cfg" | sed -e 's/[[:space:]]\+/ /g' -e 's/[[:space:]]*$//')"
-  [[ -n "$flags" ]] || { printf '%s' "$RATE_UNAVAILABLE"; return 1; }
+    END { printf "\n%d", found + 0 }
+  ' "$cfg")"
+  found="${out##*$'\n'}"
+  flags="$(printf '%s' "${out%$'\n'*}" | sed -e 's/[[:space:]]\+/ /g' -e 's/[[:space:]]*$//')"
+  (( found )) || { printf '%s' "$RATE_UNAVAILABLE"; return 1; }
+  [[ -n "$flags" ]] || { printf '%s' "$RATE_NONE"; return 0; }
   printf '%s' "$flags"
 }
 
