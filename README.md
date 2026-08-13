@@ -183,7 +183,7 @@ One consequence to be aware of: with every coding rating still `unknown`, the
 quality term does no discriminating work, so the ranking runs on freshness,
 hardware fit, speed and features. On a 31 GB machine that makes Laguna XS 2.1
 the top `medium` pick ahead of `qwen3-coder-30b`, on metadata alone. That is
-the existing design behaving as designed, and it is an argument for finishing
+the existing design behaving as designed, and it is an argument for running
 the local benchmark, not for hand-weighting the table.
 
 Running them here: XS 2.1 at `Q4_K_M` is 18.9 GiB and needs both cards
