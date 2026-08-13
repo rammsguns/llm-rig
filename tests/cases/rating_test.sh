@@ -552,6 +552,16 @@ models:
       --tensor-split 0.5,0.5 --n-cpu-moe 7
     ttl: 900
     aliases: ["qwen3-coder-30b-a3b-instruct-local"]
+
+  "phi-4":
+    # Nothing per-model: it fits, and the shared ${base} flags are all it
+    # needs. A legitimately plain model, which is a different thing from a
+    # model whose config could not be read.
+    cmd: |
+      llama-server ${base}
+      -m /models/phi-4-GGUF/phi-4-Q4_K_M.gguf
+    ttl: 900
+    aliases: ["phi-4-local"]
 CFG
   printf '%s' "$RIG_DIR/etc/llama-swap.yaml"
 }
@@ -637,6 +647,102 @@ test_no_props_at_all_means_unavailable() {
   : >"$MOCK_ROUTES"
   assert_eq "$(rate_live_ctx "$cfg" /models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf)" "unavailable" \
     "nothing answered"
+}
+
+test_a_model_with_no_per_model_flags_reports_none_not_unavailable() {
+  # The distinction the provenance gate rests on. A model served on every GPU
+  # with no overrides genuinely has no extra flags; a config that cannot be
+  # opened has flags nobody knows. Collapsing the two would make the second
+  # look like the first.
+  local cfg; cfg="$(write_cfg)"
+  assert_eq "$(rate_swap_flags "$cfg" phi-4)" "none" "read, and empty"
+}
+
+test_an_unreadable_config_or_key_still_reports_unavailable() {
+  local cfg; cfg="$(write_cfg)"
+  assert_eq "$(rate_swap_flags "$cfg" not-served)" "unavailable" "no such model" || return 1
+  assert_eq "$(rate_swap_flags "$SANDBOX/nope.yaml" qwen3-4b)" "unavailable" "no config"
+}
+
+test_a_model_key_with_no_flags_is_found_not_failed() {
+  # `none` is a successful read and must not return non-zero: a caller using
+  # the status to decide whether the config was legible would get the wrong
+  # answer for the one model the config describes perfectly.
+  local cfg; cfg="$(write_cfg)"
+  run rate_swap_flags "$cfg" phi-4
+  assert_ok "an empty flag list is a result" || return 1
+  run rate_swap_flags "$cfg" not-served
+  assert_fails "an unknown key is not"
+}
+
+# --- the provenance gate ----------------------------------------------------
+# Twelve passing tasks say the suite ran. They do not say what it ran against.
+
+test_complete_provenance_reports_nothing_missing() {
+  run rate_provenance_missing /models/x/Qwen3-4B-Q5_K_M.gguf Q5_K_M abc1234 65536
+  assert_ok "all four fields established" || return 1
+  assert_eq "$RUN_OUTPUT" "" "and nothing is named as missing"
+}
+
+test_every_required_field_is_named_when_it_alone_is_missing() {
+  # Field by field, so a future reordering of the arguments cannot silently
+  # start reporting the wrong name.
+  local -a good=(/models/x/Qwen3-4B-Q5_K_M.gguf Q5_K_M abc1234 65536)
+  local -a args
+  local i out
+  for i in "${!RATE_REQUIRED_PROVENANCE[@]}"; do
+    args=("${good[@]}")
+    args[i]="unavailable"
+    out="$(rate_provenance_missing "${args[@]}")"
+    assert_eq "$out" "${RATE_REQUIRED_PROVENANCE[$i]}" \
+      "argument $i must report ${RATE_REQUIRED_PROVENANCE[$i]}" || return 1
+  done
+}
+
+test_every_missing_field_is_named_not_just_the_first() {
+  # The message has to be actionable. "provenance incomplete" sends someone
+  # hunting through five things when two are wrong.
+  local out
+  out="$(rate_provenance_missing unavailable unavailable abc1234 unavailable)"
+  assert_eq "$out" "weights,quant,live-n_ctx" "all three, in field order"
+}
+
+test_a_none_placeholder_is_not_acceptable_provenance() {
+  # `none` is a legitimate answer for an optional field. "There are no weights"
+  # is not an identity, and must not pass the gate just because something was
+  # written in the slot.
+  run rate_provenance_missing none Q5_K_M abc1234 65536
+  assert_fails "none is not an identity" || return 1
+  assert_contains "$RUN_OUTPUT" "weights" "and it is named"
+}
+
+test_an_empty_field_counts_as_missing() {
+  run rate_provenance_missing "" Q5_K_M abc1234 65536
+  assert_fails "a blank is not a reading"
+}
+
+test_a_recordable_run_is_not_blocked() {
+  run rate_row_blocked qwen3-4b 12 12 ""
+  assert_fails "catalogued, complete, and identified" || return 1
+  assert_eq "$RUN_OUTPUT" "" "no reason to print"
+}
+
+test_each_reason_a_row_is_blocked_is_named() {
+  local out
+  out="$(rate_row_blocked "" 12 12 "")"
+  assert_contains "$out" "not in the catalog" "no id to write against" || return 1
+  out="$(rate_row_blocked qwen3-4b 11 12 "")"
+  assert_contains "$out" "11 of 12" "a partial run is a report, not evidence" || return 1
+  out="$(rate_row_blocked qwen3-4b 12 12 "weights,quant")"
+  assert_contains "$out" "weights,quant" "and an unidentified runtime names its gaps"
+}
+
+test_a_complete_run_alone_does_not_earn_a_row() {
+  # The whole point of the gate: 12/12 with nothing known about the runtime is
+  # a diagnostic, not evidence.
+  run rate_row_blocked qwen3-4b 12 12 "weights,quant,llamacpp-revision,live-n_ctx"
+  assert_ok "blocked despite a clean sweep" || return 1
+  assert_contains "$RUN_OUTPUT" "runtime provenance" "with the reason stated"
 }
 
 test_unavailable_weights_cannot_produce_a_live_context() {
@@ -746,8 +852,19 @@ serve_model() {
 
 drive() { run bash -c "cd '$REPO_ROOT' && HOME='$HOME' PATH='$PATH' bash ./61-rate-models.sh $1"; }
 
+# Everything a recordable rating requires: a config naming the weights, a build
+# record, and an upstream answering /props for those weights. Call it after
+# serve_model, which truncates the routes table.
+with_full_provenance() {
+  write_cfg >/dev/null
+  printf 'abc1234def\n' >"$RIG_DIR/.llamacpp-rev"
+  printf '*\t127.0.0.1:9100/props\t200\t{"model_path":"/models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf","default_generation_settings":{"n_ctx":65536}}\n' \
+    >>"$MOCK_ROUTES"
+}
+
 test_the_script_writes_an_artifact_and_a_pasteable_row() {
   serve_model 6
+  with_full_provenance
   drive ""
   assert_ok "the run must complete: $RUN_OUTPUT" || return 1
 
@@ -767,13 +884,10 @@ test_the_script_writes_an_artifact_and_a_pasteable_row() {
 }
 
 test_the_artifact_records_what_was_actually_running() {
-  write_cfg >/dev/null
-  printf 'abc1234def\n' >"$RIG_DIR/.llamacpp-rev"
   serve_model 6
   # /props answers for the weights the config names, so the live context is
   # establishable rather than unavailable.
-  printf '*\t127.0.0.1:9100/props\t200\t{"model_path":"/models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf","default_generation_settings":{"n_ctx":65536}}\n' \
-    >>"$MOCK_ROUTES"
+  with_full_provenance
   drive ""
   assert_ok "the run must complete: $RUN_OUTPUT" || return 1
 
@@ -784,7 +898,8 @@ test_the_artifact_records_what_was_actually_running() {
   assert_contains "$art" "quant: Q5_K_M" "the quant it was served at" || return 1
   assert_contains "$art" "CUDA_VISIBLE_DEVICES=0" "the serving flags" || return 1
   assert_contains "$art" "live n_ctx: 65536" "what the server reported" || return 1
-  assert_contains "$art" "quant=Q5_K_M" "and the RESULT line carries the quant"
+  assert_contains "$art" "quant=Q5_K_M" "and the RESULT line carries the quant" || return 1
+  assert_contains "$art" "provenance: complete" "the gate's verdict, in the file"
 }
 
 test_missing_runtime_identity_is_marked_not_omitted() {
@@ -801,17 +916,111 @@ test_missing_runtime_identity_is_marked_not_omitted() {
   assert_contains "$art" "live n_ctx: unavailable" "nothing answered /props"
 }
 
+test_the_artifact_states_what_a_recordable_run_requires() {
+  # So a file read a year from now explains on its own terms why it did or did
+  # not produce a row, without anyone having to find this repo first.
+  serve_model 6
+  drive ""
+  local art
+  art="$(cat "$(rate_latest_artifact "$HOME")")"
+  assert_contains "$art" "recordable requires:" "the standard is stated" || return 1
+  local field
+  for field in "${RATE_REQUIRED_PROVENANCE[@]}"; do
+    assert_contains "$art" "$field" "$field must be named in the header" || return 1
+  done
+}
+
+# --- the provenance gate, driven for real -----------------------------------
+
+test_a_complete_run_with_no_runtime_identity_produces_no_row() {
+  # The condition the first real run hit: 12/12, a clean value, and nothing
+  # recorded about what produced it. Complete task execution is not evidence.
+  serve_model 6
+  drive ""
+  assert_ok "the run must complete -- this is a diagnostic, not a failure" || return 1
+
+  local art
+  art="$(cat "$(rate_latest_artifact "$HOME")")"
+  assert_contains "$art" "RESULT qwen3-4b" "the measurement is still written down" || return 1
+  assert_contains "$art" "answered=12/12" "and it answered everything" || return 1
+  assert_contains "$art" "provenance=missing:" "but the RESULT line says it is unidentified" || return 1
+  assert_contains "$art" "no catalog row:" "with the reason in the file" || return 1
+
+  assert_not_contains "$RUN_OUTPUT" $'\nqwen3-4b;' "no row may be offered" || return 1
+  assert_contains "$RUN_OUTPUT" "nothing to record" "and the run says so" || return 1
+  assert_contains "$RUN_OUTPUT" "incomplete runtime provenance" "naming the class of problem" || return 1
+  assert_contains "$RUN_OUTPUT" "weights" "and the fields themselves"
+}
+
+test_partial_runtime_identity_is_still_no_row() {
+  # A config and a build record, but nothing answering /props. Three fields of
+  # four is not three quarters of a reproducible rating.
+  serve_model 6
+  write_cfg >/dev/null
+  printf 'abc1234def\n' >"$RIG_DIR/.llamacpp-rev"
+  drive ""
+  assert_ok "the run must complete" || return 1
+
+  assert_not_contains "$RUN_OUTPUT" $'\nqwen3-4b;' "no row" || return 1
+  # Exactly the one field, with nothing listed before it: the three that were
+  # read must not be reported as gaps.
+  assert_contains "$RUN_OUTPUT" "runtime provenance: live-n_ctx" "only the field that is missing"
+}
+
+test_full_runtime_identity_produces_the_row_unchanged() {
+  # The other direction. The gate must not have made a well-identified run
+  # harder to record than it was before.
+  serve_model 6
+  with_full_provenance
+  drive "--repeats 2"
+  assert_ok "the run must complete: $RUN_OUTPUT" || return 1
+
+  local row
+  row="$(printf '%s\n' "$RUN_OUTPUT" | grep '^qwen3-4b;')"
+  # 6, not 100: answering "6" to everything passes comprehension-loop and
+  # nothing else, which is 1 of 15 weight.
+  assert_eq "$row" "qwen3-4b;6;$(date +%F);local-benchmark;file:$(basename "$(rate_latest_artifact "$HOME")");medium" \
+    "the same row the script printed before the gate existed" || return 1
+  with_rating "$row"
+  run catalog_validate
+  assert_ok "and it still validates: ${CATALOG_ERRORS:-}"
+}
+
+test_a_model_with_no_serving_flags_is_not_treated_as_unidentified() {
+  # phi-4 is served with no per-model flags at all. That is a fact about the
+  # run, not a hole in it, and must not block the row.
+  {
+    printf 'GET\t/v1/models\t200\t{"data":[{"id":"phi-4"}]}\n'
+    printf 'POST\t/v1/messages\t200\t{"content":[{"type":"text","text":"6"}]}\n'
+  } >"$MOCK_ROUTES"
+  write_cfg >/dev/null
+  printf 'abc1234def\n' >"$RIG_DIR/.llamacpp-rev"
+  printf '*\t127.0.0.1:9102/props\t200\t{"model_path":"/models/phi-4-GGUF/phi-4-Q4_K_M.gguf","default_generation_settings":{"n_ctx":16384}}\n' \
+    >>"$MOCK_ROUTES"
+  drive ""
+  assert_ok "the run must complete: $RUN_OUTPUT" || return 1
+
+  local art
+  art="$(cat "$(rate_latest_artifact "$HOME")")"
+  assert_contains "$art" "serving flags: none" "read, and empty" || return 1
+  assert_contains "$art" "provenance: complete" "an optional field being empty is not a gap" || return 1
+  assert_contains "$RUN_OUTPUT" "phi-4;" "and the row is offered"
+}
+
 test_a_model_that_answers_everything_wrong_still_produces_a_row() {
   # A rating of 0 is a result. Refusing to record it would leave the worst
   # model looking unmeasured, which reads as "no evidence" rather than "bad".
   serve_model "definitely not the answer"
+  with_full_provenance
   drive ""
   assert_ok "the run must complete" || return 1
-  assert_contains "$RUN_OUTPUT" "value=0" "zero is a legitimate rating"
+  assert_contains "$RUN_OUTPUT" "value=0" "zero is a legitimate rating" || return 1
+  assert_contains "$RUN_OUTPUT" "qwen3-4b;0;" "and it is offered as a row"
 }
 
 test_a_single_pass_is_recorded_as_low_confidence() {
   serve_model 6
+  with_full_provenance
   drive ""
   assert_contains "$RUN_OUTPUT" "confidence=low" "one repeat cannot support more" || return 1
   local row
@@ -825,6 +1034,17 @@ test_the_script_refuses_when_nothing_is_served() {
   assert_fails "no endpoint, no rating" || return 1
   assert_contains "$RUN_OUTPUT" "no models served" "with the reason named" || return 1
   assert_eq "$(rate_latest_artifact "$HOME")" "" "and no artifact is left behind"
+}
+
+test_help_prints_the_whole_usage_block() {
+  # --help is a line range over this file's own header. Extending the header
+  # without extending the range silently truncates the help text, which is the
+  # kind of break nobody notices until they need the help.
+  drive "--help"
+  assert_ok "--help" || return 1
+  assert_contains "$RUN_OUTPUT" "Usage:" "the usage block" || return 1
+  assert_contains "$RUN_OUTPUT" "RUNTIME could be identified" "the provenance rule" || return 1
+  assert_contains "$RUN_OUTPUT" "Output -> " "down to its last line"
 }
 
 test_dry_run_maps_names_and_calls_nothing() {
