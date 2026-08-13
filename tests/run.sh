@@ -59,8 +59,16 @@ FAILED=0
 # Every tracked shell script, plus the mocks (which are shell too). `find` can
 # fail -- unreadable directory, bad invocation, missing binary -- and used to
 # do so silently into an empty array.
+#
+# build/ is pruned because it is not ours. 20-build-llamacpp.sh clones llama.cpp
+# there, and that tree carries its own shell scripts and a node_modules full of
+# more -- nineteen files on this machine, none of them written here. Linting
+# vendored code cannot find a bug we can fix, and CI never noticed because a
+# fresh checkout has no build/ at all: the enumeration silently meant one thing
+# in CI and another on a developer's machine, and only the developer's copy
+# failed. The .gitignore is the definition of what the repo does not own.
 if ! script_list="$(find "$REPO_ROOT" -type f \( -name '*.sh' -o -path '*/mocks/bin/*' \) \
-                    -not -path '*/.git/*' | sort)"; then
+                    -not -path '*/.git/*' -not -path "$REPO_ROOT/build/*" | sort)"; then
   fatal "could not enumerate shell scripts under $REPO_ROOT"
 fi
 [[ -n "$script_list" ]] \
@@ -95,6 +103,8 @@ if (( RUN_LINT )); then
   else
     printf '  %s shellcheck not installed -- skipped locally, enforced in CI\n' "$(yellow SKIP)"
     printf '       install with: sudo apt-get install -y shellcheck\n'
+    printf '       or, without root: unpack the static binary from\n'
+    printf '       https://github.com/koalaman/shellcheck/releases into ~/.local/bin\n'
   fi
 fi
 
