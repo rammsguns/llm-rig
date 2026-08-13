@@ -336,8 +336,17 @@ test_an_unknown_rating_method_is_rejected() {
 test_a_well_formed_measured_rating_is_accepted() {
   # The schema must not be so strict that a real measurement cannot be
   # recorded -- that is the route by which these become permanently unknown.
-  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;local-benchmark;https://example.com/run;medium"
+  #
+  # A local measurement cites the artifact 61-rate-models.sh wrote, by
+  # basename. There is no URL for a file in the runner's own $HOME, and the
+  # validator refuses an invented one; see tests/cases/rating_test.sh.
+  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;local-benchmark;file:llm-rating-20260101-0900.txt;medium"
   assert_eq "$VALIDATE_STATUS" 0 "a sourced, dated measurement must validate: $VALIDATE_ERRORS"
+}
+
+test_a_published_vendor_rating_must_still_be_linkable() {
+  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;vendor-benchmark;https://example.com/run;medium"
+  assert_eq "$VALIDATE_STATUS" 0 "a vendor figure with a URL must validate: $VALIDATE_ERRORS"
 }
 
 test_no_row_currently_claims_a_coding_rating() {

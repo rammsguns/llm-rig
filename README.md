@@ -67,6 +67,7 @@ claude
 | Script | Purpose |
 |---|---|
 | `./71-verify-runtime.sh` | Query the **running** server's `/props` — confirms live `n_ctx`, flash-attn, KV cache types. Trust this over the config file. Grades its evidence; see below. |
+| `./61-rate-models.sh` | Rate the models you serve on a fixed coding suite, and print rows for `catalog_ratings()`. Nothing it grades is executed; see [Rating the models you serve](#rating-the-models-you-serve). |
 | `./70-thermal-sweep.sh` | Re-derive the best power limit for your chassis under a heat-soaked load. |
 | `./80-try-bigger.sh <hf-repo> [quant]` | Assess, download, auto-tune `--n-cpu-moe` and benchmark a model **larger than VRAM**. Empirically finds the lowest working offload level. `--list` sizes it without downloading. |
 | `./19-os-revert.sh` | Undo `10-os-tune.sh`, restoring the values captured before it ran — not assumed defaults. See [Rollback](#what-reversible-means). |
@@ -104,8 +105,12 @@ not reproducible here, and sorting one vendor's SWE-bench figure against
 another's HumanEval figure produces an ordering that means nothing. The
 validator enforces the consequence in both directions: a value cannot be
 recorded without a method and a source behind it, and a method claiming
-evidence cannot be recorded without a value. Filling these in is the deferred
-local-benchmark work.
+evidence cannot be recorded without a value.
+
+Filling them in is what [`./61-rate-models.sh`](61-rate-models.sh) is for — it
+measures the models **you** serve and prints rows you can paste in. The shipped
+table stays `unknown` because the shipped table cannot contain your
+measurements. See [Rating the models you serve](#rating-the-models-you-serve).
 
 This replaced a single `coding_score` column carrying values from 42 to 88 with
 no source, no date and no method — weighted at 25% of the recommendation.
@@ -178,7 +183,7 @@ One consequence to be aware of: with every coding rating still `unknown`, the
 quality term does no discriminating work, so the ranking runs on freshness,
 hardware fit, speed and features. On a 31 GB machine that makes Laguna XS 2.1
 the top `medium` pick ahead of `qwen3-coder-30b`, on metadata alone. That is
-the existing design behaving as designed, and it is an argument for finishing
+the existing design behaving as designed, and it is an argument for running
 the local benchmark, not for hand-weighting the table.
 
 Running them here: XS 2.1 at `Q4_K_M` is 18.9 GiB and needs both cards
@@ -286,8 +291,14 @@ publisher, the rating behind a quarter of the weight is not.
 
 Confidence counts three independent kinds of evidence — verified facts, a
 sourced rating, and current live data. Three of three is `high`, two is
-`medium`, fewer is `low`. **Nothing reaches `high` today**, because no model has
-a rating; that ceiling lifts on its own once local benchmarking lands.
+`medium`, fewer is `low`. **Nothing reaches `high` on the shipped table**,
+because no model has a rating; that ceiling lifts on its own once you record
+one with [`./61-rate-models.sh`](61-rate-models.sh).
+
+The rating counts only when the rating itself is `medium` or better, and that
+qualifier is load-bearing: a single unrepeated benchmark pass is recorded as
+`low`, and a hurried run must not be able to raise the confidence of the
+ranking it feeds.
 
 Note what the neutral rating does to the ranking: with the quality term equal
 for every model, the total is driven by fit and speed, so the smallest model
@@ -330,6 +341,105 @@ whose next step downloads tens of gigabytes.
 - `MODEL_SELECTION=1,6` runs the whole thing without prompting, and is exported
   afterwards so a run can be reproduced exactly. Duplicate, out-of-range and
   non-numeric answers are refused by name rather than with "invalid input".
+
+### Rating the models you serve
+
+`./61-rate-models.sh` is the answer to "a quarter of the score is a neutral
+placeholder". It runs a fixed suite against the models **this machine actually
+serves**, at the quant they are actually served at, and writes the evidence to
+`~/llm-rating-<date>.txt`.
+
+```bash
+./61-rate-models.sh                    # every served model, one pass each
+./61-rate-models.sh --repeats 3        # three passes; any disagreement -> low
+./61-rate-models.sh --model qwen3-4b   # one model
+./61-rate-models.sh --dry-run          # show the plan, call nothing
+```
+
+Read [`lib/rate.sh`](lib/rate.sh) before trusting a number out of it. Four
+things about it are deliberate and constrain what it can claim:
+
+- **Nothing the model produces is executed.** The obvious way to grade
+  generated code is to run it; that means running text from a model on your
+  machine, as you, for a score. Every task is graded by reading the response —
+  an exact answer, a `tool_use` block, a parse. The task set is written around
+  that constraint rather than pretending it is not there.
+- **It measures agent-shaped competence, not SWE-bench.** Read a snippet and
+  say what it does, pick the right tool with the right arguments, obey an
+  output format. Those are the failures that make a local model useless as a
+  Claude Code backend. Tool tasks carry double weight, and all three tools are
+  offered on every one of them, so a model that always calls the first tool
+  fails two of the three.
+- **Format tasks are graded strictly; comprehension tasks are not.** The
+  distinction is deliberate and is what makes "obey an output format" a claim
+  the score actually measures — see the table below.
+- **It is comparable across models on your machine and nowhere else.** That is
+  the comparison the ranking needs, and it is why the method is called
+  `local-benchmark` rather than `benchmark`.
+- **The confidence ceiling is `medium`.** Twelve text-graded tasks at one quant
+  on one machine does not settle how good a model is at coding. A single pass
+  is `low`; two clean repeats are `medium`; `high` is not reachable from here.
+
+#### Two grading regimes, on purpose
+
+| Kind | Tasks | Graded on |
+| --- | --- | --- |
+| `answer` | 6 | The last non-empty line, normalised. Fences, quotes, trailing punctuation and preceding prose are stripped: the question is whether the model knows the answer. |
+| `tool` | 3 | A `tool_use` block satisfying a jq filter. Wrapping text is irrelevant — the block either exists with the right arguments or it does not. |
+| `oneword` | 1 | **The whole response.** Trimmed of surrounding whitespace, it must be exactly the word. A fence, a full stop or a sentence around it is the failure being measured. |
+| `json-only` | 1 | **The whole response.** It must parse as a JSON object on its own — no fence, no prose — and satisfy a jq filter. |
+| `diff-only` | 1 | **The whole response.** At least one `@@` hunk header, every non-empty line valid diff syntax, and the required line present. A preamble fails. |
+
+The lenient normaliser would otherwise turn `Let me think.\n\nbash.` into
+`bash` and pass a task whose entire subject is formatting. A strict kind may
+not call it at all, and a test enforces that structurally, so the bug cannot
+come back quietly. A model that cannot suppress its preamble cannot be trusted
+to emit a patch a tool will apply — that is the thing `diff-only` measures.
+
+Sampling is pinned — temperature 0, fixed seed — and `--repeats` is what checks
+that the pinning held. A task that does not give the same verdict every time
+counts as unstable, and one unstable task drops the whole run to `low`: a model
+that answers differently at temperature 0 is telling you the measurement is
+not stable.
+
+#### The artifact records what was running
+
+A served alias does not identify a runtime. `qwen3-4b` fronts whatever GGUF
+`30-models.sh` last downloaded, built by whatever `20-build-llamacpp.sh` last
+compiled, at whatever context `40-serve.sh` last configured — so two runs that
+disagree could otherwise produce the same catalog row. Each run therefore
+records:
+
+| Field | Read from |
+| --- | --- |
+| llama.cpp revision | `.llamacpp-rev`, written by the build |
+| weights | the `-m` path in the generated `llama-swap.yaml`, per model |
+| quant | the filename **on disk**, not the catalog's preference — the reason to record it is that the two can differ |
+| serving flags | the per-model flags in the same config, including `CUDA_VISIBLE_DEVICES` |
+| live `n_ctx` | `/props` on the upstream serving *those* weights |
+
+Anything that cannot be read is written as `unavailable`. The live context is
+matched by model path rather than taken from the first server that answers:
+with several models loaded, the first answer is some other model's context,
+and recording that is worse than recording nothing. The quant also appears on
+the `RESULT` line, so two ratings taken at different quants cannot be compared
+by accident.
+
+The script **does not edit the catalog**. It prints rows to paste:
+
+```
+qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-20260811-1930.txt;medium
+```
+
+The source is the artifact's **basename**, not a URL. There is no https address
+for a file in your `$HOME`, and the validator refuses an invented one —
+`local-benchmark` must cite `file:<artifact>.txt`, `vendor-benchmark` must cite
+https. A table that is curated by hand is not improved by a script that
+rewrites its own evidence base, so the paste is manual and the run that
+produced it is a file you can open.
+
+A run where any task errored is written down but **not** offered as a row: a
+partial run is a report, not evidence.
 
 ### The llama-swap binary is pinned and verified
 
