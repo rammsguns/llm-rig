@@ -529,5 +529,144 @@ test_a_full_run_still_creates_the_logs_directory() {
   return 0
 }
 
+# --- ...but "any holder at all" is too strict to be usable -------------------
+# gpu_holders reads nvidia-smi --query-compute-apps, which enumerates graphics
+# contexts as well as compute ones. On a workstation with a display attached it
+# is therefore never empty, and the first version of the check above refused
+# every time -- while advising a service stop that would not have released a
+# byte of a compositor's allocation. The observed session below is the real
+# reading from the machine this repo runs on.
+
+# Compositor, portal, Electron, file manager, editor, Chrome, two terminals.
+DESKTOP_HOLDERS='6353, cosmic-app-library, 17 MiB
+7105, /usr/libexec/xdg-desktop-portal-cosmic, 17 MiB
+8013, /usr/lib/electron/electron --type=gpu-process --enable-features=A?B, 117 MiB
+10091, cosmic-files, 73 MiB
+3319603, cosmic-edit, 41 MiB
+4019662, /opt/google/chrome/chrome --type=gpu-process --disable-features=C?D, 274 MiB
+458149, cosmic-term, 41 MiB
+462070, cosmic-term, 41 MiB'   # 621 MiB total
+
+test_config_only_tolerates_a_desktop_session() {
+  synth_gpu 20000 2
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  gpu_holders_stuck "$DESKTOP_HOLDERS"
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "621 MiB of desktop must not stop a config-only run: $RUN_OUTPUT" || return 1
+  assert_not_called 'systemctl' "any service command" || return 1
+  assert_contains "$RUN_OUTPUT" "621 MiB held by unrelated processes" \
+    "the tolerated total is still reported" || return 1
+  [[ -s "$RIG_DIR/etc/llama-swap.yaml" ]] || { _fail "no config written"; return 1; }
+  return 0
+}
+
+test_a_desktop_session_does_not_derail_a_full_run() {
+  # The tolerance is not config-only's alone: ensure_gpus_idle already warns and
+  # carries on when something it cannot stop is still holding VRAM.
+  synth_gpu 20000 2
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  gpu_holders_stuck "$DESKTOP_HOLDERS"
+
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "a full run must be unaffected: $RUN_OUTPUT" || return 1
+  [[ -s "$RIG_DIR/etc/llama-swap.yaml" ]] || { _fail "no config written"; return 1; }
+  return 0
+}
+
+test_config_only_tolerates_holders_exactly_at_the_limit() {
+  synth_gpu 20000 2
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  gpu_holders_stuck '4242, some-cuda-job, 2048 MiB'
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "2048 MiB is the limit, not past it: $RUN_OUTPUT" || return 1
+  [[ -s "$RIG_DIR/etc/llama-swap.yaml" ]] || { _fail "no config written"; return 1; }
+  return 0
+}
+
+test_config_only_refuses_one_mib_over_the_limit() {
+  synth_gpu 20000 2
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  gpu_holders_stuck '4242, some-cuda-job, 2049 MiB'
+  printf 'previous\n' >"$RIG_DIR/etc/llama-swap.yaml"
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_fails "2049 MiB is over the limit" || return 1
+  assert_not_called 'systemctl' "any service command" || return 1
+  assert_not_called 'lscpu' "hardware detection" || return 1
+  assert_eq "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "previous" \
+    "the prior config must survive"
+}
+
+test_the_over_limit_refusal_does_not_advise_stopping_the_service() {
+  # The specific misfire being fixed. Stopping llama-swap releases nothing a
+  # stranger's CUDA job is holding, so telling the operator to try it sends
+  # them to take the service down for no benefit at all.
+  synth_gpu 20000 2
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  gpu_holders_stuck '4242, some-cuda-job, 9000 MiB'
+  services_active llama-swap
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_fails "refuses" || return 1
+  assert_not_contains "$RUN_OUTPUT" "systemctl stop" \
+    "must not suggest a stop that would not help" || return 1
+  assert_contains "$RUN_OUTPUT" "9000 MiB" "names the amount held" || return 1
+  assert_contains "$RUN_OUTPUT" "--config-only" "and echoes back the flags"
+}
+
+test_config_only_refuses_even_a_small_llama_server_allocation() {
+  # Our own stack is judged by owner, not by size. A partially loaded model is
+  # still a model, and the config it came from is still the only copy there is.
+  synth_gpu 20000 2
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  gpu_holders_are '1925, llama-server, 64 MiB'
+  services_active llama-swap
+  printf 'previous\n' >"$RIG_DIR/etc/llama-swap.yaml"
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_fails "64 MiB of llama-server is still llama-server" || return 1
+  assert_not_called 'systemctl stop' "the service stop" || return 1
+  assert_contains "$RUN_OUTPUT" "systemctl stop llama-swap" \
+    "here the stop IS the remedy, so it is offered" || return 1
+  assert_eq "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "previous" \
+    "the prior config must survive"
+}
+
+test_a_desktop_session_does_not_mask_a_resident_model() {
+  # The sum and the ownership test are independent: a few hundred MiB of
+  # desktop must not average away an 18GB model sitting next to it.
+  synth_gpu 20000 2
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  gpu_holders_stuck "$DESKTOP_HOLDERS
+1925, llama-server, 18000 MiB"
+  services_active llama-swap
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_fails "a resident model must still stop the run" || return 1
+  assert_not_called 'systemctl stop' "the service stop" || return 1
+  [[ -e "$RIG_DIR/etc/llama-swap.yaml" ]] \
+    && { _fail "no config should have been written"; return 1; }
+  return 0
+}
+
+test_config_only_fails_closed_on_an_unreadable_vram_figure() {
+  # nvidia-smi reports [N/A] for a process it cannot account for. That could be
+  # 0 MiB or a resident model, and the two call for opposite decisions, so the
+  # only safe reading is the pessimistic one.
+  synth_gpu 20000 2
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  gpu_holders_stuck '4242, mystery-job, [N/A]'
+  printf 'previous\n' >"$RIG_DIR/etc/llama-swap.yaml"
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_fails "an unreadable figure must fail closed" || return 1
+  assert_not_called 'systemctl' "any service command" || return 1
+  assert_not_called 'lscpu' "hardware detection" || return 1
+  assert_eq "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "previous" \
+    "the prior config must survive"
+}
+
 run_suite
 suite_exit
