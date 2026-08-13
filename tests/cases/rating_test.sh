@@ -292,7 +292,7 @@ test_no_strict_kind_calls_the_lenient_normaliser() {
   # Structural, so a future edit cannot quietly reintroduce the bug: the
   # normaliser may be referenced only by the `answer` branch.
   local body
-  body="$(sed -n '/^rate_grade()/,/^}/p' "$REPO_ROOT/lib/rate.sh")"
+  body="$(sed -n '/^_rate_grade_kind()/,/^}/p' "$REPO_ROOT/lib/rate.sh")"
   assert_eq "$(grep -c 'rate_normalise_answer' <<<"$body")" "1" \
     "exactly one call, in the answer branch"
 }
@@ -360,6 +360,214 @@ test_grading_an_unknown_task_is_an_error_not_a_failure() {
   # runner, and must not be recorded as a model getting something wrong.
   run rate_grade no-such-task "$(text_response "6")"
   assert_status 2 "unknown task"
+}
+
+# --- grading: truncation ----------------------------------------------------
+# A response cut off at the token cap is evidence about the budget, not about
+# the model. The rule is one-directional: it can turn a failure into an
+# incomplete, and it can never touch a pass.
+
+# A response that stopped because it ran out of budget.
+truncated_response() {
+  jq -nc --arg t "$1" '{content: [{type: "text", text: $t}], stop_reason: "max_tokens"}'
+}
+
+# A response that stopped because the model was finished.
+complete_response() {
+  jq -nc --arg t "$1" '{content: [{type: "text", text: $t}], stop_reason: "end_turn"}'
+}
+
+# All budget spent on hidden reasoning, no answer ever emitted. This is the
+# shape that produced Qwen3.6's invalid 40.
+reasoning_only_response() {
+  jq -nc --arg t "$1" \
+    '{content: [{type: "thinking", thinking: $t}], stop_reason: "max_tokens"}'
+}
+
+test_a_reasoning_only_truncated_response_is_incomplete_not_a_failure() {
+  # Status 3, distinct from 1. Recorded as a failure this is a competence
+  # score; recorded as incomplete it is what it is -- a budget that was too
+  # small to reach an answer.
+  run rate_grade comprehension-loop \
+    "$(reasoning_only_response 'Let me count the iterations. The loop starts at')"
+  assert_status 3 "reasoning-only truncation"
+}
+
+test_a_cleanly_stopped_wrong_answer_is_still_a_failure() {
+  # The regression this whole change must not cause: a model that answered,
+  # and answered wrongly, has failed the task.
+  run rate_grade comprehension-loop "$(complete_response "10")"
+  assert_status 1 "clean stop, wrong answer"
+}
+
+test_a_complete_correct_answer_still_passes() {
+  run rate_grade comprehension-loop "$(complete_response "6")"
+  assert_ok "clean stop, right answer"
+}
+
+test_truncation_never_downgrades_a_pass() {
+  # If the answer is there, it is there. The cap cutting off whatever the
+  # model wanted to say next does not unmake it.
+  run rate_grade comprehension-loop "$(truncated_response "6")"
+  assert_ok "truncated but correct"
+}
+
+test_a_truncated_response_that_still_made_the_tool_call_passes() {
+  # Tool tasks are graded on structure, and the structure survived: the block
+  # is complete and its argument is right. Whatever the cap cut off came after
+  # the model had already done the thing.
+  local resp
+  resp="$(jq -nc '{content: [{type: "tool_use", id: "t1", name: "read_file",
+                              input: {path: "src/main.py"}}],
+                   stop_reason: "max_tokens"}')"
+  run rate_grade tool-read "$resp"
+  assert_ok "truncated, but the tool call landed"
+}
+
+test_a_truncated_response_with_the_wrong_tool_call_is_incomplete() {
+  # Ambiguous in exactly the way the rule exists for: the model may have
+  # chosen wrongly, or may have been cut off before emitting the right call.
+  # Nothing in the response tells them apart, so it is neither.
+  local resp
+  resp="$(jq -nc '{content: [{type: "tool_use", id: "t1", name: "list_dir",
+                              input: {path: "src"}}],
+                   stop_reason: "max_tokens"}')"
+  run rate_grade tool-read "$resp"
+  assert_status 3 "truncated, wrong tool"
+}
+
+test_a_truncated_response_with_no_tool_call_at_all_is_incomplete() {
+  run rate_grade tool-read "$(truncated_response 'I should probably read the')"
+  assert_status 3 "truncated before any tool call"
+}
+
+test_every_kind_reports_truncation_rather_than_failure() {
+  # Structural: a kind added later cannot opt out, because the rule lives in
+  # rate_grade and not in the per-kind branches.
+  local id
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    run rate_grade "$id" \
+      "$(jq -nc '{content: [], stop_reason: "max_tokens"}')"
+    assert_status 3 "$id must report incomplete, not failure, when truncated" || return 1
+  done < <(rate_task_ids)
+}
+
+test_the_openai_spelling_of_the_cap_counts_as_truncation() {
+  # Same llama.cpp server, different compatibility path. Which URL the driver
+  # POSTed to must not decide whether starvation is graded as incompetence.
+  run rate_grade comprehension-loop \
+    "$(jq -nc '{content: [{type: "text", text: "10"}], finish_reason: "length"}')"
+  assert_status 3 "the `length` spelling"
+}
+
+test_a_response_that_does_not_say_why_it_stopped_is_graded_normally() {
+  # No stop_reason at all: graded as an ordinary answer. Guessing truncation
+  # from a missing field would make every server that omits it unratable.
+  run rate_grade comprehension-loop "$(text_response "10")"
+  assert_status 1 "no stop_reason, wrong answer"
+}
+
+test_the_stop_reason_is_unavailable_rather_than_empty_when_absent() {
+  run rate_stop_reason '{"content":[]}'
+  assert_eq "$RUN_OUTPUT" "$RATE_UNAVAILABLE" "absent is a distinct answer"
+}
+
+test_the_stop_reason_is_reported_verbatim_when_present() {
+  run rate_stop_reason "$(complete_response "6")"
+  assert_eq "$RUN_OUTPUT" "end_turn" "read, not inferred"
+}
+
+# --- grading: hidden reasoning is not an answer ------------------------------
+
+test_a_thinking_block_containing_the_answer_is_not_an_answer() {
+  # Clean stop, so truncation is not what is being tested: the model finished,
+  # and what it finished with was a scratchpad. Reasoning its way to 6 without
+  # ever saying 6 is a failed task, not a passed one.
+  local resp
+  resp="$(jq -nc '{content: [{type: "thinking", thinking: "...so the answer is 6"}],
+                   stop_reason: "end_turn"}')"
+  run rate_grade comprehension-loop "$resp"
+  assert_status 1 "thinking is not text"
+}
+
+test_a_reasoning_content_field_is_not_an_answer() {
+  # The sibling-field spelling some servers use instead of a thinking block.
+  local resp
+  resp="$(jq -nc '{content: [], reasoning_content: "the answer is 6",
+                   stop_reason: "end_turn"}')"
+  run rate_grade comprehension-loop "$resp"
+  assert_status 1 "reasoning_content is not text"
+}
+
+test_the_extracted_text_ignores_every_non_text_block() {
+  local resp
+  resp="$(jq -nc '{content: [{type: "thinking", thinking: "hidden"},
+                             {type: "text", text: "shown"},
+                             {type: "tool_use", id: "t1", name: "n", input: {}}]}')"
+  run rate_response_text "$resp"
+  assert_eq "$RUN_OUTPUT" "shown" "only text blocks reach the grader"
+}
+
+# --- the token budget --------------------------------------------------------
+
+test_the_default_token_budget_is_not_raised() {
+  # Issue #32 is explicit that the fix is classification, not a bigger budget.
+  # A higher budget is a diagnostic run whose numbers are not comparable, so
+  # the default moving would silently change what every rating means.
+  local fresh
+  fresh="$(bash -c 'unset RATE_MAX_TOKENS
+                    source "'"$REPO_ROOT"'/lib/rate.sh"
+                    printf "%s" "$RATE_MAX_TOKENS"')"
+  assert_eq "$fresh" "256" "the suite budget is unchanged"
+}
+
+test_the_token_budget_stays_overridable() {
+  local raised
+  raised="$(bash -c 'RATE_MAX_TOKENS=4096
+                     source "'"$REPO_ROOT"'/lib/rate.sh"
+                     printf "%s" "$RATE_MAX_TOKENS"')"
+  assert_eq "$raised" "4096" "the diagnostic override still works"
+}
+
+test_every_documented_flag_is_one_the_script_accepts() {
+  # This shipped in review as `--only <model>`, which does not exist: the
+  # parser dies on an unknown argument, so the one command the truncation
+  # docs handed a reader was a command that could not run.
+  #
+  # Structural rather than a spelling fix. A doc example is untested code, and
+  # the next stale flag will be somewhere else in the file.
+  local accepted documented flag
+  accepted="$(sed -n '/^while (( \$# ))/,/^done/p' "$REPO_ROOT/61-rate-models.sh" \
+    | grep -oE '^[[:space:]]+[^)]*\)' | grep -oE -- '--[a-z][a-z-]*' | sort -u)"
+  assert_ne "$accepted" "" "the parser's own flags must be discoverable" || return 1
+
+  documented="$(grep -hoE -- '61-rate-models\.sh[^`|>]*' \
+      "$REPO_ROOT/README.md" "$REPO_ROOT/lib/rate.sh" "$REPO_ROOT/61-rate-models.sh" \
+    | grep -oE -- '--[a-z][a-z-]*' | sort -u)"
+  assert_ne "$documented" "" "and so must the documented ones" || return 1
+
+  while IFS= read -r flag; do
+    [[ -n "$flag" ]] || continue
+    grep -qxF -- "$flag" <<<"$accepted" \
+      || { _fail "$flag is documented, but 61-rate-models.sh would die on it"; return 1; }
+  done <<<"$documented"
+}
+
+test_the_higher_budget_diagnostic_is_documented_with_a_real_flag() {
+  # The specific command #32 tells a reader to run when a model starves.
+  local doc
+  doc="$(grep -h 'RATE_MAX_TOKENS=4096' "$REPO_ROOT/README.md" "$REPO_ROOT/lib/rate.sh")"
+  assert_ne "$doc" "" "the diagnostic must be documented somewhere" || return 1
+  assert_contains "$doc" "--model" "with the flag the parser accepts" || return 1
+  assert_not_contains "$doc" "--only" "and not the one it dies on"
+}
+
+test_the_suite_version_records_the_classification_change() {
+  # Truncated responses used to score as failures and now do not, so the same
+  # responses can yield a different `answered` and therefore a different
+  # confidence -- and confidence is part of the catalog row.
+  assert_eq "$RATE_SUITE_VERSION" "2" "classification changed, so the version did"
 }
 
 # --- aggregation ------------------------------------------------------------
@@ -900,6 +1108,64 @@ test_the_artifact_records_what_was_actually_running() {
   assert_contains "$art" "live n_ctx: 65536" "what the server reported" || return 1
   assert_contains "$art" "quant=Q5_K_M" "and the RESULT line carries the quant" || return 1
   assert_contains "$art" "provenance: complete" "the gate's verdict, in the file"
+}
+
+test_a_starved_model_produces_no_rating_and_no_row() {
+  # #32's acceptance criterion, end to end. Every task spends its whole budget
+  # on hidden reasoning and never answers. Every HTTP call succeeds, and the
+  # runtime provenance is complete -- so nothing except the truncation rule is
+  # standing between this model and a catalog row.
+  {
+    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3-4b"}]}\n'
+    printf 'POST\t/v1/messages\t200\t{"content":[{"type":"thinking","thinking":"Let me work through this"}],"stop_reason":"max_tokens"}\n'
+  } >"$MOCK_ROUTES"
+  with_full_provenance
+  drive ""
+  assert_ok "the run itself must complete: $RUN_OUTPUT" || return 1
+
+  local art
+  art="$(cat "$(rate_latest_artifact "$HOME")")"
+  assert_contains "$art" "incomplete: max_tokens (stop_reason=max_tokens, max_tokens=256)" \
+    "the artifact names the reason and the budget, per task" || return 1
+  assert_contains "$art" "answered=0/" "nothing was answered" || return 1
+  assert_contains "$art" "provenance: complete" \
+    "provenance is not what is wrong here -- the evidence is" || return 1
+  assert_contains "$art" "no catalog row:" "so the row is blocked" || return 1
+
+  assert_not_contains "$RUN_OUTPUT" "qwen3-4b;" "and no row is printed to paste"
+}
+
+test_the_result_line_counts_the_incomplete_tasks() {
+  # Machine-readable, like every other RESULT field: a reader must be able to
+  # tell a starved run from a merely bad one without parsing prose.
+  {
+    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3-4b"}]}\n'
+    printf 'POST\t/v1/messages\t200\t{"content":[],"stop_reason":"max_tokens"}\n'
+  } >"$MOCK_ROUTES"
+  with_full_provenance
+  drive ""
+  assert_ok "the run must complete: $RUN_OUTPUT" || return 1
+
+  local artifact n
+  artifact="$(rate_latest_artifact "$HOME")"
+  n="$(rate_artifact_result "$artifact" qwen3-4b incomplete)"
+  assert_eq "$n" "$(rate_task_count)" "every task is counted as incomplete"
+}
+
+test_a_clean_wrong_answer_still_produces_a_rating() {
+  # The other side of the same change: a model that answers every task and
+  # gets them wrong is measured, not excused. It earns a row with a low value.
+  serve_model "definitely not the answer"
+  with_full_provenance
+  drive ""
+  assert_ok "the run must complete: $RUN_OUTPUT" || return 1
+
+  local artifact
+  artifact="$(rate_latest_artifact "$HOME")"
+  assert_eq "$(rate_artifact_result "$artifact" qwen3-4b incomplete)" "0" \
+    "nothing was truncated" || return 1
+  assert_eq "$(rate_artifact_result "$artifact" qwen3-4b answered)" \
+    "$(rate_task_count)/$(rate_task_count)" "every task was answered"
 }
 
 test_missing_runtime_identity_is_marked_not_omitted() {

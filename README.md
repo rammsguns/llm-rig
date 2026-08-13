@@ -406,6 +406,51 @@ counts as unstable, and one unstable task drops the whole run to `low`: a model
 that answers differently at temperature 0 is telling you the measurement is
 not stable.
 
+#### A truncated response is not a wrong answer
+
+The budget is **256 tokens**, because every task here wants one word, one
+object or one small diff, and a model that needs more than that to say `bash`
+has failed the task the suite is setting.
+
+A reasoning model can spend all 256 on hidden thinking and never emit an
+answer. Graded as an ordinary failure that produces a low number which looks
+*stable* across repeats — stable because the cap is deterministic, not because
+the model is reliably wrong — and in the catalog it is indistinguishable from a
+model that genuinely cannot do the task. So a response whose `stop_reason` is
+`max_tokens` (or `length`, the spelling llama.cpp's OpenAI-compatible path
+uses) is classified as **incomplete**, not failed:
+
+```
+  task comprehension-loop   incomplete: max_tokens (stop_reason=max_tokens, max_tokens=256)
+```
+
+The rule runs in one direction only. It can turn a failure into an incomplete;
+it can never touch a pass. A truncated response that still emitted the right
+tool call, or the bare word, passes — the model did the thing before the cap
+cut off whatever came next. Only the *failing* truncated case is ambiguous:
+it might be a wrong answer or an unfinished one, and nothing in the response
+tells them apart, so it is recorded as neither. A response that does not say
+why it stopped is graded normally; guessing truncation from a missing field
+would make every server that omits it unratable.
+
+Hidden reasoning is never graded as the answer. Only `text` blocks reach the
+grader — `thinking` blocks and `reasoning_content` fields are ignored — so a
+model that reasons its way to `6` without ever saying `6` has not answered.
+
+An incomplete task does not count as answered, so it blocks the pasteable row
+through the same gate an HTTP error goes through, and the `RESULT` line carries
+`incomplete=<n>`. **Raising the budget is a diagnostic, not a fix:**
+
+```bash
+RATE_MAX_TOKENS=4096 ./61-rate-models.sh --model qwen3.6-27b
+```
+
+Those numbers are not comparable with the default ones and must not be recorded
+as a rating — mixing them in one row is the same error as mixing suite
+versions. This classification change is why the suite is at **v2**: the
+arithmetic is untouched, but the same responses can now yield a different
+`answered`, and therefore a different confidence, which is part of the row.
+
 #### The artifact records what was running
 
 A served alias does not identify a runtime. `qwen3-4b` fronts whatever GGUF
@@ -469,11 +514,11 @@ https. A table that is curated by hand is not improved by a script that
 rewrites its own evidence base, so the paste is manual and the run that
 produced it is a file you can open.
 
-A run where any task errored is written down but **not** offered as a row: a
-partial run is a report, not evidence. The same applies to a complete run whose
-runtime could not be identified, and to a model that is not in the catalog —
-each of the three prints its own reason rather than a shared "nothing to
-record".
+A run where any task errored or came back incomplete is written down but
+**not** offered as a row: a partial run is a report, not evidence. The same
+applies to a complete run whose runtime could not be identified, and to a model
+that is not in the catalog — each prints its own reason rather than a shared
+"nothing to record".
 
 ### The llama-swap binary is pinned and verified
 
