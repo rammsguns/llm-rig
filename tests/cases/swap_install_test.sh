@@ -289,6 +289,86 @@ test_no_binary_means_no_version() {
   assert_fails "nothing installed"
 }
 
+# --- drift against the pin (#40) --------------------------------------------
+#
+# The check that was missing when this machine sat two releases behind the pin
+# for three days without anything noticing. Read-only, so every case here also
+# asserts that nothing was installed, replaced or recorded.
+
+fake_swap_reporting() {
+  printf '#!/usr/bin/env bash\necho "llama-swap %s (build abc)"\n' "$1" >"$SWAP_BIN"
+  chmod +x "$SWAP_BIN"
+}
+
+test_a_binary_matching_the_pin_is_not_drift() {
+  fake_swap_reporting "$SWAP_VERSION"
+  run swap_pin_drift "$SWAP_BIN"
+  assert_ok "the pinned version is installed" || return 1
+  assert_eq "$RUN_OUTPUT" "$(printf 'match\t%s\t%s' "$SWAP_VERSION" "$SWAP_VERSION")" "record"
+}
+
+test_an_older_binary_is_reported_as_drift() {
+  # The observed case: v248 installed, v249 pinned.
+  fake_swap_reporting v248
+  run swap_pin_drift "$SWAP_BIN"
+  assert_eq "$RUN_STATUS" 1 "drift is status 1" || return 1
+  assert_contains "$RUN_OUTPUT" "drift" "verdict" || return 1
+  assert_contains "$RUN_OUTPUT" "v248" "what is installed" || return 1
+  assert_contains "$RUN_OUTPUT" "$SWAP_VERSION" "what is pinned"
+}
+
+test_a_newer_binary_is_also_drift() {
+  # Drift is "not the pinned version", not "older than it". A binary ahead of
+  # the pin is just as much an unknown quantity as one behind it.
+  fake_swap_reporting v999
+  run swap_pin_drift "$SWAP_BIN"
+  assert_eq "$RUN_STATUS" 1 "ahead of the pin is still drift"
+}
+
+test_a_missing_binary_is_unknown_rather_than_drift() {
+  # Two different problems with two different answers: install it, versus find
+  # out what this is. A caller gating on the status must be able to tell them
+  # apart.
+  rm -f "$SWAP_BIN"
+  run swap_pin_drift "$SWAP_BIN"
+  assert_eq "$RUN_STATUS" 2 "unknown is status 2, not 1" || return 1
+  assert_contains "$RUN_OUTPUT" "unknown" "verdict"
+}
+
+test_a_binary_that_will_not_report_a_version_is_unknown() {
+  printf '#!/usr/bin/env bash\nexit 3\n' >"$SWAP_BIN"
+  chmod +x "$SWAP_BIN"
+  run swap_pin_drift "$SWAP_BIN"
+  assert_eq "$RUN_STATUS" 2 "unreadable is not the same as wrong"
+}
+
+test_the_drift_check_writes_nothing() {
+  # It is offered as the safe thing to run when the runtime must not change --
+  # including while a benchmark is in flight. So: no record, no backup, no new
+  # files beside the binary, and the binary itself untouched.
+  fake_swap_reporting v248
+  rm -f "$SWAP_RECORD"
+  local before after
+  before="$(sha256sum "$SWAP_BIN" | cut -d' ' -f1)"
+  swap_pin_drift "$SWAP_BIN" >/dev/null
+  after="$(sha256sum "$SWAP_BIN" | cut -d' ' -f1)"
+  assert_eq "$after" "$before" "the binary is not modified" || return 1
+  [[ -f "$SWAP_RECORD" ]] && { _fail "an install record was written"; return 1; }
+  [[ -e "$SWAP_BIN.previous" ]] && { _fail "a backup was written"; return 1; }
+  assert_not_called 'curl' "no network" || return 1
+  assert_not_called 'sudo' "no privilege"
+}
+
+test_the_pin_origin_names_an_environment_override() {
+  # A drift report against an exported LLAMA_SWAP_VERSION is not a report
+  # against this repository's pin, and saying "pinned v249" without saying
+  # where that came from describes a comparison the reader cannot reproduce.
+  local out
+  out="$( LLAMA_SWAP_VERSION=v300 swap_pin_origin )"
+  assert_eq "$out" "environment" "an override is disclosed" || return 1
+  assert_eq "$(swap_pin_origin)" "repo" "and the default is not"
+}
+
 # --- 40-serve.sh, driven for real -------------------------------------------
 # The install block only. The script aborts straight after it in these runs,
 # because a full run would generate a config and touch systemd.

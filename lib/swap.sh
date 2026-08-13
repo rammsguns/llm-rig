@@ -196,6 +196,54 @@ swap_record_get() {
   awk -F'\t' -v f="$field" '$1 == f { print $2; found = 1; exit } END { exit !found }' "$path"
 }
 
+# --- drift against the pin ---------------------------------------------------
+#
+# A pin nothing compares against is not a pin. 40-serve.sh reconciles drift by
+# installing over it, which is the right thing during a full run and the wrong
+# thing to discover by accident -- so the comparison is also available on its
+# own, read-only.
+#
+# Read-only means read-only: no network, no sudo, nothing written, and the
+# installed binary is executed only with --version, which is what
+# swap_installed_version already does.
+
+# Where the pin came from. An operator who exported LLAMA_SWAP_VERSION is not
+# looking at this repository's pin any more, and a drift report that does not
+# say so is describing a comparison the reader cannot reproduce.
+swap_pin_origin() {
+  if [[ -n "${LLAMA_SWAP_VERSION:-}" ]]; then printf 'environment'; else printf 'repo'; fi
+}
+
+# swap_pin_drift [bin]
+#
+# Prints "<verdict>\t<installed>\t<pinned>" and returns:
+#
+#   0  match     the installed binary is the pinned version
+#   1  drift     it is a different version
+#   2  unknown   there is no binary, or it will not report a version
+#
+# `unknown` is deliberately not folded into `drift`. They call for different
+# responses -- one is "install it", the other is "find out what this is" -- and
+# a caller gating on the exit status should not have to guess which it got.
+#
+# What this does NOT compare is the install record. Whether llm-rig is the
+# thing that put this binary here is a separate question with a separate
+# answer, and conflating the two would report a hand-installed binary that
+# happens to match the pin as if llm-rig had verified it.
+swap_pin_drift() {
+  local bin="${1:-$SWAP_BIN}" installed pinned="$SWAP_VERSION"
+  if ! installed="$(swap_installed_version "$bin" 2>/dev/null)" || [[ -z "$installed" ]]; then
+    printf 'unknown\t-\t%s' "$pinned"
+    return 2
+  fi
+  if [[ "$installed" == "$pinned" ]]; then
+    printf 'match\t%s\t%s' "$installed" "$pinned"
+    return 0
+  fi
+  printf 'drift\t%s\t%s' "$installed" "$pinned"
+  return 1
+}
+
 # --- verification -----------------------------------------------------------
 
 # swap_verify <file> <version> <checksums-text-or-empty>
