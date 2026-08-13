@@ -42,15 +42,41 @@ source "$(dirname "${BASH_SOURCE[0]}")/catalog.sh"
 # shellcheck source=lib/bench.sh
 source "$(dirname "${BASH_SOURCE[0]}")/bench.sh"
 
-# Bump when a task is added, removed or reworded. Two ratings from different
-# suite versions are not comparable, and the artifact records which one ran.
+# Bump when a task is added, removed or reworded -- or when the same response
+# from the same server would now be classified differently. Two ratings from
+# different suite versions are not comparable, and the artifact records which
+# one ran.
+#
+# v2: max-token truncation became incomplete evidence rather than a failed
+# answer. The arithmetic did not change -- a truncated task contributed zero
+# weight before and contributes zero weight now -- but `answered` does, and
+# `confidence` is derived from `answered`. So one v1 run and one v2 run over
+# byte-identical responses can report a different confidence, and confidence
+# is part of the catalog row. That is a comparability break even though the
+# 0-100 value is untouched, which is why this is a bump and not a patch.
 # shellcheck disable=SC2034  # documented return channel, read by callers
-RATE_SUITE_VERSION=1
+RATE_SUITE_VERSION=2
 
 # Sampling. Zero temperature and a fixed seed because a rating that changes
 # between runs is not a rating; `--repeats` exists to check that it doesn't.
 RATE_TEMPERATURE="${RATE_TEMPERATURE:-0}"
 RATE_SEED="${RATE_SEED:-42}"
+# 256 is the suite-v1 budget and stays the suite-v2 budget. It is deliberately
+# small: these are one-word, one-object and one-diff answers, and a model that
+# needs more than 256 tokens to say `bash` has failed the task the suite is
+# actually setting.
+#
+# Raising it is a diagnostic, not a fix. If a model runs out of budget, the
+# suite now says so (see truncation, below) instead of scoring it -- and the
+# way to investigate is a separate run at a higher budget, whose numbers are
+# NOT comparable with the default ones and must never be recorded as a rating:
+#
+#   RATE_MAX_TOKENS=4096 ./61-rate-models.sh --model <served-name>
+#
+# Nothing enforces that by itself, because the value is a knob and the artifact
+# records what it was set to. What enforces it is that mixing the two in one
+# catalog row would be mixing sampling settings, which is the same error as
+# mixing suite versions.
 RATE_MAX_TOKENS="${RATE_MAX_TOKENS:-256}"
 # shellcheck disable=SC2034  # the driver reads and overrides this one
 RATE_REPEATS="${RATE_REPEATS:-1}"
@@ -447,9 +473,61 @@ rate_live_ctx() {
   return 1
 }
 
+# --- truncation ---------------------------------------------------------------
+# A response that stopped because it ran out of budget is not evidence about
+# the model's competence; it is evidence about the budget. Graded as an
+# ordinary wrong answer it produces a low number that looks stable across
+# repeats -- stable because the cap is deterministic, not because the model is
+# consistently wrong -- and that number is indistinguishable, in the artifact
+# and in the catalog, from a model that genuinely cannot do the task.
+#
+# Reasoning models hit this constantly on a 256-token budget: the whole budget
+# goes into hidden reasoning and the final answer is never emitted.
+
+# The reason string recorded for a task that ran out of budget. One constant
+# because the driver prints it, the artifact carries it, and a test asserts on
+# it; three spellings of the same word is how one of them drifts.
+# shellcheck disable=SC2034  # documented return channel, read by the driver
+RATE_TRUNCATED_REASON='max_tokens'
+
+# rate_stop_reason <response-json> -- why generation stopped, or `unavailable`.
+#
+# `unavailable` and not an empty string, for the same reason the runtime
+# identity fields use it: a response that does not say why it stopped is a
+# different thing from one that stopped cleanly, and collapsing the two would
+# let a server that omits the field silently disable this whole check.
+rate_stop_reason() {
+  local r
+  r="$(jq -r '.stop_reason // .finish_reason // .choices[0].finish_reason // empty' \
+        2>/dev/null <<<"$1")"
+  [[ -n "$r" && "$r" != "null" ]] || { printf '%s' "$RATE_UNAVAILABLE"; return 1; }
+  printf '%s' "$r"
+}
+
+# rate_truncated <response-json> -- status 0 if generation hit the token cap.
+#
+# `max_tokens` is what the Messages shape specifies. `length` is accepted too
+# because llama.cpp's OpenAI-compatible path uses that spelling and the same
+# server can be reached either way; treating one as truncation and the other
+# as a clean stop would make the check depend on which URL the driver happened
+# to POST to.
+rate_truncated() {
+  case "$(rate_stop_reason "$1")" in
+    max_tokens|length) return 0 ;;
+  esac
+  return 1
+}
+
 # --- grading ----------------------------------------------------------------
 
 # The concatenated text blocks of a Messages response, or empty.
+#
+# `select(.type == "text")` is load-bearing, not tidiness: it is what keeps
+# hidden reasoning out of the grade. Extended-thinking responses carry the
+# chain of thought in `thinking` blocks (and some servers add a sibling
+# `reasoning_content` field), and a model that reasons its way to "6" without
+# ever answering has not answered. Joining every block, or falling back to the
+# raw body when there is no text, would grade the scratchpad.
 rate_response_text() {
   jq -r '[.content[]? | select(.type == "text") | .text] | join("")' 2>/dev/null <<<"$1"
 }
@@ -500,11 +578,37 @@ rate_is_diff_only() {
     | grep -qvE '^(---|\+\+\+|@@|diff |index |new file|deleted file|similarity index|rename |[-+ ]|\\ No newline)'
 }
 
-# rate_grade <task-id> <response-json> -- status 0 for a pass.
+# rate_grade <task-id> <response-json>
+#   0  pass
+#   1  fail -- the model answered, and the answer is wrong
+#   2  error -- no such task, or a kind the grader does not implement
+#   3  incomplete -- generation ran out of budget, so there is no answer here
+#
+# The truncation rule is applied to the RESULT of grading rather than in place
+# of it, and in one direction only: a truncated response that nonetheless
+# satisfies the task still passes. If the model emitted the tool call, or the
+# bare word, before the cap cut it off, it did the thing; withholding credit
+# for that would be as wrong as crediting starvation as failure.
+#
+# Only the failing case is ambiguous. A truncated response that does not
+# satisfy the task might be a wrong answer or might be an unfinished one, and
+# nothing in the response distinguishes them -- so it is recorded as neither.
+rate_grade() {
+  local response="$2" rc
+  _rate_grade_kind "$@"
+  rc=$?
+  (( rc == 1 )) || return "$rc"
+  rate_truncated "$response" && return 3
+  return 1
+}
+
+# The per-kind grading itself. Split out from rate_grade so that the truncation
+# rule above has a single result to reason about instead of being repeated in
+# five branches -- and so a new kind cannot forget it.
 #
 # Takes the whole response rather than the extracted text, because tool tasks
 # are graded on structure the text does not contain.
-rate_grade() {
+_rate_grade_kind() {
   local id="$1" response="$2" kind expect text
   kind="$(rate_task_get "$id" kind)"     || return 2
   expect="$(rate_task_get "$id" expect)" || return 2
