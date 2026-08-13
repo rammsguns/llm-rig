@@ -442,7 +442,7 @@ through the same gate an HTTP error goes through, and the `RESULT` line carries
 `incomplete=<n>`. **Raising the budget is a diagnostic, not a fix:**
 
 ```bash
-RATE_MAX_TOKENS=4096 ./61-rate-models.sh --only qwen3.6-27b
+RATE_MAX_TOKENS=4096 ./61-rate-models.sh --model qwen3.6-27b
 ```
 
 Those numbers are not comparable with the default ones and must not be recorded

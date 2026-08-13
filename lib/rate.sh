@@ -71,7 +71,7 @@ RATE_SEED="${RATE_SEED:-42}"
 # way to investigate is a separate run at a higher budget, whose numbers are
 # NOT comparable with the default ones and must never be recorded as a rating:
 #
-#   RATE_MAX_TOKENS=4096 ./61-rate-models.sh --only <model>
+#   RATE_MAX_TOKENS=4096 ./61-rate-models.sh --model <served-name>
 #
 # Nothing enforces that by itself, because the value is a knob and the artifact
 # records what it was set to. What enforces it is that mixing the two in one

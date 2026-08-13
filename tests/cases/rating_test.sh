@@ -530,6 +530,39 @@ test_the_token_budget_stays_overridable() {
   assert_eq "$raised" "4096" "the diagnostic override still works"
 }
 
+test_every_documented_flag_is_one_the_script_accepts() {
+  # This shipped in review as `--only <model>`, which does not exist: the
+  # parser dies on an unknown argument, so the one command the truncation
+  # docs handed a reader was a command that could not run.
+  #
+  # Structural rather than a spelling fix. A doc example is untested code, and
+  # the next stale flag will be somewhere else in the file.
+  local accepted documented flag
+  accepted="$(sed -n '/^while (( \$# ))/,/^done/p' "$REPO_ROOT/61-rate-models.sh" \
+    | grep -oE '^[[:space:]]+[^)]*\)' | grep -oE -- '--[a-z][a-z-]*' | sort -u)"
+  assert_ne "$accepted" "" "the parser's own flags must be discoverable" || return 1
+
+  documented="$(grep -hoE -- '61-rate-models\.sh[^`|>]*' \
+      "$REPO_ROOT/README.md" "$REPO_ROOT/lib/rate.sh" "$REPO_ROOT/61-rate-models.sh" \
+    | grep -oE -- '--[a-z][a-z-]*' | sort -u)"
+  assert_ne "$documented" "" "and so must the documented ones" || return 1
+
+  while IFS= read -r flag; do
+    [[ -n "$flag" ]] || continue
+    grep -qxF -- "$flag" <<<"$accepted" \
+      || { _fail "$flag is documented, but 61-rate-models.sh would die on it"; return 1; }
+  done <<<"$documented"
+}
+
+test_the_higher_budget_diagnostic_is_documented_with_a_real_flag() {
+  # The specific command #32 tells a reader to run when a model starves.
+  local doc
+  doc="$(grep -h 'RATE_MAX_TOKENS=4096' "$REPO_ROOT/README.md" "$REPO_ROOT/lib/rate.sh")"
+  assert_ne "$doc" "" "the diagnostic must be documented somewhere" || return 1
+  assert_contains "$doc" "--model" "with the flag the parser accepts" || return 1
+  assert_not_contains "$doc" "--only" "and not the one it dies on"
+}
+
 test_the_suite_version_records_the_classification_change() {
   # Truncated responses used to score as failures and now do not, so the same
   # responses can yield a different `answered` and therefore a different
