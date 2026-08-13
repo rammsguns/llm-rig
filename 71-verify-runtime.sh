@@ -135,6 +135,9 @@ if (( MEASURE )); then
     if [[ -z "$GGUF" ]]; then
       c_warn "cannot measure: no GGUF found under $MODELS_DIR"
     else
+      # 40-serve.sh creates logs/ only on a full run, so a machine configured
+      # with --config-only has never had one made for it.
+      mkdir -p "$RIG_DIR/logs"
       ARTIFACT="$RIG_DIR/logs/verify-measure-$(date +%Y%m%d-%H%M%S).txt"
       c_info "[benchmark] measuring ${BENCH_SHORT_PP:-pp4096} vs ${BENCH_LONG_PP:-pp32768} on $(basename "$GGUF")"
       c_warn "this loads the model into VRAM and takes a few minutes"

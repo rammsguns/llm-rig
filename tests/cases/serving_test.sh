@@ -263,7 +263,10 @@ test_the_collision_check_runs_before_the_gpus_are_freed() {
   local body resolve_line idle_line
   body="$(cat "$REPO_ROOT/40-serve.sh")"
   resolve_line="$(grep -n 'serving_resolve' <<<"$body" | head -1 | cut -d: -f1)"
-  idle_line="$(grep -n '^ensure_gpus_idle' <<<"$body" | head -1 | cut -d: -f1)"
+  # Not anchored at column 0: the call is indented inside the full-run branch
+  # of the config-only guard, and an anchor that tracks indentation would fail
+  # again the next time this moves.
+  idle_line="$(grep -n '^ *ensure_gpus_idle$' <<<"$body" | head -1 | cut -d: -f1)"
   assert_ne "$resolve_line" "" "resolution must happen in 40-serve.sh" || return 1
   assert_ne "$idle_line" "" "ensure_gpus_idle must still be called" || return 1
   assert_lt "$resolve_line" "$idle_line" "resolve before freeing the GPUs"
@@ -347,6 +350,183 @@ test_an_unknown_argument_is_refused() {
   run bash "$REPO_ROOT/40-serve.sh" --wat
   assert_fails "unknown flag" || return 1
   assert_contains "$RUN_OUTPUT" "unknown argument" "says so"
+}
+
+# --- --config-only (#39) -----------------------------------------------------
+# "Make the config say something different" and "replace the runtime" are
+# separate decisions. A run that only needed the first must not perform the
+# second -- which is what blocked #33, where the installed llama-swap is behind
+# the repo's pin and a full run would have upgraded it mid-measurement.
+
+test_config_only_writes_the_config() {
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "config-only must succeed: $RUN_OUTPUT" || return 1
+  assert_contains "$(cat "$RIG_DIR/etc/llama-swap.yaml")" '"phi-4":' "the config is written"
+}
+
+test_config_only_touches_no_service_binary_or_firewall() {
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "runs" || return 1
+  assert_not_called 'systemctl' "the service" || return 1
+  assert_not_called 'ufw' "the firewall" || return 1
+  assert_not_called '(^| )install ' "the binary install" || return 1
+  assert_not_called 'tee +/etc/systemd' "the unit file"
+}
+
+test_config_only_leaves_a_mismatched_binary_alone() {
+  # The #33 case: installed version and pinned version disagree. A full run
+  # would replace the binary; --config-only must not, and must say so.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "runs" || return 1
+  assert_contains "$RUN_OUTPUT" "leaving llama-swap" "says the runtime is untouched"
+}
+
+test_config_only_says_what_it_did_not_do_and_how_to_finish() {
+  # Stopping short quietly is worse than not having the mode: the operator
+  # reads "configured", walks away, and the daemon serves the old config from
+  # memory until something restarts it hours later.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "runs" || return 1
+  assert_contains "$RUN_OUTPUT" "still holds the PREVIOUS config" "warns it is not live" || return 1
+  assert_contains "$RUN_OUTPUT" "systemctl restart llama-swap" "and names the command"
+}
+
+test_config_only_generates_the_same_file_as_a_full_run() {
+  # One generator with a mode, not two generators that will drift apart.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "the full run must succeed: $RUN_OUTPUT" || return 1
+  cp "$RIG_DIR/etc/llama-swap.yaml" "$RIG_DIR/full.yaml"
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "the config-only run must succeed: $RUN_OUTPUT" || return 1
+
+  run diff "$RIG_DIR/full.yaml" "$RIG_DIR/etc/llama-swap.yaml"
+  assert_ok "the two modes must produce an identical config: $RUN_OUTPUT"
+}
+
+test_config_only_composes_with_select() {
+  synth_gpu 20000 1
+  stage_the_collision
+  run bash "$REPO_ROOT/40-serve.sh" --config-only --select "$KEY=$(q4)"
+  assert_ok "both flags together: $RUN_OUTPUT" || return 1
+  local cfg; cfg="$(cat "$RIG_DIR/etc/llama-swap.yaml")"
+  assert_contains "$cfg" "Q4_K_M.gguf" "the selected file" || return 1
+  assert_not_contains "$cfg" "UD-Q5_K_XL" "and not the other one" || return 1
+  assert_not_called 'systemctl' "still no service change"
+}
+
+test_config_only_still_fails_closed_on_a_collision() {
+  synth_gpu 20000 1
+  stage_the_collision
+  mkdir -p "$RIG_DIR/etc"
+  printf 'previous\n' >"$RIG_DIR/etc/llama-swap.yaml"
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_fails "an ambiguous key is still ambiguous in config-only mode" || return 1
+  assert_eq "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "previous" "and nothing was written"
+}
+
+# --- --config-only must not free the GPUs itself (#39 review) ----------------
+# ensure_gpus_idle frees VRAM by running `sudo systemctl stop llama-swap`. In
+# config-only mode that is both the change the mode promises not to make and
+# the most destructive one available: the running daemon holds the only copy of
+# the config it started with, so stopping it to generate a replacement destroys
+# what a config-only run exists to preserve. Sizing still needs idle GPUs, so
+# the check stays -- it just looks instead of touching.
+
+test_config_only_refuses_when_a_process_holds_vram() {
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  gpu_holders_are '1925, llama-server, 21000 MiB'
+  services_active llama-swap
+  printf 'previous\n' >"$RIG_DIR/etc/llama-swap.yaml"
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_fails "a resident model must stop a config-only run" || return 1
+  assert_not_called 'systemctl stop' "the service stop" || return 1
+  assert_eq "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "previous" \
+    "the prior config must survive"
+}
+
+test_config_only_refusal_says_how_to_make_the_gpus_idle() {
+  # Failing closed is only half of it. The operator has to be able to act, and
+  # the re-run has to carry the same flags -- a --select path retyped by hand
+  # is how the wrong quant gets served.
+  synth_gpu 20000 1
+  stage_the_collision
+  gpu_holders_are '1925, llama-server, 21000 MiB'
+  services_active llama-swap
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only --select "$KEY=$(q4)"
+  assert_fails "refuses" || return 1
+  assert_contains "$RUN_OUTPUT" "systemctl stop llama-swap" "names the stop" || return 1
+  assert_contains "$RUN_OUTPUT" "systemctl start llama-swap" "and the restart" || return 1
+  assert_contains "$RUN_OUTPUT" "--config-only" "and echoes back the flags" || return 1
+  assert_contains "$RUN_OUTPUT" "$(q4)" "including the selected path"
+}
+
+test_config_only_refuses_before_reading_the_hardware() {
+  # The refusal has to land above sizing, not below it. Sizing against ~3GB of
+  # visible VRAM computes a negative weight budget, and a config full of bogus
+  # --n-cpu-moe values is worse than no config at all.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  gpu_holders_are '1925, llama-server, 21000 MiB'
+  services_active llama-swap
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_fails "refuses" || return 1
+  assert_not_called 'lscpu' "hardware detection" || return 1
+  [[ -e "$RIG_DIR/etc/llama-swap.yaml" ]] \
+    && { _fail "no config should have been written"; return 1; }
+  return 0
+}
+
+test_a_full_run_still_stops_and_frees_the_gpus() {
+  # The refusal is specific to config-only. A full run is already replacing the
+  # runtime, so stopping it to free VRAM costs nothing that was not going.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  gpu_holders_are '1925, llama-server, 21000 MiB'
+  services_active llama-swap
+
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "the full run must succeed: $RUN_OUTPUT" || return 1
+  assert_called 'systemctl stop llama-swap' "the service stop"
+}
+
+test_config_only_creates_no_logs_directory() {
+  # logs/ belongs to the service, which config-only does not install. "The
+  # config file and nothing else" has to be literally true.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  rm -rf "$RIG_DIR/logs"   # mock_init pre-creates it
+
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "runs: $RUN_OUTPUT" || return 1
+  [[ -d "$RIG_DIR/logs" ]] && { _fail "config-only created logs/"; return 1; }
+  return 0
+}
+
+test_a_full_run_still_creates_the_logs_directory() {
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  rm -rf "$RIG_DIR/logs"
+
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "runs: $RUN_OUTPUT" || return 1
+  [[ -d "$RIG_DIR/logs" ]] || { _fail "a full run must still create logs/"; return 1; }
+  return 0
 }
 
 run_suite

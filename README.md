@@ -639,6 +639,53 @@ Three properties worth knowing:
   llama.cpp opens the rest itself, and counting the other shards would make
   every split model collide with itself.
 
+### Regenerating the config without replacing the runtime
+
+A full `40-serve.sh` run does five things: installs the pinned llama-swap
+binary, generates the config, writes the systemd unit, restarts the service,
+and applies firewall rules. Sometimes you only want the second one.
+
+```bash
+./40-serve.sh --config-only
+```
+
+That writes `etc/llama-swap.yaml` and stops — no binary install, no unit
+rewrite, no restart, no firewall change — then tells you the config is not live
+yet and prints the restart command. On the common path it needs no root at all:
+the config lives in a user-owned directory.
+
+It exists because **"make the config say something different" and "replace the
+runtime" are separate decisions**, and a run that only needed the first should
+not silently perform the second. The sharp case: `40-serve.sh` skips the
+install when the installed version already matches the pin, but when they
+*disagree* a full run upgrades the binary — potentially underneath a stack
+whose measurements were taken against the old one. `--config-only` does not
+compare against the pin at all, because the situation where you most need the
+runtime left alone is exactly the situation where the versions differ.
+
+It composes with `--select`, and an ambiguous serving key still fails closed
+before anything is written.
+
+**It will not free the GPUs for you.** Generating a config means sizing against
+free VRAM, and a full run gets that by stopping llama-swap. Config-only will
+not: stopping the daemon *is* the change the mode promises not to make, and it
+is the worst one available, because a running llama-swap holds the only copy of
+the config it was started with. Replace the file while it is stopped and the
+previous configuration is simply gone. So if anything is holding VRAM, the run
+refuses before writing anything and hands you the sequence:
+
+```bash
+sudo systemctl stop llama-swap
+./40-serve.sh --config-only --select …
+sudo systemctl start llama-swap
+```
+
+Same flags echoed back, because a `--select` path retyped by hand is how the
+wrong quant ends up being served.
+
+Nothing else creates `logs/` in this mode either — it belongs to the service,
+which config-only does not install.
+
 ## Configuration
 
 Everything is derived from detected hardware, and everything is overridable by
