@@ -286,16 +286,20 @@ RATE_REQUIRED_PROVENANCE=(weights quant llamacpp-revision live-n_ctx)
 # paragraph above: "there are no weights" is not an identity. Only an optional
 # field can legitimately be empty.
 rate_provenance_missing() {
-  local values=("$@") missing=() i v
+  # `gaps` rather than `missing`: rate_row_blocked takes the result of this
+  # function as a string parameter of that name, and one identifier that is an
+  # array here and a string there is how a reader -- and shellcheck -- ends up
+  # thinking one of the two is a bug.
+  local values=("$@") gaps=() i v
   for i in "${!RATE_REQUIRED_PROVENANCE[@]}"; do
     v="${values[$i]:-}"
     case "$v" in
-      ''|"$RATE_UNAVAILABLE"|"$RATE_NONE") missing+=("${RATE_REQUIRED_PROVENANCE[$i]}") ;;
+      ''|"$RATE_UNAVAILABLE"|"$RATE_NONE") gaps+=("${RATE_REQUIRED_PROVENANCE[$i]}") ;;
     esac
   done
-  (( ${#missing[@]} )) || return 0
+  (( ${#gaps[@]} )) || return 0
   local IFS=','
-  printf '%s' "${missing[*]}"
+  printf '%s' "${gaps[*]}"
   return 1
 }
 
