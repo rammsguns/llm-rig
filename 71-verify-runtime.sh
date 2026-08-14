@@ -83,9 +83,13 @@ case "$drift_rc" in
   0) EV_PIN="binary reports $installed, matching the pin"
      c_ok "[runtime] llama-swap $installed matches the pin" ;;
   1) c_warn "[runtime] llama-swap $installed is installed; this llm-rig revision pins $pinned.
-     Nothing has been changed. A full ./40-serve.sh run reconciles it by
-     installing the pinned version -- which stops the service and replaces the
-     binary, so do not run it underneath a measurement in progress." ;;
+     Nothing has been changed. To reconcile it, state the decision:
+
+         ./40-serve.sh --reconcile-swap
+
+     A serve run without the flag refuses on this drift (#46). Reconciling
+     stops the service and replaces the binary, so do not do it underneath a
+     measurement in progress." ;;
   *) c_warn "[runtime] no llama-swap version could be read from $SWAP_BIN.
      Nothing has been changed. Either it is not installed, or it is something
      that does not answer --version." ;;
