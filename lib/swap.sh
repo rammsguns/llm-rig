@@ -199,8 +199,9 @@ swap_record_get() {
 # --- drift against the pin ---------------------------------------------------
 #
 # A pin nothing compares against is not a pin. 40-serve.sh reconciles drift by
-# installing over it, which is the right thing during a full run and the wrong
-# thing to discover by accident -- so the comparison is also available on its
+# installing over it -- but only when told to with --reconcile-swap, and it
+# refuses otherwise (#46), because replacing the runtime is a decision rather
+# than a side effect of serving. The comparison itself is also available on its
 # own, read-only.
 #
 # Read-only means read-only: no network, no sudo, nothing written, and the

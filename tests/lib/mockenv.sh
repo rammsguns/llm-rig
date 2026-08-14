@@ -34,6 +34,15 @@ mock_init() {
   # Mocks win over anything real.
   export PATH="$MOCK_BIN:$PATH"
 
+  # The llama-swap binary is read by ABSOLUTE path (lib/swap.sh, SWAP_BIN), so
+  # the PATH shim above cannot shadow it. 40-serve.sh now consults it on every
+  # full run -- the #46 runtime gate -- which means a suite that leaves this at
+  # the default is graded by whatever happens to be installed on the host: it
+  # tests the machine, not the code. Point it into the sandbox; tests that
+  # need a binary stage one there.
+  mkdir -p "$SANDBOX/bin"
+  export SWAP_BIN="$SANDBOX/bin/llama-swap"
+
   # Defaults; individual tests override.
   export MOCK_GPU_FIXTURE="${MOCK_GPU_FIXTURE:-dual_a4000}"
   export MOCK_GPU_HOLDERS=""

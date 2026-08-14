@@ -7,6 +7,7 @@
 #   ./40-serve.sh                                  # serve every model found
 #   ./40-serve.sh --select <key>=<exact.gguf>      # settle an ambiguous key
 #   ./40-serve.sh --config-only                    # write the config, nothing else
+#   ./40-serve.sh --reconcile-swap                 # authorize replacing a drifted runtime
 #
 # A models directory holding two quantisations of one model derives one serving
 # key twice. That is refused rather than guessed; --select names the exact file
@@ -23,6 +24,12 @@
 # hold a few hundred MiB between them on any machine with a display attached, so
 # unrelated processes are tolerated up to 2048 MiB in total and refused above
 # it, where sizing really would skew.
+#
+# --reconcile-swap is the other half of the same separation (#46). When the
+# installed llama-swap differs from the pin, a full run REFUSES before anything
+# changes, because "serve the models" must not silently imply "replace the
+# runtime". The flag states the second decision; a matching version never needs
+# it, and a machine with no binary at all bootstraps without it.
 set -uo pipefail
 source "$(dirname "$0")/lib/detect.sh"
 # Pinned + verified llama-swap install; see the header of lib/swap.sh.
@@ -32,20 +39,100 @@ source "$(dirname "$0")/lib/serving.sh"
 
 SELECTIONS=()
 CONFIG_ONLY=0
+RECONCILE_SWAP=0
 # Kept so a refusal can hand back the exact command to re-run. The parse loop
 # shifts "$@" away, and a --select path with a space in it must survive being
 # printed and pasted.
 ORIG_ARGS=("$@")
 while (( $# )); do
   case "$1" in
-    --select)      shift; SELECTIONS+=("${1:-}") ;;
-    --select=*)    SELECTIONS+=("${1#--select=}") ;;
-    --config-only) CONFIG_ONLY=1 ;;
-    -h|--help)     sed -n '2,25p' "$0"; exit 0 ;;
-    *)             die "unknown argument: $1" ;;
+    --select)          shift; SELECTIONS+=("${1:-}") ;;
+    --select=*)        SELECTIONS+=("${1#--select=}") ;;
+    --config-only)     CONFIG_ONLY=1 ;;
+    --reconcile-swap)  RECONCILE_SWAP=1 ;;
+    -h|--help)         sed -n '2,32p' "$0"; exit 0 ;;
+    *)                 die "unknown argument: $1" ;;
   esac
   shift
 done
+
+# The original arguments, shell-quoted for a pasteable re-run. NOT a bare
+# printf '%q ': that formats its pattern once even with zero arguments, so an
+# argumentless run would hand back `$0 ''` -- a command that fails on the
+# empty string it just invented.
+orig_args_quoted() {
+  (( ${#ORIG_ARGS[@]} )) && printf '%q ' "${ORIG_ARGS[@]}"
+  return 0
+}
+
+if (( CONFIG_ONLY && RECONCILE_SWAP )); then
+  die "--config-only and --reconcile-swap contradict each other: one promises
+     not to touch the runtime, the other authorizes replacing it. Pick the one
+     you mean."
+fi
+
+# --- 0. which runtime is this run standing on? -------------------------------
+# Answered before anything at all changes -- before the GPUs are freed, before
+# hardware detection, before any download or config write -- because the answer
+# can stop the run. A full run used to reconcile a drifted runtime by
+# installing over it, silently, as a side effect of serving (#46). Replacing
+# the runtime is a decision, not a side effect, so drift now refuses unless
+# --reconcile-swap states the decision.
+#
+# --config-only skips the question entirely: it never installs or reconciles,
+# and the situation where the runtime most needs leaving alone is exactly the
+# one where the versions differ.
+if (( ! CONFIG_ONLY )); then
+  swap_drift_rc=0
+  swap_drift="$(swap_pin_drift)" || swap_drift_rc=$?
+  IFS=$'\t' read -r _ SWAP_INSTALLED _ <<<"$swap_drift"
+  case $swap_drift_rc in
+    0)
+      # Matching needs no flag; saying so when one was given saves the
+      # operator wondering whether it did anything.
+      (( RECONCILE_SWAP )) && c_info \
+        "--reconcile-swap: nothing to reconcile, llama-swap $SWAP_INSTALLED already matches the pin"
+      ;;
+    1)
+      if (( ! RECONCILE_SWAP )); then
+        die "llama-swap $SWAP_INSTALLED is installed; this llm-rig revision pins $SWAP_VERSION ($(swap_pin_origin)).
+     A full run would replace it: stop the service, free the VRAM, and install
+     the pinned version underneath whatever was measured against the current
+     one. That is a decision, not a side effect of serving, so it has to be
+     stated. Nothing has been changed.
+
+     To replace the runtime with the pinned $SWAP_VERSION, re-run with the
+     decision spelled out:
+
+         $0 $(orig_args_quoted)--reconcile-swap
+
+     To regenerate the config and leave the runtime alone:
+
+         $0 $(orig_args_quoted)--config-only"
+      fi
+      c_info "llama-swap $SWAP_INSTALLED differs from the pin $SWAP_VERSION; --reconcile-swap authorizes replacing it"
+      ;;
+    *)
+      # Exit 2 is "unknown", and unknown splits in two. A path with nothing at
+      # it is a first-time install: nothing to preserve, nothing to guess
+      # about, no flag required -- refusing here would make bootstrap
+      # impossible. Anything PRESENT that will not identify itself fails
+      # closed, --reconcile-swap or not: the flag authorizes replacing a
+      # runtime that differs from the pin, and this script cannot say that an
+      # unidentifiable binary differs -- only that replacing it would be a
+      # guess about what is being replaced.
+      if [[ -e "$SWAP_BIN" ]]; then
+        die "something exists at $SWAP_BIN but will not report a version.
+     That is not an absent binary, and it is not a known drift; it is a file
+     this script cannot identify, so nothing here -- including
+     --reconcile-swap -- will replace it. Nothing has been changed.
+
+     Look at it yourself. If replacing it is right, move it aside and re-run:
+     an empty $SWAP_BIN is a first-time install, which needs no flag."
+      fi
+      ;;
+  esac
+fi
 
 # Decide WHICH file each served name means before anything at all changes.
 #
@@ -257,7 +344,9 @@ elif [[ "$swap_current" == "$SWAP_VERSION" ]]; then
   c_ok "llama-swap $swap_current already installed$( [[ -n "$(swap_record_get sha256 2>/dev/null)" ]] && printf ' (sha256 %s)' "$(swap_record_get sha256)")"
 else
   if [[ -n "$swap_current" ]]; then
-    c_info "llama-swap $swap_current installed; this llm-rig revision pins $SWAP_VERSION"
+    # Only reachable with --reconcile-swap: the runtime gate above refused the
+    # unstated version of this replacement before anything changed.
+    c_info "llama-swap $swap_current installed; replacing with the pinned $SWAP_VERSION (--reconcile-swap)"
   fi
   install_llama_swap; install_rc=$?
   if (( install_rc == 2 )); then

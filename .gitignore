@@ -4,6 +4,10 @@
 etc/llama-swap.yaml
 claude-code-local.env
 
+# What llm-rig installed on THIS machine: version, digest, timestamp. Machine
+# state, not configuration -- the deliberate pin lives in lib/swap.sh.
+etc/llama-swap.installed
+
 # The commit this machine last built. Machine state, not configuration -- the
 # deliberate pin is llamacpp.ref, which IS meant to be committed.
 .llamacpp-rev

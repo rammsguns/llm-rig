@@ -326,12 +326,14 @@ test_drift_is_reported_without_changing_anything() {
 
 test_drift_names_the_command_that_reconciles_it() {
   # Reporting drift without saying what fixes it is how #40 was found by
-  # accident in the first place.
+  # accident in the first place. Since #46 the reconciling command is the
+  # flagged one -- a bare serve run refuses on drift, so naming it here would
+  # hand the operator a command that immediately fails.
   write_config
   install_fake_swap v248
   mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
   run_verify
-  assert_contains "$RUN_OUTPUT" "40-serve.sh" "the reconciling command"
+  assert_contains "$RUN_OUTPUT" "40-serve.sh --reconcile-swap" "the reconciling command, flag included"
 }
 
 test_require_pin_fails_on_drift() {

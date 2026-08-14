@@ -542,8 +542,8 @@ that is not in the catalog — each prints its own reason rather than a shared
 installs a **named version whose SHA-256 matches**, or it installs nothing.
 
 ```bash
-./40-serve.sh                              # installs the pinned default
-LLAMA_SWAP_VERSION=v248 ./40-serve.sh      # a different version, explicitly
+./40-serve.sh                                        # fresh machine: installs the pinned default
+LLAMA_SWAP_VERSION=v248 ./40-serve.sh --reconcile-swap  # a different version, doubly explicit
 ```
 
 The pinned default lives in [`lib/swap.sh`](lib/swap.sh) (`SWAP_VERSION`),
@@ -572,8 +572,18 @@ source        release tarball, verified pinned in llm-rig
 installed_at  2026-08-12T09:14:22Z
 ```
 
-Re-running with the same version does nothing and says so. Changing version is
-stated explicitly (`llama-swap v248 installed; this llm-rig revision pins v249`).
+Re-running with the same version does nothing and says so. **Changing an
+installed version requires `--reconcile-swap`**: a full run that finds the
+installed binary differing from the pin refuses before anything changes — the
+service is not stopped, nothing is downloaded, no config is written — and
+prints the exact re-run command, original arguments preserved, with the flag
+appended. Serving models and replacing the runtime are separate decisions, and
+a run asked to do the first does not silently perform the second (#46). A
+genuinely absent binary still bootstraps without the flag — a first-time
+install has nothing to preserve — but an executable that *exists* and will not
+report a version fails closed, flag or no flag: "replace it" would be a guess
+about what is being replaced. Inspect it; if replacing is right, move it aside
+and re-run.
 
 **Upgrading.** Bump `SWAP_VERSION` in `lib/swap.sh` and add the new version's
 digest to `swap_pinned_digests()` in the same commit — the digest is the point
@@ -592,10 +602,11 @@ the fastest path needs no network:
 sudo mv /usr/local/bin/llama-swap.previous /usr/local/bin/llama-swap
 ```
 
-Or reinstall a known version, verified the same way as any other:
+Or reinstall a known version, verified the same way as any other — the flag is
+required because the installed binary differs from the version being asked for:
 
 ```bash
-LLAMA_SWAP_VERSION=v248 ./40-serve.sh
+LLAMA_SWAP_VERSION=v248 ./40-serve.sh --reconcile-swap
 ```
 
 A source-built binary records `built from source at <tag> (digest recorded, not
@@ -674,10 +685,19 @@ It exists because **"make the config say something different" and "replace the
 runtime" are separate decisions**, and a run that only needed the first should
 not silently perform the second. The sharp case: `40-serve.sh` skips the
 install when the installed version already matches the pin, but when they
-*disagree* a full run upgrades the binary — potentially underneath a stack
-whose measurements were taken against the old one. `--config-only` does not
-compare against the pin at all, because the situation where you most need the
-runtime left alone is exactly the situation where the versions differ.
+*disagree*, a full run used to upgrade the binary — potentially underneath a
+stack whose measurements were taken against the old one. Since #46 that run
+**refuses instead**, before the service is stopped or anything is written, and
+upgrading requires saying so:
+
+```bash
+./40-serve.sh --reconcile-swap
+```
+
+`--config-only` sits on the other side of the same line: it does not compare
+against the pin at all, because the situation where you most need the runtime
+left alone is exactly the situation where the versions differ. The two flags
+together are a contradiction and are refused as one.
 
 It composes with `--select`, and an ambiguous serving key still fails closed
 before anything is written.
@@ -843,15 +863,16 @@ establishes that flash attention is active.
 ./71-verify-runtime.sh --require flash-attn --require props
 ```
 
-**Runtime drift.** `lib/swap.sh` pins a `llama-swap` version, and a full
-[`./40-serve.sh`](40-serve.sh) run installs it — so the pin is enforced only by running the
-thing that also stops the service and replaces the binary. That is the wrong tool when a
-measurement is in flight, and it is how this machine ended up sitting two releases behind
-its own pin for three days without anything noticing. The `[runtime]` section reports the
-comparison on its own: installed version, pinned version and where the pin came from, plus
-the install record as a **separate** line, because matching the pin says nothing about who
-put the binary there or whether its bytes were ever verified. It reads, and changes
-nothing — on drift it names the command that reconciles it rather than running it.
+**Runtime drift.** `lib/swap.sh` pins a `llama-swap` version, and for a while the pin was
+enforced only by running the full [`./40-serve.sh`](40-serve.sh) — the thing that also
+stops the service and replaces the binary. That is the wrong tool when a measurement is in
+flight, and it is how this machine ended up sitting two releases behind its own pin for
+three days without anything noticing. The `[runtime]` section reports the comparison on
+its own: installed version, pinned version and where the pin came from, plus the install
+record as a **separate** line, because matching the pin says nothing about who put the
+binary there or whether its bytes were ever verified. It reads, and changes nothing — on
+drift it names the command that reconciles it (`./40-serve.sh --reconcile-swap`, since a
+serve run without the flag refuses on drift) rather than running it.
 
 `--require pin` fails on drift *and* on a binary that will not report a version. Those are
 different problems — "install it" versus "find out what this is" — and

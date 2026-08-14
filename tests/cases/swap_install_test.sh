@@ -372,13 +372,30 @@ test_the_pin_origin_names_an_environment_override() {
 # --- 40-serve.sh, driven for real -------------------------------------------
 # The install block only. The script aborts straight after it in these runs,
 # because a full run would generate a config and touch systemd.
+#
+# Since #46, reaching the install block with a DRIFTED binary staged requires
+# --reconcile-swap -- the runtime gate refuses the unstated replacement before
+# the install block runs. Tests exercising a replacement pass the flag as the
+# second argument; the refusal itself is covered in swap_reconcile_test.sh.
 
 serve_install() {
   run bash -c "cd '$REPO_ROOT' && SWAP_SUDO='' SWAP_BIN='$SWAP_BIN' SWAP_RECORD='$SWAP_RECORD' \
     LLAMA_SWAP_API='http://api.test' LLAMA_SWAP_DL='http://dl.test' \
     HOME='$HOME' RIG_DIR='$SANDBOX/rig' MODELS_DIR='$SANDBOX/models' PATH='$PATH' \
-    ${1:-} bash ./40-serve.sh"
+    ${1:-} bash ./40-serve.sh ${2:-}"
 }
+
+# An existing, identifiable, drifted binary -- what the replacement tests stage.
+# The old fixtures wrote plain non-scripts here, which the #46 gate now fails
+# closed as "will not report a version" before any install path is reached.
+stage_swap_v248() {
+  cat >"$SWAP_BIN" <<'EOF'
+#!/usr/bin/env bash
+echo "llama-swap v248"
+EOF
+  chmod +x "$SWAP_BIN"
+}
+swap_bin_sha() { swap_sha256 "$SWAP_BIN"; }
 
 # Serve the release JSON, the checksums, and a tarball with a known digest.
 # v250 throughout: a version this repo has not pinned, so the upstream
@@ -429,23 +446,26 @@ test_a_verified_release_is_installed_and_reported() {
 }
 
 test_a_corrupt_download_installs_nothing() {
-  printf 'working\n' >"$SWAP_BIN"; chmod +x "$SWAP_BIN"
+  stage_swap_v248
+  local before; before="$(swap_bin_sha)"
   serve_release "$(printf '%064d' 9)"      # a checksum that will not match
-  serve_install "LLAMA_SWAP_VERSION=$E2E_VERSION"
+  serve_install "LLAMA_SWAP_VERSION=$E2E_VERSION" --reconcile-swap
   assert_contains "$RUN_OUTPUT" "mismatch" "refused" || return 1
-  assert_eq "$(cat "$SWAP_BIN")" "working" "and the existing binary survives"
+  assert_eq "$(swap_bin_sha)" "$before" "and the existing binary survives"
 }
 
 test_a_mismatch_does_not_fall_back_to_a_source_build() {
   # A digest that does not match is not "could not fetch it". The bytes are not
   # what this version is supposed to be, and quietly acquiring the same version
   # by another route buries exactly the signal worth looking at.
-  printf 'working\n' >"$SWAP_BIN"; chmod +x "$SWAP_BIN"
+  stage_swap_v248
+  local before; before="$(swap_bin_sha)"
   serve_release "$(printf '%064d' 9)"
-  serve_install "LLAMA_SWAP_VERSION=$E2E_VERSION MOCK_GO_VERSION=$E2E_VERSION"
+  serve_install "LLAMA_SWAP_VERSION=$E2E_VERSION MOCK_GO_VERSION=$E2E_VERSION" --reconcile-swap
   assert_fails "a failed verification must stop the run" || return 1
+  assert_contains "$RUN_OUTPUT" "mismatch" "for the stated reason, not an earlier gate" || return 1
   assert_not_contains "$(cat "$MOCK_CALLS")" "go install" "no source build after a mismatch" || return 1
-  assert_eq "$(cat "$SWAP_BIN")" "working" "and nothing is replaced"
+  assert_eq "$(swap_bin_sha)" "$before" "and nothing is replaced"
 }
 
 test_an_unreachable_release_does_not_fall_back_to_something_else() {
@@ -468,15 +488,14 @@ EOF
 }
 
 test_a_version_change_is_stated_explicitly() {
-  cat >"$SWAP_BIN" <<'EOF'
-#!/usr/bin/env bash
-echo "llama-swap v248"
-EOF
-  chmod +x "$SWAP_BIN"
+  # Twice over, since #46: the operator states it with --reconcile-swap, and
+  # the run states back what it is replacing and on whose authority.
+  stage_swap_v248
   serve_release
-  serve_install "LLAMA_SWAP_VERSION=$E2E_VERSION"
+  serve_install "LLAMA_SWAP_VERSION=$E2E_VERSION" --reconcile-swap
   assert_contains "$RUN_OUTPUT" "v248 installed" "says what is there" || return 1
-  assert_contains "$RUN_OUTPUT" "pins $E2E_VERSION" "and what it is moving to"
+  assert_contains "$RUN_OUTPUT" "replacing with the pinned $E2E_VERSION" "what it is moving to" || return 1
+  assert_contains "$RUN_OUTPUT" "(--reconcile-swap)" "and on whose authority"
 }
 
 # --- the source fallback ----------------------------------------------------
@@ -496,11 +515,12 @@ test_the_source_fallback_builds_the_same_tag() {
 }
 
 test_a_failed_source_build_leaves_the_existing_binary_alone() {
-  printf 'working\n' >"$SWAP_BIN"; chmod +x "$SWAP_BIN"
+  stage_swap_v248
+  local before; before="$(swap_bin_sha)"
   : >"$MOCK_ROUTES"                        # the release cannot be reached at all
-  serve_install "LLAMA_SWAP_VERSION=$E2E_VERSION MOCK_GO_STATUS=1"
+  serve_install "LLAMA_SWAP_VERSION=$E2E_VERSION MOCK_GO_STATUS=1" --reconcile-swap
   assert_fails "both paths failed" || return 1
-  assert_eq "$(cat "$SWAP_BIN")" "working" "and nothing replaced it" || return 1
+  assert_eq "$(swap_bin_sha)" "$before" "and nothing replaced it" || return 1
   assert_contains "$RUN_OUTPUT" "Nothing has been replaced" "with instructions to do it by hand"
 }
 
