@@ -719,7 +719,7 @@ test_context_lengths_match_the_published_configs() {
   # claimed 131072 when config.json says 40960, which inflated the feature
   # score for eight of the fifteen models.
   assert_eq "$(catalog_get qwen3-coder-30b context)" "262144" "Qwen3-Coder-30B" || return 1
-  assert_eq "$(catalog_get qwen3-32b context)"        "40960" "Qwen3-32B"       || return 1
+  assert_eq "$(catalog_get qwen3.8-27b context)"     "262144" "Qwen3.8-27B"     || return 1
   assert_eq "$(catalog_get qwen2.5-coder-32b context)" "32768" "Qwen2.5-Coder-32B" || return 1
   assert_eq "$(catalog_get phi-4 context)"            "16384" "phi-4"           || return 1
   assert_eq "$(catalog_get devstral-small context)"  "131072" "Devstral Small"
@@ -731,6 +731,50 @@ test_moe_rows_record_the_activated_parameter_count() {
   assert_eq "$(catalog_get qwen3-coder-30b arch)" "moe" "Qwen3-Coder-30B is a MoE" || return 1
   assert_eq "$(catalog_get qwen3-coder-30b active_params_b)" "3.3" "activated params" || return 1
   assert_eq "$(catalog_get qwen3-coder-30b params_b)" "30.5" "total params"
+}
+
+# --- the Qwen3.8-27B row and the row it displaced -----------------------------
+
+test_the_qwen38_row_matches_the_published_facts() {
+  # Verified against https://huggingface.co/api/models/Qwen/Qwen3.8-27B on
+  # 2026-08-14: createdAt 2026-08-05, safetensors total 27,781,427,952
+  # (-> 27.8), text_config max_position_embeddings 262144, apache-2.0 tag,
+  # image-text-to-text pipeline. No expert fields in config.json, so dense --
+  # the hybrid linear/full attention is an attention layout, not a MoE.
+  assert_eq "$(catalog_get qwen3.8-27b canonical_repo)" "Qwen/Qwen3.8-27B" "publisher repo" || return 1
+  assert_eq "$(catalog_get qwen3.8-27b release_date)"   "2026-08-05" "createdAt"    || return 1
+  assert_eq "$(catalog_get qwen3.8-27b params_b)"       "27.8" "from safetensors"   || return 1
+  assert_eq "$(catalog_get qwen3.8-27b arch)"           "dense" "no expert fields"  || return 1
+  assert_eq "$(catalog_get qwen3.8-27b license)"        "apache-2.0" "license tag"   || return 1
+  assert_eq "$(catalog_get qwen3.8-27b capabilities)"   "tools,reasoning,vision" "capabilities" || return 1
+  assert_eq "$(catalog_preferred_quant qwen3.8-27b)"    "Q4_K_M" "the canonical quant"
+}
+
+test_qwen3_32b_is_retired_from_both_tables() {
+  # Displaced, not appended: the cap is the point of the cap.
+  run catalog_row qwen3-32b
+  assert_fails "the catalog row is gone" || return 1
+  assert_eq "$(catalog_ratings | grep -c '^qwen3-32b;')" "0" "and so is its rating row" || return 1
+  assert_eq "$(catalog_rows | wc -l)" "$CATALOG_MAX_ROWS" "still exactly at the cap"
+}
+
+test_the_qwen38_rating_is_unknown_not_imported() {
+  # Qwen publishes eval results beside the weights. They were measured on the
+  # vendor's harness against the vendor's baselines, which makes them
+  # incomparable with this rig's local benchmark -- so the column says
+  # `unknown` until this rig measures it, and stays low-confidence until then.
+  assert_eq "$(catalog_ratings | grep '^qwen3\.8-27b;')" \
+    "qwen3.8-27b;unknown;-;none;-;none" "the honest placeholder, verbatim"
+}
+
+test_the_qwen38_fit_estimate_holds_up_against_the_published_file() {
+  # 27.8B at Q4_K_M: 278 * 483 * 125 / 1000 = 16784 MB estimated. The actual
+  # unsloth Q4_K_M file is 17,106 MB (HF API, blobs=true, 2026-08-14) -- the
+  # estimate runs ~2% under, which is fine for "will this fit", the only
+  # question asked of it.
+  assert_eq "$(catalog_est_size_mb qwen3.8-27b Q4_K_M)" "16784" "the estimate" || return 1
+  assert_eq "$(catalog_hw_class qwen3.8-27b 29671)" "medium" "56% of this rig's budget" || return 1
+  assert_eq "$(catalog_hw_class qwen3.8-27b 15000)" "large"  "and large on a smaller card"
 }
 
 test_tool_support_is_recorded_only_where_the_publisher_implements_it() {

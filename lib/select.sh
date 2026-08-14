@@ -81,16 +81,41 @@ selector_quant_at() { _selector_field "${SELECT_ROWS[$(( $1 - 1 ))]}" 4; }
 #
 # So: the best medium, then the best large, then the best small. Capped at
 # SELECT_MAX_PICKS, and only ever from the supported list.
+#
+# The medium slot is nameable explicitly. This too is a product decision, and
+# it exists for the same reason medium-first does: the scores cannot yet make
+# it. With one measured rating in the table, "best medium by score" means "the
+# one row anybody has measured", and a default that only ever recommends the
+# already-measured model is a default that can never surface the model that
+# should be measured next. Naming the pick changes NOTHING about how it is
+# presented -- the row keeps its computed score and its honest confidence
+# label, and if the named model is not a supported medium on this hardware the
+# slot falls back to the scored head of the class, because a recommendation
+# never outranks the hardware.
+SELECT_DEFAULT_MEDIUM="qwen3.8-27b"
+
 selector_default_picks() {
-  local class picks=() line c
+  local class picks=() line chosen
   for class in medium large small; do
-    for line in "${SELECT_ROWS[@]}"; do
-      c="$(_selector_field "$line" 1)"
-      if [[ "$c" == "$class" ]]; then
-        picks+=("$(_selector_field "$line" 3)")
-        break
-      fi
-    done
+    chosen=""
+    if [[ "$class" == "medium" && -n "${SELECT_DEFAULT_MEDIUM:-}" ]]; then
+      for line in "${SELECT_ROWS[@]}"; do
+        if [[ "$(_selector_field "$line" 1)" == "$class" \
+           && "$(_selector_field "$line" 3)" == "$SELECT_DEFAULT_MEDIUM" ]]; then
+          chosen="$SELECT_DEFAULT_MEDIUM"
+          break
+        fi
+      done
+    fi
+    if [[ -z "$chosen" ]]; then
+      for line in "${SELECT_ROWS[@]}"; do
+        if [[ "$(_selector_field "$line" 1)" == "$class" ]]; then
+          chosen="$(_selector_field "$line" 3)"
+          break
+        fi
+      done
+    fi
+    [[ -n "$chosen" ]] && picks+=("$chosen")
     (( ${#picks[@]} >= SELECT_MAX_PICKS )) && break
   done
   printf '%s\n' "${picks[@]}"
