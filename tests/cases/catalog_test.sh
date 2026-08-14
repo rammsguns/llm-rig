@@ -746,7 +746,8 @@ test_the_qwen38_row_matches_the_published_facts() {
   assert_eq "$(catalog_get qwen3.8-27b params_b)"       "27.8" "from safetensors"   || return 1
   assert_eq "$(catalog_get qwen3.8-27b arch)"           "dense" "no expert fields"  || return 1
   assert_eq "$(catalog_get qwen3.8-27b license)"        "apache-2.0" "license tag"   || return 1
-  assert_eq "$(catalog_get qwen3.8-27b capabilities)"   "tools,reasoning,vision" "capabilities" || return 1
+  assert_eq "$(catalog_get qwen3.8-27b capabilities)" \
+    "coding,agentic,tools,reasoning,vision" "capabilities incl. card claims" || return 1
   assert_eq "$(catalog_preferred_quant qwen3.8-27b)"    "Q4_K_M" "the canonical quant"
 }
 
