@@ -65,6 +65,16 @@ orig_args_quoted() {
   return 0
 }
 
+# The environment the re-run needs, for the same reason the arguments are
+# kept: a command-scoped `LLAMA_SWAP_VERSION=vNNN ./40-serve.sh` carries its
+# pin in the environment, not in "$@", and a remediation that drops it hands
+# back a command that reconciles to the REPO pin -- a different version from
+# the one the operator was asking for.
+pin_env_quoted() {
+  [[ -n "${LLAMA_SWAP_VERSION:-}" ]] && printf 'LLAMA_SWAP_VERSION=%q ' "$LLAMA_SWAP_VERSION"
+  return 0
+}
+
 if (( CONFIG_ONLY && RECONCILE_SWAP )); then
   die "--config-only and --reconcile-swap contradict each other: one promises
      not to touch the runtime, the other authorizes replacing it. Pick the one
@@ -104,11 +114,11 @@ if (( ! CONFIG_ONLY )); then
      To replace the runtime with the pinned $SWAP_VERSION, re-run with the
      decision spelled out:
 
-         $0 $(orig_args_quoted)--reconcile-swap
+         $(pin_env_quoted)$0 $(orig_args_quoted)--reconcile-swap
 
      To regenerate the config and leave the runtime alone:
 
-         $0 $(orig_args_quoted)--config-only"
+         $(pin_env_quoted)$0 $(orig_args_quoted)--config-only"
       fi
       c_info "llama-swap $SWAP_INSTALLED differs from the pin $SWAP_VERSION; --reconcile-swap authorizes replacing it"
       ;;
@@ -121,7 +131,13 @@ if (( ! CONFIG_ONLY )); then
       # runtime that differs from the pin, and this script cannot say that an
       # unidentifiable binary differs -- only that replacing it would be a
       # guess about what is being replaced.
-      if [[ -e "$SWAP_BIN" ]]; then
+      #
+      # -L as well as -e, because -e follows symlinks: a dangling link at
+      # $SWAP_BIN fails -e and would read as "genuinely absent", then be
+      # silently clobbered by the bootstrap install. A link somebody planted
+      # -- at a removable disk, at an alternative install scheme -- is
+      # something occupying the path, whatever it currently points at.
+      if [[ -e "$SWAP_BIN" || -L "$SWAP_BIN" ]]; then
         die "something exists at $SWAP_BIN but will not report a version.
      That is not an absent binary, and it is not a known drift; it is a file
      this script cannot identify, so nothing here -- including

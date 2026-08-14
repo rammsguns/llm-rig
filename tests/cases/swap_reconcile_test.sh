@@ -128,6 +128,20 @@ test_the_refusal_hands_back_every_original_argument() {
   assert_contains "$RUN_OUTPUT" "--reconcile-swap" "and the authorization appended"
 }
 
+test_the_remediation_preserves_a_command_scoped_version_override() {
+  # `LLAMA_SWAP_VERSION=vNNN ./40-serve.sh` carries its pin in the
+  # environment, not in "$@". A remediation built from the arguments alone
+  # hands back a command that reconciles to the REPO pin -- a different
+  # version from the one the operator was asking for.
+  synth_gpu 20000 1; stage_model
+  swap_reporting v248
+  run env LLAMA_SWAP_VERSION=v250 bash "$REPO_ROOT/40-serve.sh"
+  assert_fails "v248 against an env pin of v250 is drift" || return 1
+  assert_contains "$RUN_OUTPUT" "LLAMA_SWAP_VERSION=v250 " \
+    "the override survives into the pasteable command" || return 1
+  assert_contains "$RUN_OUTPUT" "--reconcile-swap" "alongside the flag"
+}
+
 test_an_argumentless_refusal_does_not_invent_an_empty_argument() {
   # printf '%q ' formats its pattern once even with zero arguments, so the
   # naive quoting hands back `40-serve.sh '' --reconcile-swap` -- a command
@@ -207,6 +221,26 @@ test_not_even_the_flag_replaces_an_unidentifiable_binary() {
   assert_fails "still refused" || return 1
   assert_eq "$(swap_sha)" "$before" "the unidentified binary is untouched" || return 1
   assert_contains "$RUN_OUTPUT" "move it aside" "and the manual path is named"
+}
+
+test_a_dangling_symlink_is_not_a_missing_binary() {
+  # -e follows symlinks, so a dangling link at $SWAP_BIN fails it and would
+  # read as "genuinely absent" -- then be silently clobbered by the bootstrap
+  # install. Something occupies the path; fail closed like any other
+  # unidentifiable occupant, flag or no flag.
+  synth_gpu 20000 1; stage_model
+  # /usr/bin/ln, not ln: the mocks PATH shadows ln with a logger that creates
+  # nothing, which turns this staging into a silent no-op and the test into a
+  # bootstrap run.
+  /usr/bin/ln -s "$SANDBOX/points-at-nothing" "$SWAP_BIN"
+  [[ -L "$SWAP_BIN" ]] || { _fail "precondition: the dangling link exists"; return 1; }
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_fails "a dangling symlink must not read as absent" || return 1
+  assert_contains "$RUN_OUTPUT" "will not report a version" "the fail-closed path" || return 1
+  run bash "$REPO_ROOT/40-serve.sh" --reconcile-swap
+  assert_fails "and no flag covers it" || return 1
+  [[ -L "$SWAP_BIN" ]] || { _fail "the symlink must still be in place"; return 1; }
+  assert_not_called 'curl' "nothing was downloaded over it"
 }
 
 # --- composition with --config-only -------------------------------------------
