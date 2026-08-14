@@ -812,14 +812,14 @@ touch ~/existing-build/.llm-rig-build                # deliberately hand one ove
 Symlinks and `..` are resolved before any of that is decided, so neither can be used to
 launder a path into looking owned.
 
-The built commit is recorded in `.llamacpp-rev`. Pin it for reproducible rebuilds:
-
-```bash
-echo <commit> > ~/llm-rig/llamacpp.ref
-```
-
-Without a pin the build tracks `master`, and the script says so rather than letting the
-next run silently produce something different.
+The revision to build is **committed** as [`llamacpp.ref`](llamacpp.ref) — a full hash,
+not a branch — so a fresh clone builds the revision this repo was verified against
+rather than whatever `master` is that day. There is nothing to create by hand: bump the
+pin deliberately, in a commit that says why. A one-off build of something else is
+`LLAMA_REF=<rev> ./20-build-llamacpp.sh`, and the verifier will then report that the
+installed binary no longer matches the pin. What actually got built is recorded in
+`.llamacpp-rev`; if the pin file is ever removed, the build tracks `master` and says so
+rather than letting the next run silently produce something different.
 
 Generated artifacts — regenerate rather than hand-edit, they get overwritten:
 
@@ -850,34 +850,49 @@ It grades every claim by how it was established, and never conflates the grades:
 | `[configured]` | The flag is in the generated config. Says what was *asked for*. |
 | `[live]` | The running server reported it via `/props`. Strongest. |
 | `[benchmark]` | Inferred from timings measured **on this machine**. |
-| `[runtime]` | Which `llama-swap` binary is installed, read off the binary itself. |
+| `[runtime]` | Which `llama-swap` and `llama-server` binaries are installed, read off the binaries themselves. |
 
 If no benchmark artifact exists it reports **"not measured"** rather than substituting a
 figure from anywhere else, and a `--flash-attn` line in the config never on its own
 establishes that flash attention is active.
 
 ```bash
-./71-verify-runtime.sh --measure              # take a bounded measurement now
-./71-verify-runtime.sh --require props        # exit non-zero unless established
-./71-verify-runtime.sh --require pin          # exit non-zero unless it matches the pin
+./71-verify-runtime.sh --measure               # take a bounded measurement now
+./71-verify-runtime.sh --require props         # exit non-zero unless established
+./71-verify-runtime.sh --require swap-pin      # ... unless llama-swap matches its pin
+./71-verify-runtime.sh --require llamacpp-pin  # ... unless llama-server matches llamacpp.ref
 ./71-verify-runtime.sh --require flash-attn --require props
 ```
 
-**Runtime drift.** `lib/swap.sh` pins a `llama-swap` version, and for a while the pin was
-enforced only by running the full [`./40-serve.sh`](40-serve.sh) — the thing that also
-stops the service and replaces the binary. That is the wrong tool when a measurement is in
-flight, and it is how this machine ended up sitting two releases behind its own pin for
-three days without anything noticing. The `[runtime]` section reports the comparison on
-its own: installed version, pinned version and where the pin came from, plus the install
-record as a **separate** line, because matching the pin says nothing about who put the
-binary there or whether its bytes were ever verified. It reads, and changes nothing — on
-drift it names the command that reconciles it (`./40-serve.sh --reconcile-swap`, since a
-serve run without the flag refuses on drift) rather than running it.
+`--require pin` is the older name from when there was only one pin; it stays as an alias
+for `swap-pin`, so existing callers keep gating exactly what they always gated.
 
-`--require pin` fails on drift *and* on a binary that will not report a version. Those are
-different problems — "install it" versus "find out what this is" — and
-`swap_pin_drift` distinguishes them by exit status (`1` versus `2`) for callers that need
-to.
+**Runtime drift.** The rig pins both runtime binaries — `lib/swap.sh` pins `llama-swap`,
+and the committed [`llamacpp.ref`](llamacpp.ref) pins the llama.cpp revision behind
+`llama-server` — and the `[runtime]` section verifies each against its pin, separately.
+For a while the swap pin was enforced only by running the full
+[`./40-serve.sh`](40-serve.sh) — the thing that also stops the service and replaces the
+binary. That is the wrong tool when a measurement is in flight, and it is how this machine
+ended up sitting two releases behind its own pin for three days without anything noticing.
+The report compares installed version, pinned version and where the pin came from, plus
+the install record as a **separate** line, because matching the pin says nothing about who
+put the binary there or whether its bytes were ever verified. It reads, and changes
+nothing — on drift it names the command that reconciles it (`./40-serve.sh
+--reconcile-swap`, since a serve run without the flag refuses on drift) rather than
+running it.
+
+The llama.cpp side keeps three sources of identity separate, because they make separate
+claims: **installed** is what `llama-server --version` reports, **pinned** is what the
+committed `llamacpp.ref` says it should be, and **record** is what llm-rig last built
+(`.llamacpp-rev`) — provenance, not identity, so it never feeds the verdict. A binary
+built elsewhere and copied over the install target would satisfy a record comparison
+while being exactly the drift the pin exists to catch. On drift the reconciling command
+is `./20-build-llamacpp.sh`, which rebuilds at the pin; the verifier never runs it.
+
+Each pin assertion fails on drift, on a binary that will not report its identity, *and*
+(for `llamacpp-pin`) on a missing pin file. Those are different problems — "rebuild it",
+"find out what this is", "commit a pin" — and `swap_pin_drift` / `llama_pin_drift`
+distinguish them by exit status for callers that need to.
 
 `--require` turns it into a gate: non-zero when the assertion cannot be **established**,
 which is not the same as it being false. Upstream ports are derived from the generated

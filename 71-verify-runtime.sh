@@ -10,26 +10,31 @@
 #   [benchmark]  inferred from timings measured ON THIS MACHINE. Without an
 #                artifact the answer is "not measured" -- never a substituted
 #                figure from somewhere else.
-#   [runtime]    which llama-swap binary is installed, and whether it is the
-#                one this llm-rig revision pins. Read directly off the binary.
+#   [runtime]    which llama-swap and llama-server binaries are installed, and
+#                whether each is the one this llm-rig revision pins. Read
+#                directly off the binaries.
 #
 # Usage:
 #   ./71-verify-runtime.sh
-#   ./71-verify-runtime.sh --measure            # run a bounded live benchmark
-#   ./71-verify-runtime.sh --require props      # non-zero unless established
-#   ./71-verify-runtime.sh --require pin        # non-zero unless it matches
+#   ./71-verify-runtime.sh --measure               # run a bounded live benchmark
+#   ./71-verify-runtime.sh --require props         # non-zero unless established
+#   ./71-verify-runtime.sh --require swap-pin      # llama-swap matches its pin
+#   ./71-verify-runtime.sh --require llamacpp-pin  # llama-server matches llamacpp.ref
 #   ./71-verify-runtime.sh --require flash-attn --require props
+#
+# --require pin is the older name for swap-pin and stays as an alias.
 #
 # --require makes this usable as a gate: it exits non-zero when the requested
 # assertion cannot be ESTABLISHED, which is not the same as being false.
 #
 # Nothing here installs, downloads or replaces anything, including the runtime
-# check: it reports drift and names the command that reconciles it.
+# checks: they report drift and name the command that reconciles it.
 set -uo pipefail
 RIG_SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$RIG_SRC_DIR/lib/detect.sh"
 source "$RIG_SRC_DIR/lib/bench.sh"
 source "$RIG_SRC_DIR/lib/swap.sh"
+source "$RIG_SRC_DIR/lib/llamasrc.sh"
 
 CFG="$RIG_DIR/etc/llama-swap.yaml"
 MEASURE=0
@@ -40,7 +45,7 @@ while (( $# )); do
     --measure)   MEASURE=1 ;;
     --require)   shift; REQUIRE+=("${1:-}") ;;
     --require=*) REQUIRE+=("${1#--require=}") ;;
-    -h|--help)   sed -n '2,27p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)   sed -n '2,31p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *)           die "unknown argument: $1" ;;
   esac
   shift
@@ -50,7 +55,8 @@ done
 EV_PROPS=""
 EV_FLASH_ATTN=""
 EV_BENCH=""
-EV_PIN=""
+EV_SWAP_PIN=""
+EV_LLAMACPP_PIN=""
 
 # --- 0. which router binary is installed ------------------------------------
 # Before any question about flags, the question of which llama-swap is
@@ -80,7 +86,7 @@ else
 fi
 
 case "$drift_rc" in
-  0) EV_PIN="binary reports $installed, matching the pin"
+  0) EV_SWAP_PIN="binary reports $installed, matching the pin"
      c_ok "[runtime] llama-swap $installed matches the pin" ;;
   1) c_warn "[runtime] llama-swap $installed is installed; this llm-rig revision pins $pinned.
      Nothing has been changed. To reconcile it, state the decision:
@@ -93,6 +99,54 @@ case "$drift_rc" in
   *) c_warn "[runtime] no llama-swap version could be read from $SWAP_BIN.
      Nothing has been changed. Either it is not installed, or it is something
      that does not answer --version." ;;
+esac
+echo
+
+# --- 0b. which llama-server is installed --------------------------------------
+# The same question one layer down: llama-swap is the router, llama-server is
+# what actually runs models, and it has a pin of its own -- the committed
+# llamacpp.ref. Three sources of identity, kept separate because they make
+# separate claims:
+#
+#   installed  what the binary itself reports via --version
+#   pinned     what this llm-rig revision says it should be (llamacpp.ref)
+#   record     what llm-rig last built (.llamacpp-rev) -- provenance, not
+#              identity, so it never feeds the verdict below
+ldrift="$(llama_pin_drift)"; ldrift_rc=$?
+IFS=$'\t' read -r _ linstalled lpinned <<<"$ldrift"
+c_info "[runtime] llama-server binary at $LLAMA_SERVER_BIN"
+printf '    %-14s %s\n' "installed" "$linstalled" >&2
+printf '    %-14s %s (%s)\n' "pinned" "$lpinned" "$(llama_pin_origin)" >&2
+
+if lrec="$(llama_recorded_rev)"; then
+  printf '    %-14s %s\n' "record" "$lrec" >&2
+  # Compared only when the binary answered: an unreadable binary is already
+  # reported below, and grading the record against a non-answer says nothing.
+  if [[ "$linstalled" != "-" ]] && ! llama_rev_matches "$linstalled" "$lrec"; then
+    c_warn "the build record says $lrec but the binary reports $linstalled -- it was
+     built or replaced by something other than llm-rig"
+  fi
+else
+  printf '    %-14s %s\n' "record" "none -- llm-rig did not build this binary" >&2
+fi
+
+case "$ldrift_rc" in
+  0) EV_LLAMACPP_PIN="binary reports $linstalled, matching the pin"
+     c_ok "[runtime] llama-server $linstalled matches the pin" ;;
+  1) c_warn "[runtime] llama-server reports $linstalled; this llm-rig revision pins $lpinned.
+     Nothing has been changed. To rebuild at the pin:
+
+         ./20-build-llamacpp.sh
+
+     which checks out the pinned revision, builds it, and relinks the
+     binaries. That loads the GPU for a while, so do not do it underneath a
+     measurement in progress." ;;
+  2) c_warn "[runtime] no revision could be read from $LLAMA_SERVER_BIN.
+     Nothing has been changed. Either it is not installed, or it is something
+     that does not answer --version with a source revision." ;;
+  *) c_warn "[runtime] there is no llamacpp.ref to compare against.
+     This llm-rig revision commits one at the repo root, so a missing file
+     here means RIG_DIR does not point at the repository." ;;
 esac
 echo
 
@@ -231,10 +285,11 @@ fi
 # --- summary ----------------------------------------------------------------
 echo
 c_info "Evidence summary"
-printf '    %-14s %s\n' "pin"         "${EV_PIN:-not established}" >&2
-printf '    %-14s %s\n' "props"       "${EV_PROPS:-not established}" >&2
-printf '    %-14s %s\n' "flash-attn"  "${EV_FLASH_ATTN:-not established}" >&2
-printf '    %-14s %s\n' "benchmark"   "${EV_BENCH:-not established}" >&2
+printf '    %-14s %s\n' "swap-pin"     "${EV_SWAP_PIN:-not established}" >&2
+printf '    %-14s %s\n' "llamacpp-pin" "${EV_LLAMACPP_PIN:-not established}" >&2
+printf '    %-14s %s\n' "props"        "${EV_PROPS:-not established}" >&2
+printf '    %-14s %s\n' "flash-attn"   "${EV_FLASH_ATTN:-not established}" >&2
+printf '    %-14s %s\n' "benchmark"    "${EV_BENCH:-not established}" >&2
 
 # --- requested assertions ---------------------------------------------------
 STATUS=0
@@ -243,11 +298,17 @@ for want in "${REQUIRE[@]}"; do
     props)       ev="$EV_PROPS" ;;
     flash-attn)  ev="$EV_FLASH_ATTN" ;;
     bench)       ev="$EV_BENCH" ;;
-    # Established means "read, and equal to the pin". Drift and an unreadable
-    # binary both fail it, for the same reason --require exists: the assertion
-    # could not be established, whatever the reason.
-    pin)         ev="$EV_PIN" ;;
-    *)           die "unknown assertion: $want (known: props, flash-attn, bench, pin)" ;;
+    # Established means "read, and equal to the pin". Drift, an unreadable
+    # binary and a missing pin all fail it, for the same reason --require
+    # exists: the assertion could not be established, whatever the reason.
+    #
+    # 'pin' predates the llama.cpp pin and named the only one there was. It
+    # stays as an alias for swap-pin so existing callers keep gating exactly
+    # what they always gated -- silently re-pointing the old name at a wider
+    # meaning would flip gates without anyone changing a call.
+    swap-pin|pin) ev="$EV_SWAP_PIN" ;;
+    llamacpp-pin) ev="$EV_LLAMACPP_PIN" ;;
+    *)           die "unknown assertion: $want (known: props, flash-attn, bench, swap-pin, llamacpp-pin; pin = swap-pin)" ;;
   esac
   if [[ -n "$ev" ]]; then
     c_ok "required '$want' established -- $ev"

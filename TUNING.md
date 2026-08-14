@@ -214,7 +214,8 @@ Both scripts take `--dry-run`, which needs no `sudo` and changes nothing:
 ## Reproducibility of the stack itself
 
 The measurements on this page describe a specific pair of binaries. `llama.cpp`
-is built from a revision recorded in `.llamacpp-rev`, and **llama-swap is
+is **pinned** to the committed revision in `llamacpp.ref` (what actually got
+built is recorded in `.llamacpp-rev`), and **llama-swap is
 pinned** to a version whose SHA-256 is recorded in `lib/swap.sh` — it used to be
 whatever `releases/latest` returned that day, unverified, so two rebuilds of the
 "same" stack could differ in a component sitting directly in the request path.

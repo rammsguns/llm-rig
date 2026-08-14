@@ -52,6 +52,17 @@ llama_source_kind() {
   printf 'absent'
 }
 
+# The committed pin on its own, with no fallback: absence is an answer here,
+# not a reason to substitute master. llama_resolve_ref layers the build-time
+# precedence (env override, then this, then master) on top.
+llama_pinned_rev() {
+  local pinfile="${RIG_DIR}/llamacpp.ref" ref
+  [[ -f "$pinfile" ]] || return 1
+  ref="$(grep -vE '^\s*(#|$)' "$pinfile" | head -1 | xargs)"
+  [[ -n "$ref" ]] || return 1
+  printf '%s' "$ref"
+}
+
 # The ref a managed checkout should be built at.
 #
 # Tracking upstream master makes a successful build unreproducible: the next
@@ -59,11 +70,9 @@ llama_source_kind() {
 # reviewable; without one we still resolve to a concrete commit and tell the
 # user how to pin it.
 llama_resolve_ref() {
-  local pinfile="${RIG_DIR}/llamacpp.ref"
   if [[ -n "${LLAMA_REF:-}" ]]; then
     LLAMA_REF_SOURCE="env"
-  elif [[ -f "$pinfile" ]]; then
-    LLAMA_REF="$(grep -vE '^\s*(#|$)' "$pinfile" | head -1 | xargs)"
+  elif LLAMA_REF="$(llama_pinned_rev)"; then
     LLAMA_REF_SOURCE="pinfile"
   fi
   if [[ -z "${LLAMA_REF:-}" ]]; then
@@ -249,6 +258,103 @@ llama_prepare_source() {
   LLAMA_BUILD_REV_SHORT="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)"
   export LLAMA_SOURCE_KIND LLAMA_BUILD_REV LLAMA_BUILD_REV_SHORT
   return 0
+}
+
+# --- drift against the committed pin (read-only) ------------------------------
+#
+# The llama-swap analogue lives in lib/swap.sh (swap_pin_drift); the shape here
+# is deliberately the same, because the failure was the same: a pin nothing
+# compares against is not a pin. Read-only means read-only -- no network, no
+# rebuild, nothing written, and the installed binary is executed only with
+# --version, which starts nothing and loads nothing.
+
+# Where the installed llama-server is expected. Absolute, not a PATH lookup,
+# for the same reason as SWAP_BIN: 20-build-llamacpp.sh links it here, and a
+# PATH lookup would grade whatever happens to shadow it. Set first, so a caller
+# that has already pointed it into a sandbox -- the test suite, which must
+# never execute the real install target -- is not overridden by this default.
+LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-/usr/local/bin/llama-server}"
+
+# llama_installed_rev [bin] -- the source revision the installed llama-server
+# reports, or status 1. `--version` prints "version: N (hash)", and the hash is
+# the identity: the build NUMBER is counted from the checkout's local history,
+# so two builds of the same revision can disagree on it. It is ignored.
+llama_installed_rev() {
+  local bin="${1:-$LLAMA_SERVER_BIN}" out rev
+  [[ -x "$bin" ]] || return 1
+  out="$("$bin" --version 2>&1)" || true
+  rev="$(grep -oE '\([0-9a-f]{7,40}\)' <<<"$out" | head -1 | tr -d '()')"
+  [[ -n "$rev" ]] || return 1
+  printf '%s' "$rev"
+}
+
+# llama_recorded_rev -- the revision llm-rig recorded building (written by
+# llama_record_build below), or status 1. This is the analogue of the swap
+# install record: it says what llm-rig BUILT, which is a separate claim from
+# what is installed, and the two are never conflated.
+llama_recorded_rev() {
+  local f="$RIG_DIR/.llamacpp-rev" rev
+  [[ -f "$f" ]] || return 1
+  rev="$(head -1 "$f" | xargs)"
+  [[ -n "$rev" ]] || return 1
+  printf '%s' "$rev"
+}
+
+# Two revisions name the same commit when one is a prefix of the other:
+# --version reports the short hash while the pin holds the full one, and either
+# could in principle be given in the other form. The installed side is at least
+# 7 hex characters by construction (llama_installed_rev), so the prefix rule
+# cannot match on noise.
+llama_rev_matches() {
+  local a="$1" b="$2"
+  [[ -n "$a" && -n "$b" ]] || return 1
+  [[ "$a" == "$b"* || "$b" == "$a"* ]]
+}
+
+# Where the pin the comparison used came from, mirroring swap_pin_origin: an
+# operator who exported LLAMA_REF is not comparing against the committed pin
+# any more, and a drift report that does not say so is describing a comparison
+# the reader cannot reproduce.
+llama_pin_origin() {
+  if [[ -n "${LLAMA_REF:-}" ]]; then printf 'environment'; else printf 'repo'; fi
+}
+
+# llama_pin_drift [bin]
+#
+# Prints "<verdict>\t<installed>\t<pinned>" and returns:
+#
+#   0  match     the installed llama-server was built at the pinned revision
+#   1  drift     it reports a different revision
+#   2  unknown   there is no binary, or no revision can be read from it
+#   3  unpinned  there is no pin to compare against
+#
+# unpinned is its own verdict for the same reason unknown is: "commit a pin",
+# "rebuild at the pin" and "find out what this is" are different responses, and
+# a caller gating on the exit status should not have to guess which it got.
+#
+# What this does NOT consult is .llamacpp-rev. The build record says what
+# llm-rig built, not what is installed -- a binary built elsewhere and copied
+# over the install target would satisfy a record comparison while being exactly
+# the drift this exists to catch. The record is reported separately, by
+# llama_recorded_rev, as the separate claim it is.
+llama_pin_drift() {
+  local bin="${1:-$LLAMA_SERVER_BIN}" installed pinned
+  if [[ -n "${LLAMA_REF:-}" ]]; then
+    pinned="$LLAMA_REF"
+  elif ! pinned="$(llama_pinned_rev)"; then
+    printf 'unpinned\t-\t-'
+    return 3
+  fi
+  if ! installed="$(llama_installed_rev "$bin")" || [[ -z "$installed" ]]; then
+    printf 'unknown\t-\t%s' "$pinned"
+    return 2
+  fi
+  if llama_rev_matches "$installed" "$pinned"; then
+    printf 'match\t%s\t%s' "$installed" "$pinned"
+    return 0
+  fi
+  printf 'drift\t%s\t%s' "$installed" "$pinned"
+  return 1
 }
 
 # Record exactly what was built, so a build can be reproduced.
