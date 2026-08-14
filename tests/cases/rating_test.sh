@@ -985,7 +985,7 @@ test_a_result_line_is_machine_readable() {
 
 test_a_missing_model_in_the_artifact_is_an_error() {
   local f; f="$(write_artifact)"
-  run rate_artifact_result "$f" qwen3-32b value
+  run rate_artifact_result "$f" qwen2.5-coder-32b value
   assert_fails "a model that was not rated"
 }
 
@@ -1324,7 +1324,7 @@ test_dry_run_maps_names_and_calls_nothing() {
 
 test_an_unserved_model_is_refused_by_name() {
   serve_model 6
-  drive "--model qwen3-32b"
+  drive "--model qwen2.5-coder-32b"
   assert_fails "a model the endpoint does not serve" || return 1
   assert_contains "$RUN_OUTPUT" "does not serve" "named, not 'invalid input'" || return 1
   assert_contains "$RUN_OUTPUT" "qwen3-4b" "and what it does serve is listed"

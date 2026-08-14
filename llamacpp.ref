@@ -1,0 +1,9 @@
+# The llama.cpp revision this rig builds and verifies against. Full hash, not
+# a branch: a branch pin makes the next build silently different, which is the
+# exact failure this file exists to prevent (see llama_resolve_ref).
+#
+# 2026-08-14: verified to carry LLM_ARCH_QWEN35 (src/models/qwen35.cpp), the
+# GGUF arch of qwen3.8-27b -- and to be the revision the installed llama-server
+# was built from, so committing it changes what fresh builds get, not what is
+# running.
+74ce15741b420b8d6f12e720398458b576c51c2c

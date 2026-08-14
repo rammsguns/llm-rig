@@ -179,7 +179,7 @@ plan_for_budget() {
   elif (( fit_total < 45000 )); then
     PLAN_TIER="48g"
     PLAN_ID_1="qwen3-coder-30b"; PLAN_Q_1="Q6_K|Q5_K_M"
-    PLAN_ID_2="qwen3-32b";       PLAN_Q_2="Q5_K_M"
+    PLAN_ID_2="qwen3.8-27b";     PLAN_Q_2="Q5_K_M"
     PLAN_ID_3="devstral-small";  PLAN_Q_3="Q5_K_M"
     PLAN_RUNTIME="llama.cpp + llama-swap."
     PLAN_NOTE="Enough headroom to spend it on quantization quality rather than more
@@ -189,7 +189,7 @@ plan_for_budget() {
     PLAN_TIER="big"
     PLAN_ID_1="llama-3.3-70b";   PLAN_Q_1="IQ4_XS|Q4_K_S"
     PLAN_ID_2="qwen3-coder-30b"; PLAN_Q_2="Q6_K"
-    PLAN_ID_3="qwen3-32b";       PLAN_Q_3="Q5_K_M"
+    PLAN_ID_3="qwen3.8-27b";     PLAN_Q_3="Q5_K_M"
     PLAN_RUNTIME="llama.cpp + llama-swap."
     PLAN_NOTE="Large enough to run a frontier-class open model resident."
   fi

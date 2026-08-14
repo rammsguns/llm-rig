@@ -96,9 +96,12 @@ test_moe_models_are_labelled_with_their_active_parameter_count() {
   local out; out="$(selector_render "$BUDGET")"
   assert_matches "$out" "Qwen3-Coder-30B-A3B-Instruct.*MoE, ~3.3B active of 30.5B" \
     "the MoE is named as one, with the numbers that matter" || return 1
-  # And a dense model of similar size must not be.
+  # And a dense model of similar size must not be. The grep must find the row
+  # first -- an empty string trivially "does not contain" anything, and that is
+  # exactly how this assertion would go blind if the dense model were renamed.
   local dense_line
-  dense_line="$(printf '%s\n' "$out" | grep -E '^ +[0-9]+\. +Qwen3-32B ')"
+  dense_line="$(printf '%s\n' "$out" | grep -E '^ +[0-9]+\. +Qwen3\.8-27B ')"
+  assert_ne "$dense_line" "" "the dense comparison row is on the menu" || return 1
   assert_not_contains "$dense_line" "MoE" "a dense model must not be labelled MoE"
 }
 
@@ -296,6 +299,78 @@ test_the_default_positions_resolve_to_the_default_models() {
   assert_eq "${resolved[*]}" "${expected[*]}" "the numbers point at the recommended models"
 }
 
+# --- the explicit default medium ----------------------------------------------
+# SELECT_DEFAULT_MEDIUM names the medium slot's pick. The scores cannot make
+# this call yet -- one measured row against sixteen unknowns means "best medium
+# by score" is just "the measured one" -- so it is a product decision, made
+# visible, with the numbers left exactly as computed.
+
+test_the_default_medium_is_the_named_pick_not_the_scored_head() {
+  # At this rig's real budget the scored head of the medium class is the one
+  # measured model. The named default takes the slot anyway; if the two ever
+  # converge, the override is dead weight and this test is where that
+  # conversation starts.
+  local first head_medium
+  first="$(
+    selector_build 29671 0
+    selector_default_picks | head -1
+  )"
+  head_medium="$(score_rank 29671 0 | awk -F'\t' '$1=="medium" { print $3; exit }')"
+  assert_eq "$first" "qwen3.8-27b" "the named pick leads the recommendation" || return 1
+  assert_eq "$head_medium" "qwen3-coder-30b" \
+    "while the scored head is the measured model, so the override is doing work"
+}
+
+test_the_named_default_keeps_its_computed_score_and_confidence() {
+  # Naming the pick changes the recommendation, never the row: the menu line
+  # keeps the calculated score and the low-confidence label an unmeasured
+  # model has earned. A default that inflated its own numbers would be the
+  # menu lying in the one place a user reads most carefully.
+  local row ranked
+  row="$(printf '%s\n' "${SELECT_ROWS[@]}" | awk -F'\t' '$3=="qwen3.8-27b"')"
+  ranked="$(score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$3=="qwen3.8-27b" { print $2 }')"
+  assert_ne "$row" "" "the named default is on the menu" || return 1
+  assert_eq "$(cut -f5 <<<"$row")" "low" "unmeasured means low, default or not" || return 1
+  assert_eq "$(cut -f2 <<<"$row")" "$ranked" "and the score is the computed one, untouched"
+}
+
+test_the_named_default_scores_below_the_measured_model() {
+  # The gap the override spans, pinned so it stays visible: the default
+  # medium is NOT the best-scoring medium, and anything presenting it as such
+  # has broken the honesty this mechanism promises.
+  local named measured
+  named="$(score_rank 29671 0 | awk -F'\t' '$3=="qwen3.8-27b" { print $2 }')"
+  measured="$(score_rank 29671 0 | awk -F'\t' '$3=="qwen3-coder-30b" { print $2 }')"
+  assert_lt "$named" "$measured" "the recommendation outranks the score, never the reverse"
+}
+
+test_a_named_default_outside_the_medium_class_falls_back() {
+  # On a 15000 MB budget the 16784 MB estimate is 112% -- large, not medium.
+  # A recommendation never outranks the hardware, so the slot returns to the
+  # scored head of the class.
+  local first head_medium
+  assert_eq "$(catalog_hw_class qwen3.8-27b 15000)" "large" "precondition: not medium here" || return 1
+  first="$(
+    selector_build 15000 0
+    selector_default_picks | head -1
+  )"
+  head_medium="$(score_rank 15000 0 | awk -F'\t' '$1=="medium" { print $3; exit }')"
+  assert_eq "$first" "$head_medium" "the slot falls back to the scored head"
+}
+
+test_a_named_default_absent_from_the_menu_falls_back() {
+  # The guard for the retirement case: if the named model ever leaves the
+  # catalog, the default degrades to the computed pick rather than to an
+  # empty recommendation.
+  local first head_medium
+  first="$(
+    SELECT_DEFAULT_MEDIUM="a-model-nobody-shipped"
+    selector_default_picks | head -1
+  )"
+  head_medium="$(score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$1=="medium" { print $3; exit }')"
+  assert_eq "$first" "$head_medium" "an id matching nothing selects nothing special"
+}
+
 # --- determinism ------------------------------------------------------------
 
 test_the_menu_is_byte_identical_across_runs() {
@@ -370,7 +445,7 @@ test_a_rating_landing_lifts_confidence_on_the_menu() {
       command sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'R'
 qwen3-coder-30b;unknown;-;none;-;none
 qwen3-30b-a3b;unknown;-;none;-;none
-qwen3-32b;unknown;-;none;-;none
+qwen3.8-27b;unknown;-;none;-;none
 qwen3-14b;unknown;-;none;-;none
 qwen3-8b;unknown;-;none;-;none
 qwen3-4b;unknown;-;none;-;none

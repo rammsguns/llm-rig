@@ -71,7 +71,7 @@ test_an_oversized_moe_beats_an_oversized_dense_model() {
   # be resident, so overflowing VRAM costs it far less.
   local moe dense
   moe="$(score_hw_fit qwen3-coder-30b 8000 Q4_K_M)"    # 18000 MB, over budget
-  dense="$(score_hw_fit qwen3-32b     8000 Q4_K_M)"    # 19500 MB, over budget
+  dense="$(score_hw_fit qwen2.5-coder-32b 8000 Q4_K_M)"  # 19800 MB, over budget
   assert_gt "$moe" "$dense" "offloading a MoE is cheap; offloading a dense model is not"
 }
 
@@ -140,7 +140,7 @@ test_speed_is_driven_by_active_parameters_not_total() {
   # records the two separately.
   local moe dense
   moe="$(score_speed qwen3-coder-30b 40000 Q4_K_M)"
-  dense="$(score_speed qwen3-32b     40000 Q4_K_M)"
+  dense="$(score_speed qwen2.5-coder-32b 40000 Q4_K_M)"
   assert_gt "$moe" "$dense" "3B active must beat 32B active"
 }
 
@@ -154,7 +154,7 @@ test_a_model_that_must_offload_is_penalised_on_speed() {
 test_the_offload_penalty_is_harsher_for_dense_models() {
   local moe_ratio dense_ratio
   moe_ratio=$(( $(score_speed qwen3-coder-30b 4000 Q4_K_M) * 100 / $(score_speed qwen3-coder-30b 40000 Q4_K_M) ))
-  dense_ratio=$(( $(score_speed qwen3-32b     4000 Q4_K_M) * 100 / $(score_speed qwen3-32b     40000 Q4_K_M) ))
+  dense_ratio=$(( $(score_speed qwen2.5-coder-32b 4000 Q4_K_M) * 100 / $(score_speed qwen2.5-coder-32b 40000 Q4_K_M) ))
   assert_gt "$moe_ratio" "$dense_ratio" "a dense model loses proportionally more to offload"
 }
 

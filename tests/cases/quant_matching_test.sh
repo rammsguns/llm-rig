@@ -95,6 +95,32 @@ test_case_insensitive_matching() {
   assert_contains "$got" "Q4_K_M" "lowercase pattern matches uppercase filename"
 }
 
+# --- the catalog's own preference strings -----------------------------------
+
+test_qwen38_prefs_resolve_against_the_unsloth_listing() {
+  # The catalog's quant_prefs for qwen3.8-27b must resolve against the mirror
+  # that actually hosts the GGUFs (the publisher ships none). Filenames below
+  # are unsloth's real naming as listed by the HF API on 2026-08-14, including
+  # the vision projector this text-only rig must never pick.
+  local files got
+  files=$(cat <<'EOF'
+.gitattributes
+README.md
+config.json
+Qwen3.8-27B-BF16.gguf
+Qwen3.8-27B-IQ4_XS.gguf
+Qwen3.8-27B-Q4_K_M.gguf
+mmproj-Qwen3.8-27B-F16.gguf
+EOF
+)
+  got="$(printf '%s\n' "$files" | select_quant_file "$(catalog_get qwen3.8-27b quant_prefs)")"
+  assert_eq "$got" "Qwen3.8-27B-Q4_K_M.gguf" "first preference, not mmproj or BF16" || return 1
+  # And the fallback holds if the Q4_K_M ever disappears from the mirror.
+  got="$(printf '%s\n' "$files" | grep -v 'Q4_K_M' \
+        | select_quant_file "$(catalog_get qwen3.8-27b quant_prefs)")"
+  assert_eq "$got" "Qwen3.8-27B-IQ4_XS.gguf" "second preference"
+}
+
 # --- determinism ------------------------------------------------------------
 
 test_selection_is_independent_of_input_order() {

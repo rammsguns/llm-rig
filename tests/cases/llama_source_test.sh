@@ -215,6 +215,60 @@ test_built_revision_is_recorded() {
   assert_eq "$(cat "$RIG_DIR/.llamacpp-rev")" "abc123def456" "recorded revision"
 }
 
+# --- the committed pin --------------------------------------------------------
+#
+# The repo now ships llamacpp.ref, so a fresh clone builds the revision this
+# rig was verified against instead of whatever master is that day. These tests
+# read the COMMITTED file -- $REPO_ROOT, not the sandbox -- because the
+# property under test is what a fresh clone gets, and only the tracked file
+# can answer that.
+
+test_the_committed_pin_is_a_single_full_revision() {
+  run test -f "$REPO_ROOT/llamacpp.ref"
+  assert_ok "the pin file is committed" || return 1
+  local refs; refs="$(grep -vE '^\s*(#|$)' "$REPO_ROOT/llamacpp.ref")"
+  assert_eq "$(printf '%s\n' "$refs" | wc -l)" "1" "exactly one ref" || return 1
+  # A full 40-hex commit, not a branch or a short rev: a branch pin makes the
+  # next build silently different, and a short rev can go ambiguous as
+  # upstream grows. Either would defeat the reason the file exists.
+  assert_matches "$refs" '^[0-9a-f]{40}$' "a full commit hash"
+}
+
+test_the_committed_pin_resolves_as_a_pinfile() {
+  local want; want="$(grep -vE '^\s*(#|$)' "$REPO_ROOT/llamacpp.ref" | head -1)"
+  cp "$REPO_ROOT/llamacpp.ref" "$RIG_DIR/llamacpp.ref"
+  llama_resolve_ref
+  assert_eq "$LLAMA_REF" "$want" "the resolver returns the committed revision" || return 1
+  assert_eq "$LLAMA_REF_SOURCE" "pinfile" "and knows where it came from"
+}
+
+test_a_pinfile_drives_what_a_managed_build_checks_out() {
+  # End to end through the build path: no env override, only the pin file --
+  # the checkout must land on the pinned commit, not the branch head.
+  local d="$SANDBOX/src/llama.cpp" first
+  first="$(make_checkout "$d")"
+  echo "newer" >"$d/b.txt"; git -C "$d" add -A; git -C "$d" commit -qm newer
+  touch "$d/$LLAMA_MANAGED_MARKER"
+  printf '%s\n' "$first" >"$RIG_DIR/llamacpp.ref"
+  # No explicit llama_resolve_ref here: resolution belongs to the build path
+  # under test, and a prior resolve would export LLAMA_REF, which the second
+  # resolve then honestly reports as an env override.
+  unset LLAMA_REF LLAMA_REF_SOURCE
+  # No remote in the sandbox; the fetch failure is tolerated by design.
+  llama_prepare_source "$d" >/dev/null 2>&1
+  assert_eq "$LLAMA_BUILD_REV" "$first" "built at the pinned revision" || return 1
+  assert_eq "$LLAMA_REF_SOURCE" "pinfile" "because the pin said so"
+}
+
+test_a_pinned_build_does_not_nag_about_pinning() {
+  # The "may build something else" warning is for unpinned builds. Once the
+  # pin exists, printing it anyway teaches people to ignore it.
+  LLAMA_REF=74ce15741b420b8d6f12e720398458b576c51c2c LLAMA_REF_SOURCE=pinfile
+  run llama_record_build "74ce15741b420b8d6f12e720398458b576c51c2c" "managed"
+  assert_ok "recording succeeds" || return 1
+  assert_not_contains "$RUN_OUTPUT" "may build something else" "no unpinned warning"
+}
+
 # --- build directory safety -------------------------------------------------
 
 test_build_dir_defaults_outside_the_checkout() {

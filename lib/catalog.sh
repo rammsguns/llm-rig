@@ -175,7 +175,18 @@ catalog_rows() {
 qwen3-coder-30b;Qwen/Qwen3-Coder-30B-A3B-Instruct;2025-07-31;30.5;3.3;moe;262144;apache-2.0;coding,agentic,tools;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-Coder-30B-A3B-Instruct;2026-08-11
 qwen3-30b-a3b;Qwen/Qwen3-30B-A3B;2025-04-27;30.5;3.3;moe;40960;apache-2.0;tools,reasoning;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-30B-A3B;2026-08-11
 devstral-small;mistralai/Devstral-Small-2507;2025-07-04;23.6;23.6;dense;131072;apache-2.0;coding,agentic,tools;IQ4_XS|Q4_K_S;hf-api;https://huggingface.co/mistralai/Devstral-Small-2507;2026-08-11
-qwen3-32b;Qwen/Qwen3-32B;2025-04-27;32.8;32.8;dense;40960;apache-2.0;tools,reasoning;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-32B;2026-08-11
+# Qwen3.8-27B displaced Qwen3-32B (2026-08-14, the cap is 17 and this is the
+# same slot in the lineup: Qwen's current dense mid-size). Facts from the HF
+# API: 27.78B params in safetensors, 262144 context, apache-2.0, vision-capable
+# (image-text-to-text; this rig serves it text-only). Coding and agentic are
+# card claims, per the capability rules above: the card names both explicitly
+# ("comprehensive improvements across coding ... and long-horizon agentic
+# tasks", plus a dedicated Agent Execution section). The GGUF arch is qwen35
+# -- hybrid linear/full attention, model_type qwen3_5 -- which llama.cpp
+# supports from well before this rig's built revision (74ce157), so no runtime
+# change rides on this row. Publisher ships no GGUF; unsloth mirrors Q4_K_M
+# and IQ4_XS, which is exactly the preference list below.
+qwen3.8-27b;Qwen/Qwen3.8-27B;2026-08-05;27.8;27.8;dense;262144;apache-2.0;coding,agentic,tools,reasoning,vision;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.8-27B;2026-08-14
 qwen3-14b;Qwen/Qwen3-14B;2025-04-27;14.8;14.8;dense;40960;apache-2.0;tools,reasoning;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-14B;2026-08-11
 qwen3-8b;Qwen/Qwen3-8B;2025-04-27;8.2;8.2;dense;40960;apache-2.0;tools,reasoning;Q5_K_M|Q4_K_M;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-8B;2026-08-11
 qwen3-4b;Qwen/Qwen3-4B;2025-04-27;4.0;4.0;dense;40960;apache-2.0;tools,reasoning;Q5_K_M|Q4_K_M;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-4B;2026-08-11
@@ -239,7 +250,7 @@ catalog_ratings() {
 qwen3-coder-30b;93;2026-08-13;local-benchmark;file:llm-rating-20260813-1621.txt;medium
 qwen3-30b-a3b;unknown;-;none;-;none
 devstral-small;unknown;-;none;-;none
-qwen3-32b;unknown;-;none;-;none
+qwen3.8-27b;unknown;-;none;-;none
 qwen3-14b;unknown;-;none;-;none
 qwen3-8b;unknown;-;none;-;none
 qwen3-4b;unknown;-;none;-;none
