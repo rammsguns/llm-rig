@@ -1568,17 +1568,45 @@ test_a_catalog_id_nothing_serves_is_refused_with_both_readings_named() {
   assert_contains "$RUN_OUTPUT" "qwen3-4b" "and listing what is served"
 }
 
-test_an_ambiguous_model_argument_is_refused_with_the_candidates_named() {
+# qwen3-4b served beside its -local alias: the bare name answers twice (as a
+# served name, and as the catalog id the alias maps to), the alias only once.
+serve_a_name_and_its_alias() {
   {
     printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3-4b"},{"id":"qwen3-4b-local"}]}\n'
     printf 'POST\t/v1/messages\t200\t{"content":[{"type":"text","text":"6"}]}\n'
   } >"$MOCK_ROUTES"
+}
+
+test_an_ambiguous_model_argument_is_refused_with_the_candidates_named() {
+  serve_a_name_and_its_alias
   drive "--model qwen3-4b"
   assert_fails "two served models answer to the argument" || return 1
   assert_contains "$RUN_OUTPUT" "more than one" "the refusal names the class" || return 1
   assert_contains "$RUN_OUTPUT" "qwen3-4b-local" "and the candidates themselves" || return 1
+  # 'qwen3-4b' IS an exact served name here, so the remediation must not send
+  # the operator back to it -- it has to point at a spelling with one reading.
+  assert_contains "$RUN_OUTPUT" "unambiguous served name" \
+    "the remediation asks for a one-reading spelling" || return 1
+  assert_contains "$RUN_OUTPUT" "alias" "and points at the listed alias" || return 1
   assert_not_contains "$(cat "$MOCK_CALLS")" "/v1/messages" "nothing was measured" || return 1
   assert_eq "$(rate_latest_artifact "$HOME")" "" "and no artifact is left behind"
+}
+
+test_the_listed_alias_succeeds_where_the_bare_name_is_ambiguous() {
+  serve_a_name_and_its_alias
+  drive "--model qwen3-4b-local"
+  assert_ok "the alias answers only as a served name: $RUN_OUTPUT" || return 1
+  assert_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3-4b-local"' \
+    "every task goes to the alias" || return 1
+  assert_not_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3-4b"' \
+    "and none to the bare-name model" || return 1
+
+  local art
+  art="$(cat "$(rate_latest_artifact "$HOME")")"
+  assert_contains "$art" "model: qwen3-4b-local" "measured under the alias" || return 1
+  assert_contains "$art" "catalog-id: qwen3-4b" \
+    "recorded against the id the alias maps to" || return 1
+  assert_contains "$art" "RESULT qwen3-4b " "and the RESULT line keys on the id"
 }
 
 test_dry_run_with_a_catalog_id_maps_and_calls_nothing() {

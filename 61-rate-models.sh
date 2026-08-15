@@ -71,7 +71,7 @@ if [[ -n "$ONLY" ]]; then
   MATCHED="$(rate_model_candidates "$ONLY" "$AVAILABLE")" || die \
     "$BASE does not serve '$ONLY' -- not a served name, and no served model maps to that catalog id. It serves: $(printf '%s' "$AVAILABLE" | tr '\n' ' ')"
   if (( "$(printf '%s\n' "$MATCHED" | wc -l)" > 1 )); then
-    die "'$ONLY' matches more than one served model: $(printf '%s' "$MATCHED" | tr '\n' ' ')-- give the exact served name instead"
+    die "'$ONLY' matches more than one served model: $(printf '%s' "$MATCHED" | tr '\n' ' ')-- it is a served name and a catalog id at once, and precedence cannot resolve that. Give an unambiguous served name, such as the listed alias"
   fi
   AVAILABLE="$MATCHED"
 fi
