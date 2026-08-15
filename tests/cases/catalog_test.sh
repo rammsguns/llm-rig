@@ -32,7 +32,7 @@ setup_test() { mock_init; }
 validate_table() {
   local table="$1" ratings="${2:-}"
   if [[ -z "$ratings" && -n "$table" ]]; then
-    ratings="$(printf '%s\n' "$table" | awk -F';' 'NF { print $1 ";unknown;-;none;-;none" }')"
+    ratings="$(printf '%s\n' "$table" | awk -F';' 'NF { print $1 ";unknown;-;none;-;none;-" }')"
   fi
   VALIDATE_ERRORS="$(
     catalog_rows() { printf '%s\n' "$table"; }
@@ -50,7 +50,7 @@ validate_table() {
 
 # A single well-formed row, as a base for mutation.
 GOOD_ROW='ok-model;Owner/Ok-Model;2025-01-15;7.0;7.0;dense;131072;apache-2.0;coding,tools;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Owner/Ok-Model;2026-08-11'
-GOOD_RATING='ok-model;unknown;-;none;-;none'
+GOOD_RATING='ok-model;unknown;-;none;-;none;-'
 
 # Replace field N (1-based) of GOOD_ROW / GOOD_RATING.
 row_with() {
@@ -282,7 +282,7 @@ test_a_model_with_no_rating_row_is_rejected() {
 
 test_a_rating_for_a_model_that_does_not_exist_is_rejected() {
   validate_table "$GOOD_ROW" "$GOOD_RATING
-ghost-model;unknown;-;none;-;none"
+ghost-model;unknown;-;none;-;none;-"
   assert_ne "$VALIDATE_STATUS" 0 "an orphan rating must not validate" || return 1
   assert_contains "$VALIDATE_ERRORS" "no matching model row" "diagnostic"
 }
@@ -296,13 +296,13 @@ test_a_rating_value_without_a_method_is_rejected() {
 }
 
 test_a_method_claiming_evidence_must_carry_a_value() {
-  validate_table "$GOOD_ROW" "ok-model;unknown;2026-01-01;local-benchmark;https://example.com/run;medium"
+  validate_table "$GOOD_ROW" "ok-model;unknown;2026-01-01;local-benchmark;https://example.com/run;medium;v3"
   assert_ne "$VALIDATE_STATUS" 0 "evidence with no number is incoherent" || return 1
   assert_contains "$VALIDATE_ERRORS" "value is unknown" "diagnostic"
 }
 
 test_a_measured_rating_must_cite_a_reachable_source() {
-  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;local-benchmark;on my laptop;medium"
+  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;local-benchmark;on my laptop;medium;v3"
   assert_ne "$VALIDATE_STATUS" 0 "a prose rating source is not auditable" || return 1
   assert_contains "$VALIDATE_ERRORS" "rating_source" "diagnostic"
 }
@@ -310,7 +310,7 @@ test_a_measured_rating_must_cite_a_reachable_source() {
 test_a_measured_rating_must_carry_a_date() {
   # A benchmark number with no date cannot be aged out when the model or the
   # runtime changes underneath it.
-  validate_table "$GOOD_ROW" "ok-model;72;-;local-benchmark;https://example.com/run;medium"
+  validate_table "$GOOD_ROW" "ok-model;72;-;local-benchmark;https://example.com/run;medium;v3"
   assert_ne "$VALIDATE_STATUS" 0 "an undated measurement must not validate" || return 1
   assert_contains "$VALIDATE_ERRORS" "rating_date" "diagnostic"
 }
@@ -322,13 +322,13 @@ test_an_unknown_rating_must_not_claim_confidence() {
 }
 
 test_an_out_of_range_rating_value_is_rejected() {
-  validate_table "$GOOD_ROW" "ok-model;140;2026-01-01;local-benchmark;https://example.com/run;medium"
+  validate_table "$GOOD_ROW" "ok-model;140;2026-01-01;local-benchmark;https://example.com/run;medium;v3"
   assert_ne "$VALIDATE_STATUS" 0 "ratings are 0-100" || return 1
   assert_contains "$VALIDATE_ERRORS" "rating_value" "diagnostic"
 }
 
 test_an_unknown_rating_method_is_rejected() {
-  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;i-reckon;https://example.com/run;medium"
+  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;i-reckon;https://example.com/run;medium;-"
   assert_ne "$VALIDATE_STATUS" 0 "rating_method is a closed vocabulary" || return 1
   assert_contains "$VALIDATE_ERRORS" "rating_method" "diagnostic"
 }
@@ -340,13 +340,74 @@ test_a_well_formed_measured_rating_is_accepted() {
   # A local measurement cites the artifact 61-rate-models.sh wrote, by
   # basename. There is no URL for a file in the runner's own $HOME, and the
   # validator refuses an invented one; see tests/cases/rating_test.sh.
-  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;local-benchmark;file:llm-rating-20260101-0900.txt;medium"
+  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;local-benchmark;file:llm-rating-20260101-0900.txt;medium;v3"
   assert_eq "$VALIDATE_STATUS" 0 "a sourced, dated measurement must validate: $VALIDATE_ERRORS"
 }
 
 test_a_published_vendor_rating_must_still_be_linkable() {
-  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;vendor-benchmark;https://example.com/run;medium"
+  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;vendor-benchmark;https://example.com/run;medium;-"
   assert_eq "$VALIDATE_STATUS" 0 "a vendor figure with a URL must validate: $VALIDATE_ERRORS"
+}
+
+# --- the suite field ---------------------------------------------------------
+# Only a local-benchmark number was produced by the suite in lib/rate.sh, so
+# only a local-benchmark row may name a version of it -- and must. Two local
+# numbers are only comparable under the same version, which is what the
+# single-suite rule below enforces structurally: a mixed table cannot pass CI,
+# so the ranking never faces the comparison.
+
+test_a_local_measurement_must_name_its_suite() {
+  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;local-benchmark;file:llm-rating-1.txt;medium;-"
+  assert_ne "$VALIDATE_STATUS" 0 "a local number without a suite version is not comparable" || return 1
+  assert_contains "$VALIDATE_ERRORS" "rating_suite" "diagnostic"
+}
+
+test_a_malformed_suite_token_is_rejected() {
+  local bad
+  for bad in 3 vv3 v v3.1 V3; do
+    validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;local-benchmark;file:llm-rating-1.txt;medium;$bad"
+    assert_ne "$VALIDATE_STATUS" 0 "'$bad' is not a suite token" || return 1
+    assert_contains "$VALIDATE_ERRORS" "must be 'v<integer>'" "diagnostic for '$bad'" || return 1
+  done
+}
+
+test_an_unmeasured_row_must_not_claim_a_suite() {
+  validate_table "$GOOD_ROW" "$(rating_with 7 'v3')"
+  assert_ne "$VALIDATE_STATUS" 0 "no evidence, no suite" || return 1
+  assert_contains "$VALIDATE_ERRORS" "never ran the suite" "diagnostic"
+}
+
+test_a_vendor_rating_must_not_claim_a_suite() {
+  # The vendor's harness is not this suite, whatever version number it ships.
+  validate_table "$GOOD_ROW" "ok-model;72;2026-01-01;vendor-benchmark;https://example.com/run;medium;v3"
+  assert_ne "$VALIDATE_STATUS" 0 "a vendor number never ran lib/rate.sh" || return 1
+  assert_contains "$VALIDATE_ERRORS" "never ran the suite" "diagnostic"
+}
+
+test_two_local_rows_on_different_suites_cannot_coexist() {
+  # The mixed-leaderboard prevention, structural: upgrading the suite means
+  # re-rating every measured model and landing the rows together, because a
+  # partial submission fails validation rather than waiting for a reviewer to
+  # notice.
+  local other
+  other="$(row_with 1 'other-model')"
+  validate_table "$GOOD_ROW
+$other" "ok-model;72;2026-01-01;local-benchmark;file:llm-rating-1.txt;medium;v2
+other-model;80;2026-01-02;local-benchmark;file:llm-rating-2.txt;medium;v3"
+  assert_ne "$VALIDATE_STATUS" 0 "one leaderboard, one suite version" || return 1
+  assert_contains "$VALIDATE_ERRORS" "all local-benchmark rows must share one suite version" "the rule" || return 1
+  assert_contains "$VALIDATE_ERRORS" "ok-model" "one side named" || return 1
+  assert_contains "$VALIDATE_ERRORS" "other-model" "and the other"
+}
+
+test_two_local_rows_on_the_same_suite_coexist_fine() {
+  # The rule must not make a fully re-rated table impossible to land.
+  local other
+  other="$(row_with 1 'other-model')"
+  validate_table "$GOOD_ROW
+$other" "ok-model;72;2026-01-01;local-benchmark;file:llm-rating-1.txt;medium;v3
+other-model;80;2026-01-02;local-benchmark;file:llm-rating-2.txt;medium;v3"
+  assert_eq "$VALIDATE_STATUS" 0 "same suite, no conflict: $VALIDATE_ERRORS"
 }
 
 test_no_row_claims_a_rating_without_evidence() {
@@ -356,13 +417,15 @@ test_no_row_claims_a_rating_without_evidence() {
   # date and a confidence behind it. So check that rule against every rated
   # row, which keeps working as more rows get measured. The count of measured
   # rows is pinned separately, in test_exactly_one_rating_row_is_measured.
-  local id value rdate method source conf bad=""
-  while IFS=';' read -r id value rdate method source conf; do
+  local id value rdate method source conf suite bad=""
+  while IFS=';' read -r id value rdate method source conf suite; do
     [[ "$value" == "unknown" ]] && continue
     [[ "$method" != "none" ]] || bad+="$id: value $value with no method"$'\n'
     [[ "$source" != "-"    ]] || bad+="$id: value $value with no source"$'\n'
     [[ "$rdate"  != "-"    ]] || bad+="$id: value $value with no date"$'\n'
     [[ "$conf"   != "none" ]] || bad+="$id: value $value with no confidence"$'\n'
+    [[ "$method" != "local-benchmark" || "$suite" != "-" ]] \
+      || bad+="$id: a local measurement with no suite version"$'\n'
   done < <(catalog_ratings)
   assert_eq "$bad" "" "no rating may be claimed without evidence"
 }
@@ -454,6 +517,15 @@ test_an_unknown_field_is_an_error() {
 test_an_unknown_rating_id_is_an_error() {
   run catalog_rating_get no-such-model rating_value
   assert_fails "an unrated id must fail rather than default to neutral"
+}
+
+test_the_suite_field_reads_through_the_named_accessor() {
+  # Like every other rating field: by name, from the schema list, so a
+  # reordering cannot re-point it at confidence.
+  assert_eq "$(catalog_rating_get qwen3-coder-30b rating_suite)" "v2" \
+    "the measured row's suite" || return 1
+  assert_eq "$(catalog_rating_get qwen3-4b rating_suite)" "-" \
+    "an unmeasured row has none"
 }
 
 test_field_lookup_is_by_name_not_position() {
@@ -765,7 +837,7 @@ test_the_qwen38_rating_is_unknown_not_imported() {
   # incomparable with this rig's local benchmark -- so the column says
   # `unknown` until this rig measures it, and stays low-confidence until then.
   assert_eq "$(catalog_ratings | grep '^qwen3\.8-27b;')" \
-    "qwen3.8-27b;unknown;-;none;-;none" "the honest placeholder, verbatim"
+    "qwen3.8-27b;unknown;-;none;-;none;-" "the honest placeholder, verbatim"
 }
 
 test_the_qwen38_fit_estimate_holds_up_against_the_published_file() {
@@ -923,10 +995,15 @@ test_the_measured_rating_row_is_the_one_that_was_produced() {
   # confidence were all produced by one run of 61-rate-models.sh, and a rating
   # row is only auditable if the reader can find that run again -- so an edit
   # to any single field has to be deliberate.
+  #
+  # The `v2` on the end is the one deliberate edit: when the rating_suite
+  # column arrived, the measurement gained an annotation saying which suite
+  # produced it, and nothing else. It keeps its v2 fields verbatim until a v3
+  # re-rating replaces the whole row.
   local row
   row="$(catalog_ratings | awk -F';' '$1=="qwen3-coder-30b"')"
   assert_eq "$row" \
-    "qwen3-coder-30b;93;2026-08-13;local-benchmark;file:llm-rating-20260813-1621.txt;medium" \
+    "qwen3-coder-30b;93;2026-08-13;local-benchmark;file:llm-rating-20260813-1621.txt;medium;v2" \
     "the measured row"
 }
 

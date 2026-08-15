@@ -110,7 +110,7 @@ test_a_rated_model_uses_its_recorded_value() {
   # actually reach the score rather than being neutralised along with the rest.
   local out
   out="$(
-    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium'; }
+    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'; }
     score_coding qwen3-4b
     printf ':%s' "$SCORE_CODING_KNOWN"
   )"
@@ -279,7 +279,7 @@ test_all_three_kinds_of_evidence_reach_high_confidence() {
   # a cap nothing can ever lift.
   local out
   out="$(
-    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium'; }
+    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'; }
     score_confidence qwen3-4b fresh
   )"
   assert_eq "$out" "high" "verified facts + a sourced rating + current live data"
@@ -334,7 +334,7 @@ test_the_breakdown_states_the_provenance_behind_the_number() {
 test_the_breakdown_shows_a_real_rating_when_one_exists() {
   local out
   out="$(
-    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium'; }
+    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'; }
     score_explain qwen3-4b 20000
   )"
   assert_contains "$out" "local-benchmark" "the method behind the rating" || return 1
@@ -573,7 +573,7 @@ test_it_is_the_measurement_that_puts_it_in_front() {
     eval "$(declare -f catalog_ratings | sed '1s/^catalog_ratings/catalog_ratings_shipped/')"
     catalog_ratings() {
       catalog_ratings_shipped \
-        | sed 's/^qwen3-coder-30b;.*/qwen3-coder-30b;unknown;-;none;-;none/'
+        | sed 's/^qwen3-coder-30b;.*/qwen3-coder-30b;unknown;-;none;-;none;-/'
     }
     score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3; exit }'
   )"

@@ -511,15 +511,18 @@ test_the_extracted_text_ignores_every_non_text_block() {
 
 # --- the token budget --------------------------------------------------------
 
-test_the_default_token_budget_is_not_raised() {
-  # Issue #32 is explicit that the fix is classification, not a bigger budget.
-  # A higher budget is a diagnostic run whose numbers are not comparable, so
-  # the default moving would silently change what every rating means.
+test_the_default_token_budget_is_the_v3_budget() {
+  # 1024, total completion output -- reasoning plus answer. The v2 cap of 256
+  # was calibrated for models that answer directly; a reasoning model spends
+  # most of its completion on hidden thinking, and the change of default is
+  # exactly why the suite version moved.
   local fresh
   fresh="$(bash -c 'unset RATE_MAX_TOKENS
                     source "'"$REPO_ROOT"'/lib/rate.sh"
                     printf "%s" "$RATE_MAX_TOKENS"')"
-  assert_eq "$fresh" "256" "the suite budget is unchanged"
+  assert_eq "$fresh" "1024" "the suite budget" || return 1
+  assert_eq "$RATE_MAX_TOKENS_DEFAULT" "1024" \
+    "and the constant the recordability gate compares against agrees"
 }
 
 test_the_token_budget_stays_overridable() {
@@ -528,6 +531,46 @@ test_the_token_budget_stays_overridable() {
                      source "'"$REPO_ROOT"'/lib/rate.sh"
                      printf "%s" "$RATE_MAX_TOKENS"')"
   assert_eq "$raised" "4096" "the diagnostic override still works"
+}
+
+test_the_override_does_not_move_the_default() {
+  # The two must stay separate, or the gate compares a value against itself
+  # and every diagnostic run becomes recordable.
+  local const
+  const="$(bash -c 'RATE_MAX_TOKENS=4096
+                    source "'"$REPO_ROOT"'/lib/rate.sh"
+                    printf "%s" "$RATE_MAX_TOKENS_DEFAULT"')"
+  assert_eq "$const" "1024" "the default is a constant of the suite version"
+}
+
+test_every_task_is_paid_the_default_budget() {
+  # Uniform across kinds and across tool/non-tool payloads: a per-task budget
+  # was considered and rejected as overfitting -- reasoning overhead is a
+  # property of the model, not the task kind.
+  local id mt
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    mt="$(rate_payload m "$id" | jq -r '.max_tokens')"
+    assert_eq "$mt" "$RATE_MAX_TOKENS_DEFAULT" "$id must get the suite budget" || return 1
+  done < <(rate_task_ids)
+}
+
+test_a_non_default_budget_blocks_the_row_mechanically() {
+  # v2 documented that a diagnostic run at another budget must never be
+  # recorded, and relied on nobody doing it. v3 makes it a gate, through the
+  # same function every other recordability rule goes through.
+  local out
+  out="$(RATE_MAX_TOKENS=4096 rate_row_blocked qwen3-4b 12 12 "")"
+  assert_contains "$out" "non-default sampling" "the class of problem is named" || return 1
+  assert_contains "$out" "max_tokens=4096" "with the value that was used" || return 1
+  assert_contains "$out" "1024" "and the default it should have been"
+}
+
+test_the_default_budget_does_not_block_the_row() {
+  # Each test runs in its own subshell, so the assignment cannot leak.
+  RATE_MAX_TOKENS="$RATE_MAX_TOKENS_DEFAULT"
+  run rate_row_blocked qwen3-4b 12 12 ""
+  assert_fails "the suite budget is not a deviation"
 }
 
 test_every_documented_flag_is_one_the_script_accepts() {
@@ -563,11 +606,19 @@ test_the_higher_budget_diagnostic_is_documented_with_a_real_flag() {
   assert_not_contains "$doc" "--only" "and not the one it dies on"
 }
 
-test_the_suite_version_records_the_classification_change() {
-  # Truncated responses used to score as failures and now do not, so the same
-  # responses can yield a different `answered` and therefore a different
-  # confidence -- and confidence is part of the catalog row.
-  assert_eq "$RATE_SUITE_VERSION" "2" "classification changed, so the version did"
+test_the_suite_version_records_the_budget_change() {
+  # v2 -> v3: the budget moved from 256 to 1024. A budget change breaks
+  # comparability by the rule v2 itself documented -- a run at a different
+  # budget is a diagnostic, not a comparable measurement -- so the version
+  # moved with it.
+  assert_eq "$RATE_SUITE_VERSION" "3" "the budget changed, so the version did"
+}
+
+test_the_suite_token_is_the_version_with_one_spelling() {
+  # One token, derived from the number, used everywhere the version leaves
+  # this library -- artifact header, RESULT line, catalog row. Two spellings
+  # is how one of them drifts.
+  assert_eq "$RATE_SUITE_TOKEN" "v$RATE_SUITE_VERSION" "derived, not restated"
 }
 
 # --- aggregation ------------------------------------------------------------
@@ -647,8 +698,16 @@ test_every_catalogued_model_is_reachable_from_its_served_name() {
 test_the_row_cites_the_artifact_and_not_a_url() {
   local row
   row="$(rate_row qwen3-4b 67 2026-08-11 "$HOME/llm-rating-20260811-1930.txt" medium)"
-  assert_eq "$row" "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-20260811-1930.txt;medium" \
+  assert_eq "$row" "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-20260811-1930.txt;medium;v3" \
     "the row pastes straight into catalog_ratings"
+}
+
+test_the_row_carries_the_suite_that_actually_ran() {
+  # The token is emitted by rate_row itself, not passed by the caller, so a
+  # row can never claim a version other than the one this library defines.
+  local row
+  row="$(rate_row qwen3-4b 67 2026-08-11 llm-rating-1.txt medium)"
+  assert_eq "${row##*;}" "$RATE_SUITE_TOKEN" "the last field is the suite token"
 }
 
 test_the_row_drops_the_directory() {
@@ -671,38 +730,38 @@ with_rating() {
   local want="${row%%;*}"
   RATINGS_OVERRIDE="$row"
   for id in $(catalog_ids); do
-    [[ "$id" == "$want" ]] || RATINGS_OVERRIDE+=$'\n'"$id;unknown;-;none;-;none"
+    [[ "$id" == "$want" ]] || RATINGS_OVERRIDE+=$'\n'"$id;unknown;-;none;-;none;-"
   done
   catalog_ratings() { printf '%s\n' "$RATINGS_OVERRIDE"; }
 }
 
 test_a_local_benchmark_row_validates() {
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-20260811-1930.txt;medium"
+  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-20260811-1930.txt;medium;v3"
   run catalog_validate
   assert_ok "a well-formed local-benchmark rating: ${CATALOG_ERRORS:-}"
 }
 
 test_a_local_benchmark_row_citing_a_url_is_refused() {
   # The whole point of the method: there is no URL for a file on this machine.
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;https://example.com/run;medium"
+  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;https://example.com/run;medium;v3"
   catalog_validate
   assert_contains "${CATALOG_ERRORS:-}" "must be 'file:" "https is not evidence of a local run"
 }
 
 test_a_local_benchmark_row_citing_a_path_is_refused() {
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:/home/kiwi/llm-rating-1.txt;medium"
+  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:/home/kiwi/llm-rating-1.txt;medium;v3"
   catalog_validate
   assert_contains "${CATALOG_ERRORS:-}" "must be 'file:" "a path from another machine"
 }
 
 test_a_vendor_benchmark_still_requires_an_https_source() {
-  with_rating "qwen3-4b;67;2026-08-11;vendor-benchmark;file:llm-rating-1.txt;medium"
+  with_rating "qwen3-4b;67;2026-08-11;vendor-benchmark;file:llm-rating-1.txt;medium;-"
   catalog_validate
   assert_contains "${CATALOG_ERRORS:-}" "must be an https URL" "a published claim must be linkable"
 }
 
 test_a_rating_still_cannot_be_recorded_without_a_value() {
-  with_rating "qwen3-4b;unknown;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium"
+  with_rating "qwen3-4b;unknown;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium;v3"
   catalog_validate
   assert_contains "${CATALOG_ERRORS:-}" "claims evidence but value is unknown" "method without a number"
 }
@@ -713,15 +772,15 @@ test_a_medium_rating_lifts_confidence_but_a_low_one_does_not() {
   # 61-rate-models.sh returns low for a single unrepeated pass. Counting that
   # the same as a repeated measurement would let a hurried run raise the
   # confidence of the ranking it feeds.
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;low"
+  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;low;v3"
   assert_eq "$(score_confidence qwen3-4b fresh)" "medium" "facts + live, rating too weak to count" || return 1
 
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium"
+  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium;v3"
   assert_eq "$(score_confidence qwen3-4b fresh)" "high" "facts + live + a rating that counts"
 }
 
 test_the_rating_feeds_the_coding_component() {
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium"
+  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium;v3"
   SCORE_CODING_KNOWN=0
   local v
   v="$(score_coding qwen3-4b)"
@@ -989,6 +1048,29 @@ test_a_missing_model_in_the_artifact_is_an_error() {
   assert_fails "a model that was not rated"
 }
 
+test_the_suite_key_on_a_result_line_is_machine_readable() {
+  # The header names the suite for a human; the RESULT line names it for the
+  # parser, through the same reader as every other field.
+  cat >"$SANDBOX/llm-rating-20260815-0900.txt" <<'ART'
+llm-rig local coding rating  20260815-0900
+suite: v3 (12 tasks, total weight 15)
+
+RESULT qwen3-4b suite=v3 value=67 weight=10/15 answered=12/12 flips=0 confidence=medium
+ART
+  assert_eq "$(rate_artifact_result "$SANDBOX/llm-rating-20260815-0900.txt" qwen3-4b suite)" \
+    "v3" "the suite key reads like value or confidence"
+}
+
+test_a_pre_v3_artifact_has_no_suite_key_and_says_so() {
+  # write_artifact is a v1-era file whose RESULT lines predate the key. The
+  # reader must fail on the missing field, not invent one: an artifact that
+  # does not say its suite version is by definition pre-v3, and that is the
+  # caller's conclusion to draw, from the failure.
+  local f; f="$(write_artifact)"
+  run rate_artifact_result "$f" qwen3-4b suite
+  assert_fails "no suite key on an old RESULT line"
+}
+
 test_a_missing_artifact_is_an_error_not_an_empty_value() {
   run rate_artifact_result "$SANDBOX/nope.txt" qwen3-4b value
   assert_fails "no artifact"
@@ -1091,6 +1173,39 @@ test_the_script_writes_an_artifact_and_a_pasteable_row() {
   assert_ok "the printed row must validate: ${CATALOG_ERRORS:-}"
 }
 
+test_the_artifact_names_its_suite_in_header_and_result_line() {
+  # Same token, both places: the header for a reader, the RESULT line for the
+  # parser. An artifact that had to be cross-referenced against the repo to
+  # learn its own suite version would not be self-describing.
+  serve_model 6
+  with_full_provenance
+  drive ""
+  assert_ok "the run must complete: $RUN_OUTPUT" || return 1
+
+  local artifact
+  artifact="$(rate_latest_artifact "$HOME")"
+  assert_contains "$(cat "$artifact")" "suite: v3 " "the header" || return 1
+  assert_eq "$(rate_artifact_result "$artifact" qwen3-4b suite)" "v3" \
+    "and the RESULT line, through the parser"
+}
+
+test_a_run_at_a_non_default_budget_is_measured_but_not_recorded() {
+  # End to end: complete run, complete provenance, and the only thing wrong is
+  # the budget. v2 relied on the operator never pasting such a row; v3 refuses
+  # to print one.
+  serve_model 6
+  with_full_provenance
+  run bash -c "cd '$REPO_ROOT' && HOME='$HOME' PATH='$PATH' RATE_MAX_TOKENS=4096 bash ./61-rate-models.sh"
+  assert_ok "the diagnostic run itself must complete: $RUN_OUTPUT" || return 1
+
+  local art
+  art="$(cat "$(rate_latest_artifact "$HOME")")"
+  assert_contains "$art" "max_tokens=4096" "the artifact records what was used" || return 1
+  assert_contains "$art" "no catalog row: non-default sampling" "and why there is no row" || return 1
+  assert_not_contains "$RUN_OUTPUT" $'\nqwen3-4b;' "no row may be offered" || return 1
+  assert_contains "$RUN_OUTPUT" "nothing to record" "and the run says so"
+}
+
 test_the_artifact_records_what_was_actually_running() {
   serve_model 6
   # /props answers for the weights the config names, so the live context is
@@ -1125,7 +1240,7 @@ test_a_starved_model_produces_no_rating_and_no_row() {
 
   local art
   art="$(cat "$(rate_latest_artifact "$HOME")")"
-  assert_contains "$art" "incomplete: max_tokens (stop_reason=max_tokens, max_tokens=256)" \
+  assert_contains "$art" "incomplete: max_tokens (stop_reason=max_tokens, max_tokens=1024)" \
     "the artifact names the reason and the budget, per task" || return 1
   assert_contains "$art" "answered=0/" "nothing was answered" || return 1
   assert_contains "$art" "provenance: complete" \
@@ -1245,8 +1360,8 @@ test_full_runtime_identity_produces_the_row_unchanged() {
   row="$(printf '%s\n' "$RUN_OUTPUT" | grep '^qwen3-4b;')"
   # 6, not 100: answering "6" to everything passes comprehension-loop and
   # nothing else, which is 1 of 15 weight.
-  assert_eq "$row" "qwen3-4b;6;$(date +%F);local-benchmark;file:$(basename "$(rate_latest_artifact "$HOME")");medium" \
-    "the same row the script printed before the gate existed" || return 1
+  assert_eq "$row" "qwen3-4b;6;$(date +%F);local-benchmark;file:$(basename "$(rate_latest_artifact "$HOME")");medium;v3" \
+    "the row, now carrying the suite that produced it" || return 1
   with_rating "$row"
   run catalog_validate
   assert_ok "and it still validates: ${CATALOG_ERRORS:-}"

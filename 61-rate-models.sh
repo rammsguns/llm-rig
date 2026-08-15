@@ -72,7 +72,7 @@ fi
 TOTAL_W="$(rate_total_weight)"
 NTASKS="$(rate_task_count)"
 
-c_info "suite v$RATE_SUITE_VERSION -- $NTASKS tasks, total weight $TOTAL_W, $RATE_REPEATS repeat(s)"
+c_info "suite $RATE_SUITE_TOKEN -- $NTASKS tasks, total weight $TOTAL_W, $RATE_REPEATS repeat(s)"
 
 if (( DRY )); then
   printf '%s\n' "$AVAILABLE" | while IFS= read -r served; do
@@ -93,7 +93,7 @@ REV="$(rate_llamacpp_rev "$RIG_DIR")"
 
 {
   printf 'llm-rig local coding rating  %s\n' "$STAMP"
-  printf 'suite: v%s (%s tasks, total weight %s)\n' "$RATE_SUITE_VERSION" "$NTASKS" "$TOTAL_W"
+  printf 'suite: %s (%s tasks, total weight %s)\n' "$RATE_SUITE_TOKEN" "$NTASKS" "$TOTAL_W"
   printf 'endpoint: %s\n' "$BASE"
   printf 'sampling: temperature=%s seed=%s max_tokens=%s repeats=%s\n' \
     "$RATE_TEMPERATURE" "$RATE_SEED" "$RATE_MAX_TOKENS" "$RATE_REPEATS"
@@ -206,8 +206,12 @@ while IFS= read -r served; do
     "$( [[ -z "$missing" ]] && printf 'complete' || printf 'incomplete -- %s not established' "$missing" )" \
     >> "$ARTIFACT"
 
-  printf 'RESULT %s value=%s quant=%s weight=%s/%s answered=%s/%s incomplete=%s flips=%s confidence=%s provenance=%s\n\n' \
-    "${cid:-$served}" "$value" "$quant" "$got_w" "$TOTAL_W" "$answered" "$NTASKS" \
+  # `suite=` first among the fields: nothing else on the line is comparable
+  # across versions, so the version is the field a reader needs before any
+  # other. The header says it too, but the RESULT line is the part a parser
+  # sees, and rate_artifact_result reads this key like every other.
+  printf 'RESULT %s suite=%s value=%s quant=%s weight=%s/%s answered=%s/%s incomplete=%s flips=%s confidence=%s provenance=%s\n\n' \
+    "${cid:-$served}" "$RATE_SUITE_TOKEN" "$value" "$quant" "$got_w" "$TOTAL_W" "$answered" "$NTASKS" \
     "$n_incomplete" "$flips" "$conf" \
     "$( [[ -z "$missing" ]] && printf 'complete' || printf 'missing:%s' "$missing" )" \
     >> "$ARTIFACT"

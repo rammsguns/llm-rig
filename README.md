@@ -95,9 +95,10 @@ raised, but not quietly: `CATALOG_MAX_ROWS` carries the date and reason for
 every change, and past roughly twenty the answer is to retire rows instead.
 
 `catalog_ratings()` holds *judgements*: how good a model is at coding, with a
-`rating_value`, `rating_date`, `rating_method`, `rating_source` and
-`rating_confidence`. These are a different kind of claim, cannot be confirmed
-the same way, and so are kept somewhere else entirely.
+`rating_value`, `rating_date`, `rating_method`, `rating_source`,
+`rating_confidence` and — for local measurements — `rating_suite`, the version
+of the suite that produced the number. These are a different kind of claim,
+cannot be confirmed the same way, and so are kept somewhere else entirely.
 
 **One rating is measured; the other sixteen read `unknown`, and that is the
 honest answer.** Publishers report different benchmarks, public leaderboards
@@ -424,20 +425,30 @@ not stable.
 
 #### A truncated response is not a wrong answer
 
-The budget is **256 tokens**, because every task here wants one word, one
-object or one small diff, and a model that needs more than that to say `bash`
-has failed the task the suite is setting.
+The budget is **1024 tokens of total completion output — reasoning plus
+answer**. Total, because `max_tokens` is the only budget the API enforces
+deterministically and it counts every generated token; the *grade* still reads
+only the answer (see below). Suites v1 and v2 ran at 256, calibrated for
+models that answer directly. A reasoning model spends most of its completion
+on hidden thinking before the answer — the first one measured needed 380
+tokens for the simplest possible one-hunk diff — so 256 starved it on a task
+it could do, and 512 would merely wait for a slightly more verbose reasoner to
+starve the same way. 1024 leaves headroom while staying small enough that a
+degenerate reasoning loop still fails visibly as truncation. What the old
+small budget used to measure — output discipline — is carried entirely by the
+strict format kinds, which grade the whole response and are indifferent to
+budget.
 
-A reasoning model can spend all 256 on hidden thinking and never emit an
-answer. Graded as an ordinary failure that produces a low number which looks
-*stable* across repeats — stable because the cap is deterministic, not because
-the model is reliably wrong — and in the catalog it is indistinguishable from a
-model that genuinely cannot do the task. So a response whose `stop_reason` is
-`max_tokens` (or `length`, the spelling llama.cpp's OpenAI-compatible path
-uses) is classified as **incomplete**, not failed:
+Even at a budget that fits, a model can still run out. Graded as an ordinary
+failure that produces a low number which looks *stable* across repeats —
+stable because the cap is deterministic, not because the model is reliably
+wrong — and in the catalog it is indistinguishable from a model that genuinely
+cannot do the task. So a response whose `stop_reason` is `max_tokens` (or
+`length`, the spelling llama.cpp's OpenAI-compatible path uses) is classified
+as **incomplete**, not failed:
 
 ```
-  task comprehension-loop   incomplete: max_tokens (stop_reason=max_tokens, max_tokens=256)
+  task comprehension-loop   incomplete: max_tokens (stop_reason=max_tokens, max_tokens=1024)
 ```
 
 The rule runs in one direction only. It can turn a failure into an incomplete;
@@ -458,14 +469,46 @@ through the same gate an HTTP error goes through, and the `RESULT` line carries
 `incomplete=<n>`. **Raising the budget is a diagnostic, not a fix:**
 
 ```bash
-RATE_MAX_TOKENS=4096 ./61-rate-models.sh --model qwen3.6-27b
+RATE_MAX_TOKENS=4096 ./61-rate-models.sh --model qwen3.8-27b
 ```
 
-Those numbers are not comparable with the default ones and must not be recorded
-as a rating — mixing them in one row is the same error as mixing suite
-versions. This classification change is why the suite is at **v2**: the
-arithmetic is untouched, but the same responses can now yield a different
-`answered`, and therefore a different confidence, which is part of the row.
+Those numbers are not comparable with the default ones and cannot be recorded
+as a rating. Under v2 that was a convention; under v3 it is a gate — the
+default lives in `RATE_MAX_TOKENS_DEFAULT`, separate from the override, and a
+run at any other budget is measured, written to the artifact with the value it
+used, and refused a row with the reason named (`non-default sampling`).
+
+#### One leaderboard, one suite version
+
+Two ratings from different suite versions are not comparable — v2 changed what
+`answered` means, v3 changed the budget — so the version is recorded wherever
+a number travels: the artifact header says `suite: v3`, the machine-readable
+`RESULT` line carries `suite=v3`, and the catalog row carries it as
+`rating_suite`. One token, derived in one place (`lib/rate.sh`), so the three
+cannot disagree.
+
+The catalog enforces comparability structurally: the validator rejects any
+table in which two `local-benchmark` rows carry different suite versions.
+Upgrading the suite therefore means re-rating **every** measured model and
+landing the replacement rows together — a partial submission fails CI instead
+of waiting for a reviewer to notice a mixed leaderboard. The existing
+`qwen3-coder-30b` row is annotated `v2` and otherwise untouched: its value,
+provenance and confidence are the v2 measurement's own, and stay until a v3
+re-rating replaces the row.
+
+A direct (non-reasoning) model re-rated under v3 is expected to reproduce its
+v2 result — identical task outcomes and identical normalized graded answers —
+because at temperature 0 a bigger cap only matters to responses that
+previously hit it. Artifacts and raw generation are not guaranteed
+byte-identical; the claim is about what the grader sees. A divergence in task
+outcomes on the re-rating is a finding about the serving stack, to be
+investigated before either row is recorded.
+
+The suite history, so far: **v2** reclassified truncation — the arithmetic was
+untouched, but the same responses could yield a different `answered`, and
+therefore a different confidence, which is part of the row. **v3** raised the
+budget from 256 to 1024 and made the version itself part of every artifact and
+catalog row.
 
 #### The artifact records what was running
 

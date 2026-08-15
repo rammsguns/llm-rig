@@ -74,6 +74,7 @@ CATALOG_RATING_FIELDS=(
   rating_method     # see CATALOG_RATING_METHODS
   rating_source     # URL backing the rating, or "-"
   rating_confidence # none | low | medium | high
+  rating_suite      # local-benchmark: the suite version (v2, v3, ...); else "-"
 )
 
 # A closed vocabulary, so a typo is a test failure rather than a capability
@@ -212,7 +213,7 @@ CATALOG
 }
 
 # --- the ratings table ------------------------------------------------------
-# id;rating_value;rating_date;rating_method;rating_source;rating_confidence
+# id;rating_value;rating_date;rating_method;rating_source;rating_confidence;rating_suite
 #
 # ONE ROW IS MEASURED. THE REST ARE `unknown`, AND THAT IS THE HONEST ANSWER.
 #
@@ -247,21 +248,21 @@ CATALOG
 # produces. That is deferred work, not missing work.
 catalog_ratings() {
   sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'RATINGS'
-qwen3-coder-30b;93;2026-08-13;local-benchmark;file:llm-rating-20260813-1621.txt;medium
-qwen3-30b-a3b;unknown;-;none;-;none
-devstral-small;unknown;-;none;-;none
-qwen3.8-27b;unknown;-;none;-;none
-qwen3-14b;unknown;-;none;-;none
-qwen3-8b;unknown;-;none;-;none
-qwen3-4b;unknown;-;none;-;none
-qwen3-1.7b;unknown;-;none;-;none
-qwen2.5-coder-32b;unknown;-;none;-;none
-qwen2.5-coder-7b;unknown;-;none;-;none
-gemma-3-27b;unknown;-;none;-;none
-gemma-3-12b;unknown;-;none;-;none
-llama-3.3-70b;unknown;-;none;-;none
-mistral-small-3.2;unknown;-;none;-;none
-phi-4;unknown;-;none;-;none
+qwen3-coder-30b;93;2026-08-13;local-benchmark;file:llm-rating-20260813-1621.txt;medium;v2
+qwen3-30b-a3b;unknown;-;none;-;none;-
+devstral-small;unknown;-;none;-;none;-
+qwen3.8-27b;unknown;-;none;-;none;-
+qwen3-14b;unknown;-;none;-;none;-
+qwen3-8b;unknown;-;none;-;none;-
+qwen3-4b;unknown;-;none;-;none;-
+qwen3-1.7b;unknown;-;none;-;none;-
+qwen2.5-coder-32b;unknown;-;none;-;none;-
+qwen2.5-coder-7b;unknown;-;none;-;none;-
+gemma-3-27b;unknown;-;none;-;none;-
+gemma-3-12b;unknown;-;none;-;none;-
+llama-3.3-70b;unknown;-;none;-;none;-
+mistral-small-3.2;unknown;-;none;-;none;-
+phi-4;unknown;-;none;-;none;-
 # Both Laguna rows say `unknown` even though a vendor number was available and
 # would have validated: Poolside ships .eval_results/swe-bench_verified.yaml in
 # the model repo, claiming 70.9% resolved for XS 2.1.
@@ -274,8 +275,8 @@ phi-4;unknown;-;none;-;none
 #
 # When lib/bench.sh has run these two on this machine, the same suite that ran
 # every other row, they get a local-benchmark rating like everything else.
-laguna-xs-2.1;unknown;-;none;-;none
-laguna-s-2.1;unknown;-;none;-;none
+laguna-xs-2.1;unknown;-;none;-;none;-
+laguna-s-2.1;unknown;-;none;-;none;-
 RATINGS
 }
 
@@ -680,8 +681,11 @@ catalog_validate() {
 # append them without the two halves fighting over CATALOG_ERRORS.
 catalog_validate_ratings_into() {
   local model_ids="$1" row n=0 errs="" seen=" "
-  local id value rdate method source conf
+  local id value rdate method source conf suite
   local nfields="${#CATALOG_RATING_FIELDS[@]}"
+  # Every distinct suite version seen on a local-benchmark row, with the first
+  # row that carried it -- so the mixed-version error can name both sides.
+  local suites_seen="" first_suite="" first_suite_row=""
 
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
@@ -694,7 +698,7 @@ catalog_validate_ratings_into() {
       continue
     fi
 
-    IFS="$CATALOG_SEP" read -r id value rdate method source conf <<<"$row"
+    IFS="$CATALOG_SEP" read -r id value rdate method source conf suite <<<"$row"
 
     [[ "$model_ids" == *" $id "* ]] \
       || errs+="rating row $n: '$id' has no matching model row"$'\n'
@@ -762,6 +766,31 @@ catalog_validate_ratings_into() {
         errs+="rating row $n ($id): rating_date '$rdate' is not a real ISO date"$'\n'
       fi
     fi
+
+    # The suite field belongs to exactly one method. Only a local-benchmark
+    # number was produced by the suite in lib/rate.sh, so only a
+    # local-benchmark row may name a version of it -- and must, because two
+    # local numbers are only comparable under the same version. A vendor
+    # number never ran the suite, and `unknown` measured nothing.
+    if [[ "$method" == "local-benchmark" ]]; then
+      if [[ "$suite" =~ ^v[0-9]+$ ]]; then
+        if [[ " $suites_seen " != *" $suite "* ]]; then
+          suites_seen+="${suites_seen:+ }$suite"
+          if [[ -z "$first_suite" ]]; then
+            first_suite="$suite" first_suite_row="$id"
+          else
+            # Named from both sides, so the message says which two rows to
+            # reconcile instead of sending someone diffing the whole table.
+            errs+="rating row $n ($id): suite $suite, but '$first_suite_row' is rated under $first_suite -- all local-benchmark rows must share one suite version, so re-rate and land them together"$'\n'
+          fi
+        fi
+      else
+        errs+="rating row $n ($id): rating_suite '$suite' must be 'v<integer>' for a local-benchmark row"$'\n'
+      fi
+    else
+      [[ "$suite" == "-" ]] \
+        || errs+="rating row $n ($id): rating_suite '$suite' claims a suite version but the method is '$method', which never ran the suite"$'\n'
+    fi
   done < <(catalog_ratings)
 
   # Every model needs a rating row, even -- especially -- an unknown one. A
@@ -770,7 +799,7 @@ catalog_validate_ratings_into() {
   local mid
   for mid in $(catalog_ids); do
     [[ "$seen" == *" $mid "* ]] \
-      || errs+="model '$mid' has no rating row (use 'unknown;-;none;-;none')"$'\n'
+      || errs+="model '$mid' has no rating row (use 'unknown;-;none;-;none;-')"$'\n'
   done
 
   printf '%s' "$errs"
