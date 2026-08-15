@@ -423,12 +423,12 @@ test_a_small_model_can_outscore_a_large_one_without_reordering_the_classes() {
 
 test_the_same_model_changes_class_with_the_hardware() {
   # The requirement the parameter-count bands could not meet. Nothing about
-  # devstral-small changes between these two calls except the machine it is
+  # devstral-small-2 changes between these two calls except the machine it is
   # being judged against.
   local tight roomy
-  tight="$(score_rank 14000 | awk -F'\t' '$3=="devstral-small" { print $1 }')"
-  roomy="$(score_rank 40000 | awk -F'\t' '$3=="devstral-small" { print $1 }')"
-  assert_eq "$tight" "large" "12.5 GB of a 14 GB budget is a large model here" || return 1
+  tight="$(score_rank 14000 | awk -F'\t' '$3=="devstral-small-2" { print $1 }')"
+  roomy="$(score_rank 40000 | awk -F'\t' '$3=="devstral-small-2" { print $1 }')"
+  assert_eq "$tight" "large" "14.5 GB of a 14 GB budget is a large model here" || return 1
   assert_eq "$roomy" "small" "the same model on a 40 GB budget is a small one"
 }
 

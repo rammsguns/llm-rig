@@ -160,7 +160,7 @@ plan_for_budget() {
 
   elif (( fit_total < 15000 )); then
     PLAN_TIER="16g"
-    PLAN_ID_1="devstral-small";  PLAN_Q_1="IQ4_XS|Q4_K_S"
+    PLAN_ID_1="devstral-small-2"; PLAN_Q_1="IQ4_XS|Q4_K_S"
     PLAN_ID_2="qwen3-coder-30b"; PLAN_Q_2="IQ3_M|Q3_K_M"
     PLAN_ID_3="qwen3-4b";        PLAN_Q_3="Q5_K_M"
     PLAN_RUNTIME="llama.cpp + llama-swap. Quantize the KV cache to q8_0 -- that is what makes a long context fit."
@@ -169,7 +169,7 @@ plan_for_budget() {
   elif (( fit_total < 26000 )); then
     PLAN_TIER="24g"
     PLAN_ID_1="qwen3-coder-30b"; PLAN_Q_1="Q4_K_M"
-    PLAN_ID_2="devstral-small";  PLAN_Q_2="Q4_K_M"
+    PLAN_ID_2="devstral-small-2"; PLAN_Q_2="Q4_K_M"
     PLAN_ID_3="gemma-3-27b";     PLAN_Q_3="Q4_K_M"
     PLAN_RUNTIME="llama.cpp + llama-swap."
     PLAN_NOTE="The sweet spot. The MoE primary activates ~3B params per token, so it
@@ -180,7 +180,7 @@ plan_for_budget() {
     PLAN_TIER="48g"
     PLAN_ID_1="qwen3-coder-30b"; PLAN_Q_1="Q6_K|Q5_K_M"
     PLAN_ID_2="qwen3.8-27b";     PLAN_Q_2="Q5_K_M"
-    PLAN_ID_3="devstral-small";  PLAN_Q_3="Q5_K_M"
+    PLAN_ID_3="devstral-small-2"; PLAN_Q_3="Q5_K_M"
     PLAN_RUNTIME="llama.cpp + llama-swap."
     PLAN_NOTE="Enough headroom to spend it on quantization quality rather than more
   parameters -- a higher quant of a right-sized model beats a squeezed larger one."
