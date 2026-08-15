@@ -874,9 +874,11 @@ For a while the swap pin was enforced only by running the full
 [`./40-serve.sh`](40-serve.sh) — the thing that also stops the service and replaces the
 binary. That is the wrong tool when a measurement is in flight, and it is how this machine
 ended up sitting two releases behind its own pin for three days without anything noticing.
-The report compares installed version, pinned version and where the pin came from, plus
-the install record as a **separate** line, because matching the pin says nothing about who
-put the binary there or whether its bytes were ever verified. It reads, and changes
+The report compares installed version and pinned version, and — for the swap pin only —
+where that pin came from (an `LLAMA_SWAP_VERSION` override or the repo default; the
+llama.cpp pin has no origin to attribute, since it is always the committed
+`llamacpp.ref`), plus the install record as a **separate** line, because matching the pin
+says nothing about who put the binary there or whether its bytes were ever verified. It reads, and changes
 nothing — on drift it names the command that reconciles it (`./40-serve.sh
 --reconcile-swap`, since a serve run without the flag refuses on drift) rather than
 running it.
