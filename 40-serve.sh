@@ -470,7 +470,7 @@ while IFS=$'\t' read -r name gguf; do
     size_mb=$(du -m "$gguf" | cut -f1)
   fi
 
-  extra=""; envpfx=""; note=""
+  extra=""; envline=""; note=""
   is_moe=0
   [[ "$base" =~ [Aa][0-9]+[Bb]|[Mm]o[Ee] ]] && is_moe=1
 
@@ -479,7 +479,11 @@ while IFS=$'\t' read -r name gguf; do
       # Fits on one card: pin it there. Splitting a model that doesn't need to be
       # split adds PCIe sync at every layer boundary for zero benefit -- and it
       # leaves the second GPU free to serve a different model concurrently.
-      envpfx="CUDA_VISIBLE_DEVICES=$BEST_GPU "
+      # The pin rides llama-swap's per-model env: list, NOT a VAR=value prefix
+      # on cmd: llama-swap execs the argv directly, without a shell, so a
+      # prefix is handed to exec(2) as the program name and the entry can
+      # never start (#61).
+      envline="env: [\"CUDA_VISIBLE_DEVICES=$BEST_GPU\"]"
       note="pinned to GPU$BEST_GPU (fits in ${FIT_SINGLE_MB}MB, no split overhead)"
     else
       extra="--tensor-split $TENSOR_SPLIT"
@@ -507,9 +511,13 @@ while IFS=$'\t' read -r name gguf; do
   "$name":
     # $(basename "$gguf")  (~${size_mb} MB) -- ${note:-fits in VRAM}
     cmd: |
-      ${envpfx}llama-server \${base}
+      llama-server \${base}
       -m $gguf
       $extra
+EOF
+  # Only a pinned entry carries env:; a split entry must not acquire one.
+  [[ -n "$envline" ]] && printf '    %s\n' "$envline"
+  cat <<EOF
     ttl: 900
     aliases: ["$name-local"]
 

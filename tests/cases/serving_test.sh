@@ -668,5 +668,112 @@ test_config_only_fails_closed_on_an_unreadable_vram_figure() {
     "the prior config must survive"
 }
 
+# --- the single-GPU pin rides env:, not the command line (#61) ---------------
+# llama-swap execs a model's cmd as an argv -- there is no shell in front of
+# it -- so an environment assignment written before the command is handed to
+# exec(2) as the program name and the entry can never start. Every model on
+# the machine this stack was tuned on takes the split path, so the pin branch
+# shipped without ever having produced a startable entry. The pin has to
+# travel in llama-swap's per-model env: list instead.
+
+# One model per fit class, in one generated file. KV_RESERVE_MB is the
+# documented expert override in lib/detect.sh: pushing it up squeezes the
+# dual_a4000 single-card budget to ~104MB, so a sparse file (the generator
+# sizes by du, which reads blocks, ~1MB) pins while 120MB of REAL blocks
+# splits. Sparse staging cannot make a model big here for the same reason.
+stage_one_of_each_fit() {
+  stage_gguf Tiny-GGUF Tiny-Q8_0.gguf >/dev/null
+  mkdir -p "$MODELS_DIR/Wide-GGUF"
+  dd if=/dev/zero of="$MODELS_DIR/Wide-GGUF/Wide-Q4_K_M.gguf" \
+    bs=1M count=120 status=none
+  export KV_RESERVE_MB=26200
+}
+
+# The lines of one entry, from its key to the blank line that closes it. The
+# env:/split assertions are per-entry claims, and a file-wide grep cannot say
+# WHICH entry carried the field.
+entry_block() {
+  awk -v key="  \"$1\":" '$0 == key {hit=1} hit {print; if ($0 == "") exit}' \
+    "$RIG_DIR/etc/llama-swap.yaml"
+}
+
+test_a_pinned_model_gets_env_and_a_command_that_begins_with_llama_server() {
+  stage_gguf Tiny-GGUF Tiny-Q8_0.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "generation must succeed: $RUN_OUTPUT" || return 1
+  local entry first
+  entry="$(entry_block tiny)"
+  assert_contains "$entry" 'env: ["CUDA_VISIBLE_DEVICES=1"]' \
+    "the pin is a per-model env: entry" || return 1
+  # The first token of the cmd block is what llama-swap will exec.
+  first="$(grep -A1 'cmd: |' <<<"$entry" | tail -1 | awk '{print $1}')"
+  assert_eq "$first" "llama-server" "exec sees a program, not an assignment"
+}
+
+test_no_environment_assignment_is_embedded_in_the_argv() {
+  stage_gguf Tiny-GGUF Tiny-Q8_0.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "generation must succeed: $RUN_OUTPUT" || return 1
+  local cfg
+  cfg="$(cat "$RIG_DIR/etc/llama-swap.yaml")"
+  assert_not_contains "$cfg" 'CUDA_VISIBLE_DEVICES=1 llama-server' \
+    "no assignment in front of the command" || return 1
+  # ...and not smuggled anywhere else either: the variable appears exactly
+  # once in the whole file, and that occurrence is the env: line.
+  assert_eq "$(grep -c 'CUDA_VISIBLE_DEVICES' <<<"$cfg")" "1" \
+    "exactly one mention of the variable" || return 1
+  assert_eq "$(grep 'CUDA_VISIBLE_DEVICES' <<<"$cfg" | sed 's/^ *//')" \
+    'env: ["CUDA_VISIBLE_DEVICES=1"]' "and it is the env: line"
+}
+
+test_the_pin_names_the_gpu_with_the_most_free_memory() {
+  # dual_a4000 has GPU1 freer, so the other tests would pass with a constant
+  # 1. Swapping the free figures must move the pin to GPU0 -- otherwise the
+  # pin lands on whichever card runs the desktop, the exact mistake the
+  # BEST_GPU selection exists to avoid.
+  local f="$SANDBOX/gpu-swapped.tsv"
+  { head -1 "$TEST_ROOT/fixtures/gpu/dual_a4000.tsv"
+    printf '0\tNVIDIA RTX A4000\t16376\t14955\t8.6\t140\t100\t140\t43\t2100\tEnabled\n'
+    printf '1\tNVIDIA RTX A4000\t16376\t14104\t8.6\t140\t100\t140\t43\t2100\tEnabled\n'
+  } >"$f"
+  use_gpu "$f"
+  stage_gguf Tiny-GGUF Tiny-Q8_0.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "generation must succeed: $RUN_OUTPUT" || return 1
+  assert_contains "$(entry_block tiny)" 'env: ["CUDA_VISIBLE_DEVICES=0"]' \
+    "the value tracks the selection"
+}
+
+test_a_split_model_keeps_tensor_split_and_gains_no_env() {
+  stage_one_of_each_fit
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "generation must succeed: $RUN_OUTPUT" || return 1
+  local wide tiny
+  wide="$(entry_block wide)"
+  tiny="$(entry_block tiny)"
+  assert_contains "$wide" "--tensor-split 14104,14955" \
+    "the split entry still splits" || return 1
+  assert_not_contains "$wide" "env:" "and gains no env:" || return 1
+  assert_contains "$tiny" 'env: ["CUDA_VISIBLE_DEVICES=1"]' \
+    "while the pinned entry in the same file has one" || return 1
+  assert_not_contains "$tiny" "--tensor-split" "and does not split"
+}
+
+test_the_generated_config_still_passes_the_readback_verifier() {
+  # The acceptance path a real run takes before installing the file:
+  # serving_verify_config on the written config against the resolved plan.
+  # An env: line is new surface in that file, and the verifier must read
+  # straight past it.
+  stage_one_of_each_fit
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "generation must succeed: $RUN_OUTPUT" || return 1
+  local plan
+  plan="$(printf 'tiny\t%s\nwide\t%s' \
+    "$MODELS_DIR/Tiny-GGUF/Tiny-Q8_0.gguf" \
+    "$MODELS_DIR/Wide-GGUF/Wide-Q4_K_M.gguf")"
+  run serving_verify_config "$RIG_DIR/etc/llama-swap.yaml" "$plan"
+  assert_ok "an env: line must not confuse the verifier"
+}
+
 run_suite
 suite_exit
