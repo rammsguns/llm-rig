@@ -228,13 +228,14 @@ CATALOG
 # --- the ratings table ------------------------------------------------------
 # id;rating_value;rating_date;rating_method;rating_source;rating_confidence;rating_suite
 #
-# TWO ROWS ARE MEASURED. THE REST ARE `unknown`, AND THAT IS THE HONEST ANSWER.
+# THREE ROWS ARE MEASURED. THE REST ARE `unknown`, AND THAT IS THE HONEST ANSWER.
 #
 # What a rating has to be to appear here: a number, from a named source,
 # produced by a stated method, comparable across every row it is ranked
-# against. Two rows clear that bar today -- qwen3-coder-30b and qwen3.8-27b,
-# both measured on this machine by 61-rate-models.sh under suite v3, in one
-# sitting on one serving stack. Every other row is a placeholder.
+# against. Three rows clear that bar today -- qwen3-coder-30b, qwen3.8-27b
+# and devstral-small-2, all measured on this machine by 61-rate-models.sh
+# under suite v3, on one day on one serving stack. Every other row is a
+# placeholder.
 #
 #   - Publishers report benchmarks selectively and on different suites. Taking
 #     one vendor's SWE-bench figure and another's HumanEval figure and sorting
@@ -250,15 +251,17 @@ CATALOG
 # A ranking that admits it cannot separate two models on quality is more useful
 # than one that separates them on a number somebody made up.
 #
-# Which means the measured rows must be read for what they are. The 100 and
-# the 93 ARE comparable with each other: same suite, same machine, same
-# llama.cpp build, same session -- that pair is the first real quality
-# ordering this table has carried. Against the other fifteen rows they are
-# not: two measurements against fifteen neutral 50s says these are the models
-# somebody measured, and their lead over laguna-xs-2.1 -- whose coding
-# component is still a placeholder -- is evidence, not a comparison. The rest
-# of the ordering only becomes a quality judgement once the rows being
-# compared are measured too.
+# Which means the measured rows must be read for what they are. The 100, the
+# 93 and the 80 ARE comparable with each other: same suite, same machine,
+# same llama.cpp build -- that ordering is the real quality ranking this
+# table carries. Against the other fourteen rows they are not: three
+# measurements against fourteen neutral 50s says these are the models
+# somebody measured. The comparison with laguna-xs-2.1 -- whose coding
+# component is still a placeholder -- now cuts both ways: the qwen rows total
+# above it and devstral-small-2 totals below it, and neither fact is a
+# quality comparison, because a measured score against a neutral 50 is
+# evidence of measurement, not of merit. The rest of the ordering only
+# becomes a quality judgement once the rows being compared are measured too.
 #
 # The route to filling in the rest is the same one: measure on this machine
 # with 61-rate-models.sh, and record the value, date, source and confidence it
@@ -267,7 +270,7 @@ catalog_ratings() {
   sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'RATINGS'
 qwen3-coder-30b;93;2026-08-14;local-benchmark;file:llm-rating-20260814-2122.txt;medium;v3
 qwen3-30b-a3b;unknown;-;none;-;none;-
-devstral-small-2;unknown;-;none;-;none;-
+devstral-small-2;80;2026-08-14;local-benchmark;file:llm-rating-20260814-2307.txt;medium;v3
 qwen3.8-27b;100;2026-08-14;local-benchmark;file:llm-rating-20260814-2123.txt;medium;v3
 qwen3-14b;unknown;-;none;-;none;-
 qwen3-8b;unknown;-;none;-;none;-
