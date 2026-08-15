@@ -667,8 +667,18 @@ test_a_local_benchmark_never_reports_high() {
 
 test_a_served_name_maps_back_to_its_catalog_id() {
   assert_eq "$(rate_catalog_id qwen3-coder-30b-a3b-instruct)" "qwen3-coder-30b" "moe" || return 1
-  assert_eq "$(rate_catalog_id devstral-small-2507)" "devstral-small" "dense" || return 1
+  assert_eq "$(rate_catalog_id devstral-small-2-24b-instruct-2512)" "devstral-small-2" "dense" || return 1
   assert_eq "$(rate_catalog_id phi-4)" "phi-4" "id equal to the repo name"
+}
+
+test_the_served_devstral_resolves_uniquely_to_its_own_id() {
+  # The 2512 release must reach exactly one catalog id. The retired 2507 name
+  # must not resolve at all: its row is gone, and a near-neighbour match here
+  # would rate weights nobody measured under that identity.
+  assert_eq "$(rate_catalog_id devstral-small-2-24b-instruct-2512)" "devstral-small-2" "the served name" || return 1
+  assert_eq "$(catalog_rows | awk -F';' 'tolower($2) ~ /devstral/' | wc -l)" "1" "one Devstral row in the table" || return 1
+  run rate_catalog_id devstral-small-2507
+  assert_fails "the retired 2507 name must no longer resolve"
 }
 
 test_the_alias_suffix_maps_too() {

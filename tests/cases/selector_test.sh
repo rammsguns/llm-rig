@@ -152,10 +152,10 @@ test_the_same_model_moves_between_groups_as_the_budget_changes() {
   assert_ne "$roomy" "" "and on a large one" || return 1
 
   local tight_class roomy_class
-  tight_class="$( selector_build 14000 0; score_rank 14000 0 | awk -F'\t' '$3=="devstral-small"{print $1}' )"
-  roomy_class="$( selector_build 40000 0; score_rank 40000 0 | awk -F'\t' '$3=="devstral-small"{print $1}' )"
-  assert_eq "$tight_class" "large" "89% of a 14 GB budget" || return 1
-  assert_eq "$roomy_class" "small" "31% of a 40 GB one"
+  tight_class="$( selector_build 14000 0; score_rank 14000 0 | awk -F'\t' '$3=="devstral-small-2"{print $1}' )"
+  roomy_class="$( selector_build 40000 0; score_rank 40000 0 | awk -F'\t' '$3=="devstral-small-2"{print $1}' )"
+  assert_eq "$tight_class" "large" "103% of a 14 GB budget" || return 1
+  assert_eq "$roomy_class" "small" "36% of a 40 GB one"
 }
 
 test_offload_capacity_changes_what_is_offered() {
@@ -458,7 +458,7 @@ test_a_rating_landing_lifts_confidence_on_the_menu() {
   local out
   out="$(
     catalog_ratings() {
-      printf '%s\n' 'devstral-small;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'
+      printf '%s\n' 'devstral-small-2;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'
       command sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'R'
 qwen3-coder-30b;unknown;-;none;-;none;-
 qwen3-30b-a3b;unknown;-;none;-;none;-
@@ -478,7 +478,7 @@ R
     }
     SCORE_LIVE_SOURCE=fresh
     selector_build "$BUDGET" "$OFFLOAD"
-    score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$3=="devstral-small" { print $5 }'
+    score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$3=="devstral-small-2" { print $5 }'
   )"
   assert_eq "$out" "high" "a sourced rating plus live data reaches high confidence"
 }

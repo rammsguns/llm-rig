@@ -175,7 +175,20 @@ catalog_rows() {
   sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'CATALOG'
 qwen3-coder-30b;Qwen/Qwen3-Coder-30B-A3B-Instruct;2025-07-31;30.5;3.3;moe;262144;apache-2.0;coding,agentic,tools;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-Coder-30B-A3B-Instruct;2026-08-11
 qwen3-30b-a3b;Qwen/Qwen3-30B-A3B;2025-04-27;30.5;3.3;moe;40960;apache-2.0;tools,reasoning;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-30B-A3B;2026-08-11
-devstral-small;mistralai/Devstral-Small-2507;2025-07-04;23.6;23.6;dense;131072;apache-2.0;coding,agentic,tools;IQ4_XS|Q4_K_S;hf-api;https://huggingface.co/mistralai/Devstral-Small-2507;2026-08-11
+# Devstral Small 2 replaced Devstral Small 2507 (2026-08-14, same slot:
+# Mistral's agentic-coding dense mid-size). The 2507 row was retired unmeasured
+# -- this machine serves the 2512 release, and keeping a row for weights the
+# rig does not serve would spend one of seventeen slots on history. The retired
+# row's facts live in Git history under the id `devstral-small`. The id here is
+# `devstral-small-2` because 2507 and 2512 are different published models, and
+# silently repointing an id would let one name mean two things across time.
+# Facts from the HF API: 24,011,361,840 params in safetensors (the FP8 repo of
+# the same weights), createdAt 2025-11-28, apache-2.0, vision-capable (this rig
+# serves it text-only). Context is 393216 per config.json and the GGUF's
+# mistral3.context_length; the card advertises "a 256k context window" -- the
+# config value is recorded because that is the mechanical claim shipped with
+# the weights, and it is what llama.cpp reads.
+devstral-small-2;mistralai/Devstral-Small-2-24B-Instruct-2512;2025-11-28;24.0;24.0;dense;393216;apache-2.0;coding,agentic,tools,vision;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/mistralai/Devstral-Small-2-24B-Instruct-2512;2026-08-14
 # Qwen3.8-27B displaced Qwen3-32B (2026-08-14, the cap is 17 and this is the
 # same slot in the lineup: Qwen's current dense mid-size). Facts from the HF
 # API: 27.78B params in safetensors, 262144 context, apache-2.0, vision-capable
@@ -254,7 +267,7 @@ catalog_ratings() {
   sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'RATINGS'
 qwen3-coder-30b;93;2026-08-14;local-benchmark;file:llm-rating-20260814-2122.txt;medium;v3
 qwen3-30b-a3b;unknown;-;none;-;none;-
-devstral-small;unknown;-;none;-;none;-
+devstral-small-2;unknown;-;none;-;none;-
 qwen3.8-27b;100;2026-08-14;local-benchmark;file:llm-rating-20260814-2123.txt;medium;v3
 qwen3-14b;unknown;-;none;-;none;-
 qwen3-8b;unknown;-;none;-;none;-

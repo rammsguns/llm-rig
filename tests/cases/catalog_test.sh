@@ -558,8 +558,8 @@ test_capability_matching_does_not_match_substrings() {
 test_long_context_is_derived_not_stored() {
   # It used to be a stored capability, which meant a row could claim
   # long-context while its own context column said 32768.
-  catalog_is_long_context devstral-small \
-    || { _fail "devstral-small is 131072 and must count as long context"; return 1; }
+  catalog_is_long_context devstral-small-2 \
+    || { _fail "devstral-small-2 is 393216 and must count as long context"; return 1; }
   if catalog_is_long_context qwen2.5-coder-7b; then
     _fail "qwen2.5-coder-7b is 32768 and must not"
     return 1
@@ -650,12 +650,12 @@ test_a_budget_too_small_for_any_quant_fails() {
 # land in different classes on different hardware -- that is the requirement.
 
 test_classes_are_relative_to_the_budget_not_the_parameter_count() {
-  # devstral-small at IQ4_XS is ~12.5 GB. The identical model, unchanged, must
-  # be large on a 16 GB card and small on a 64 GB one. A parameter-count band
-  # cannot express that, which is why it was replaced.
-  assert_eq "$(catalog_hw_class devstral-small 14000)" "large"  "12.5G of a 14G budget is 89%" || return 1
-  assert_eq "$(catalog_hw_class devstral-small 20000)" "medium" "62% is the recommended band" || return 1
-  assert_eq "$(catalog_hw_class devstral-small 40000)" "small"  "31% leaves room to spare"
+  # devstral-small-2 at its preferred Q4_K_M is ~14.5 GB. The identical model,
+  # unchanged, must be large on a 16 GB card and small on a 64 GB one. A
+  # parameter-count band cannot express that, which is why it was replaced.
+  assert_eq "$(catalog_hw_class devstral-small-2 14000)" "large"  "14.5G of a 14G budget is 103%" || return 1
+  assert_eq "$(catalog_hw_class devstral-small-2 20000)" "medium" "72% is the recommended band" || return 1
+  assert_eq "$(catalog_hw_class devstral-small-2 40000)" "small"  "36% leaves room to spare"
 }
 
 test_the_class_boundaries_are_forty_and_eighty_percent() {
@@ -794,7 +794,9 @@ test_context_lengths_match_the_published_configs() {
   assert_eq "$(catalog_get qwen3.8-27b context)"     "262144" "Qwen3.8-27B"     || return 1
   assert_eq "$(catalog_get qwen2.5-coder-32b context)" "32768" "Qwen2.5-Coder-32B" || return 1
   assert_eq "$(catalog_get phi-4 context)"            "16384" "phi-4"           || return 1
-  assert_eq "$(catalog_get devstral-small context)"  "131072" "Devstral Small"
+  # config.json and the GGUF both say 393216; the card advertises 256k. The
+  # config value is recorded -- see the row comment.
+  assert_eq "$(catalog_get devstral-small-2 context)" "393216" "Devstral Small 2"
 }
 
 test_moe_rows_record_the_activated_parameter_count() {
