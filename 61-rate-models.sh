@@ -21,7 +21,7 @@
 # Usage:
 #   ./61-rate-models.sh                    # every served model, one pass each
 #   ./61-rate-models.sh --repeats 3        # three passes; disagreement -> low
-#   ./61-rate-models.sh --model qwen3-4b   # one served model, by name
+#   ./61-rate-models.sh --model qwen3-4b   # one model: served name or catalog id
 #   ./61-rate-models.sh --dry-run          # print the plan, call nothing
 #
 # Output -> ~/llm-rating-<date>.txt
@@ -63,10 +63,17 @@ c_info "Rating against $BASE"
 AVAILABLE="$(preflight_check_models "$BASE")" || die \
   "no models served at $BASE -- start the stack first (./40-serve.sh), then re-run"
 
+# --model takes an exact served name or an exact catalog id (#58). The
+# candidate set comes from rate_model_candidates; this block only counts it.
+# One candidate runs. Zero and several both die with the set named, because
+# picking one would decide which weights get measured on a guess.
 if [[ -n "$ONLY" ]]; then
-  printf '%s\n' "$AVAILABLE" | grep -qxF "$ONLY" \
-    || die "$BASE does not serve '$ONLY'. It serves: $(printf '%s' "$AVAILABLE" | tr '\n' ' ')"
-  AVAILABLE="$ONLY"
+  MATCHED="$(rate_model_candidates "$ONLY" "$AVAILABLE")" || die \
+    "$BASE does not serve '$ONLY' -- not a served name, and no served model maps to that catalog id. It serves: $(printf '%s' "$AVAILABLE" | tr '\n' ' ')"
+  if (( "$(printf '%s\n' "$MATCHED" | wc -l)" > 1 )); then
+    die "'$ONLY' matches more than one served model: $(printf '%s' "$MATCHED" | tr '\n' ' ')-- give the exact served name instead"
+  fi
+  AVAILABLE="$MATCHED"
 fi
 
 TOTAL_W="$(rate_total_weight)"
