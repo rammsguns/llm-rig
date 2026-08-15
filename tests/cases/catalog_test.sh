@@ -982,21 +982,24 @@ test_a_row_may_name_a_single_quant_with_no_fallback() {
   return 0
 }
 
-test_laguna_ratings_stay_unknown_despite_a_published_vendor_number() {
-  # Poolside ships .eval_results/swe-bench_verified.yaml claiming 70.9% for XS.
-  # No other row in this catalog has a SWE-bench figure, so recording it would
-  # rank disclosure practice rather than quality. The rule has to hold when
-  # there IS a number available, or it is not a rule.
-  local id
-  for id in laguna-xs-2.1 laguna-s-2.1; do
-    assert_eq "$(catalog_rating_get "$id" rating_value)"  "unknown" "$id rating" || return 1
-    assert_eq "$(catalog_rating_get "$id" rating_method)" "none"    "$id method" || return 1
-  done
-  return 0
+test_the_laguna_vendor_number_still_rates_nothing() {
+  # Poolside ships .eval_results/swe-bench_verified.yaml in its model repos.
+  # No other row in this catalog has a SWE-bench figure, so recording one
+  # would rank disclosure practice rather than quality. The rule has to hold
+  # when there IS a number available, or it is not a rule -- and it held
+  # through the XS measurement: that row was filled by the local suite-v3
+  # run, not by the vendor file, while the S row stays unknown with the same
+  # number on offer.
+  assert_eq "$(catalog_rating_get laguna-s-2.1 rating_value)"  "unknown" "laguna-s rating" || return 1
+  assert_eq "$(catalog_rating_get laguna-s-2.1 rating_method)" "none"    "laguna-s method" || return 1
+  assert_eq "$(catalog_rating_get laguna-xs-2.1 rating_method)" "local-benchmark" \
+    "the measured XS row cites the local run, not the vendor figure" || return 1
+  assert_eq "$(catalog_rating_get laguna-xs-2.1 rating_source)" \
+    "file:llm-rating-20260815-0859.txt" "and names its artifact"
 }
 
 test_the_measured_rating_rows_are_the_ones_that_were_produced() {
-  # Pinned in full, all three of them. Value, date, method, artifact name,
+  # Pinned in full, all four of them. Value, date, method, artifact name,
   # confidence and suite were all produced by runs of 61-rate-models.sh, and
   # a rating row is only auditable if the reader can find that run again --
   # so an edit to any single field has to be deliberate.
@@ -1005,8 +1008,8 @@ test_the_measured_rating_rows_are_the_ones_that_were_produced() {
   # the coder row was replaced whole (same value, 93, from a new run and a
   # new artifact), and qwen3.8 got its first measured row. The two landed
   # together because the validator would have refused them apart. The
-  # devstral row landed on its own afterwards, which the validator allows
-  # precisely because it arrived already on v3.
+  # devstral and laguna rows each landed on their own afterwards, which the
+  # validator allows precisely because they arrived already on v3.
   local row
   row="$(catalog_ratings | awk -F';' '$1=="qwen3-coder-30b"')"
   assert_eq "$row" \
@@ -1019,22 +1022,27 @@ test_the_measured_rating_rows_are_the_ones_that_were_produced() {
   row="$(catalog_ratings | awk -F';' '$1=="devstral-small-2"')"
   assert_eq "$row" \
     "devstral-small-2;80;2026-08-14;local-benchmark;file:llm-rating-20260814-2307.txt;medium;v3" \
-    "the devstral row: 80, medium, suite v3"
+    "the devstral row: 80, medium, suite v3" || return 1
+  row="$(catalog_ratings | awk -F';' '$1=="laguna-xs-2.1"')"
+  assert_eq "$row" \
+    "laguna-xs-2.1;100;2026-08-15;local-benchmark;file:llm-rating-20260815-0859.txt;medium;v3" \
+    "the laguna row: 100, medium, suite v3"
 }
 
-test_exactly_three_rating_rows_are_measured() {
-  # The leaderboard caveat, as a test. Three measured rows against fourteen
-  # placeholders means the 100-93-80 ordering is a real comparison and
-  # everything else is still a statement about hardware fit -- and anything
-  # written about the ranking has to say so. When a fourth model is measured
-  # this fails, which is the reminder to go and update that wording rather
-  # than let it quietly become false.
+test_exactly_four_rating_rows_are_measured() {
+  # The leaderboard caveat, as a test. Four measured rows against thirteen
+  # placeholders means the 100-100-93-80 ordering is a real comparison --
+  # with a real tie at the top that suite v3 cannot break -- and everything
+  # else is still a statement about hardware fit; anything written about the
+  # ranking has to say so. When a fifth model is measured this fails, which
+  # is the reminder to go and update that wording rather than let it quietly
+  # become false.
   local measured
   measured="$(catalog_ratings | awk -F';' '$4 != "none" { print $1 }' | paste -sd' ')"
-  assert_eq "$measured" "qwen3-coder-30b devstral-small-2 qwen3.8-27b" \
+  assert_eq "$measured" "qwen3-coder-30b devstral-small-2 qwen3.8-27b laguna-xs-2.1" \
     "the only rows backed by measurements" || return 1
-  assert_eq "$(catalog_ratings | awk -F';' '$4 == "none"' | wc -l)" "14" \
-    "and fourteen rows still honestly say unknown"
+  assert_eq "$(catalog_ratings | awk -F';' '$4 == "none"' | wc -l)" "13" \
+    "and thirteen rows still honestly say unknown"
 }
 
 test_every_local_benchmark_row_is_on_suite_v3() {
@@ -1045,8 +1053,8 @@ test_every_local_benchmark_row_is_on_suite_v3() {
   local suites
   suites="$(catalog_ratings | awk -F';' '$4=="local-benchmark" { print $7 }' | sort -u)"
   assert_eq "$suites" "v3" "every measured row ran the same suite, and it is v3" || return 1
-  assert_eq "$(catalog_ratings | awk -F';' '$4=="local-benchmark"' | wc -l)" "3" \
-    "and all three local measurements are on it"
+  assert_eq "$(catalog_ratings | awk -F';' '$4=="local-benchmark"' | wc -l)" "4" \
+    "and all four local measurements are on it"
 }
 
 test_a_partial_qwen38_only_v3_update_would_have_failed() {

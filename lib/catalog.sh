@@ -228,14 +228,14 @@ CATALOG
 # --- the ratings table ------------------------------------------------------
 # id;rating_value;rating_date;rating_method;rating_source;rating_confidence;rating_suite
 #
-# THREE ROWS ARE MEASURED. THE REST ARE `unknown`, AND THAT IS THE HONEST ANSWER.
+# FOUR ROWS ARE MEASURED. THE REST ARE `unknown`, AND THAT IS THE HONEST ANSWER.
 #
 # What a rating has to be to appear here: a number, from a named source,
 # produced by a stated method, comparable across every row it is ranked
-# against. Three rows clear that bar today -- qwen3-coder-30b, qwen3.8-27b
-# and devstral-small-2, all measured on this machine by 61-rate-models.sh
-# under suite v3, on one day on one serving stack. Every other row is a
-# placeholder.
+# against. Four rows clear that bar today -- qwen3-coder-30b, qwen3.8-27b,
+# devstral-small-2 and laguna-xs-2.1, all measured on this machine by
+# 61-rate-models.sh under suite v3 on one serving stack. Every other row is
+# a placeholder.
 #
 #   - Publishers report benchmarks selectively and on different suites. Taking
 #     one vendor's SWE-bench figure and another's HumanEval figure and sorting
@@ -251,17 +251,17 @@ CATALOG
 # A ranking that admits it cannot separate two models on quality is more useful
 # than one that separates them on a number somebody made up.
 #
-# Which means the measured rows must be read for what they are. The 100, the
-# 93 and the 80 ARE comparable with each other: same suite, same machine,
-# same llama.cpp build -- that ordering is the real quality ranking this
-# table carries. Against the other fourteen rows they are not: three
-# measurements against fourteen neutral 50s says these are the models
-# somebody measured. The comparison with laguna-xs-2.1 -- whose coding
-# component is still a placeholder -- now cuts both ways: the qwen rows total
-# above it and devstral-small-2 totals below it, and neither fact is a
-# quality comparison, because a measured score against a neutral 50 is
-# evidence of measurement, not of merit. The rest of the ordering only
-# becomes a quality judgement once the rows being compared are measured too.
+# Which means the measured rows must be read for what they are. The two
+# 100s, the 93 and the 80 ARE comparable with each other: same suite, same
+# machine, same llama.cpp build -- that ordering is the real quality ranking
+# this table carries. And it has a ceiling: laguna-xs-2.1 and qwen3.8-27b
+# both scored a perfect 100, so on measured coding quality they are tied --
+# suite v3 cannot separate them. Any distance between them in the ranking
+# comes from the other components (fit, speed, freshness), not from this
+# table. Against the other thirteen rows the measured four are not
+# comparable: four measurements against thirteen neutral 50s says these are
+# the models somebody measured, and the rest of the ordering only becomes a
+# quality judgement once the rows being compared are measured too.
 #
 # The route to filling in the rest is the same one: measure on this machine
 # with 61-rate-models.sh, and record the value, date, source and confidence it
@@ -283,19 +283,20 @@ gemma-3-12b;unknown;-;none;-;none;-
 llama-3.3-70b;unknown;-;none;-;none;-
 mistral-small-3.2;unknown;-;none;-;none;-
 phi-4;unknown;-;none;-;none;-
-# Both Laguna rows say `unknown` even though a vendor number was available and
-# would have validated: Poolside ships .eval_results/swe-bench_verified.yaml in
-# the model repo, claiming 70.9% resolved for XS 2.1.
+# laguna-s-2.1 says `unknown` even though a vendor number was available and
+# would have validated: Poolside ships .eval_results/swe-bench_verified.yaml
+# in its model repos.
 #
 # It is not recorded, and the reason is the one at the top of this table. No
-# other row here has a SWE-bench figure. Entering one for the only two rows
-# that have it does not rank Laguna against the catalog -- it ranks "published
-# a number" against "did not", and the ordering that falls out would look like
-# a quality judgement while measuring disclosure practice.
-#
-# When lib/bench.sh has run these two on this machine, the same suite that ran
-# every other row, they get a local-benchmark rating like everything else.
-laguna-xs-2.1;unknown;-;none;-;none;-
+# other row here has a SWE-bench figure. Entering one for the only rows that
+# have it does not rank Laguna against the catalog -- it ranks "published a
+# number" against "did not", and the ordering that falls out would look like
+# a quality judgement while measuring disclosure practice. The XS 2.1 row
+# below is the proof of the alternative: it ignores the same vendor figure
+# and cites the local suite-v3 run instead, like every other measured row.
+# When 61-rate-models.sh has run laguna-s-2.1 on this machine, it gets one
+# too.
+laguna-xs-2.1;100;2026-08-15;local-benchmark;file:llm-rating-20260815-0859.txt;medium;v3
 laguna-s-2.1;unknown;-;none;-;none;-
 RATINGS
 }

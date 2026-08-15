@@ -405,20 +405,22 @@ test_a_small_model_can_outscore_a_large_one_without_reordering_the_classes() {
   # on a small card, and it still must not be listed above it. The user asked
   # for the best in each class, not one global list.
   #
-  # 14000, and the number has moved twice: at 20000 the large head became the
-  # measured qwen3-coder-30b, and at 16000 it became the measured
-  # devstral-small-2, tying the small head at 71. At 14000 the large head is
-  # the coder again, held to 65 by hardware fit despite its rating -- so a
-  # small model really does outscore the large head here. The precondition
-  # below is asserted rather than assumed, so if a future measurement removes
-  # the gap at this budget too, this fails loudly instead of testing nothing.
+  # 8000, and the number has moved three times: at 20000 the large head
+  # became the measured qwen3-coder-30b, at 16000 the measured
+  # devstral-small-2 tied the small head at 71, and at 14000 the measured
+  # laguna-xs-2.1 now heads large at 74 -- its MoE speed term survives a
+  # budget its weights do not fit. At 8000 even that collapses: the large
+  # head is the coder again, held to 65 by hardware fit, and the small head's
+  # 71 genuinely beats it. The precondition below is asserted rather than
+  # assumed, so if a future measurement removes the gap at this budget too,
+  # this fails loudly instead of testing nothing.
   local large_score small_score
-  large_score="$(score_rank 14000 | awk -F'\t' '$1=="large"  { print $2; exit }')"
-  small_score="$(score_rank 14000 | awk -F'\t' '$1=="small" { print $2; exit }')"
+  large_score="$(score_rank 8000 | awk -F'\t' '$1=="large"  { print $2; exit }')"
+  small_score="$(score_rank 8000 | awk -F'\t' '$1=="small" { print $2; exit }')"
   assert_gt "$small_score" "$large_score" \
     "at this budget the small model genuinely scores higher" || return 1
   # ...and yet large is still printed first.
-  assert_eq "$(score_rank 14000 | head -1 | cut -f1)" "large" \
+  assert_eq "$(score_rank 8000 | head -1 | cut -f1)" "large" \
     "class order is by size, never by score"
 }
 
@@ -529,12 +531,13 @@ test_the_budget_changes_the_ranking() {
 
 # --- the measured ratings ---------------------------------------------------
 #
-# qwen3-coder-30b, qwen3.8-27b and devstral-small-2 are the three rows in the
-# ratings table backed by measurements rather than placeholders -- all on
-# suite v3, on this machine, so the table carries a trio of values that are
-# comparable with each other. These pin what those measurements do to the
-# ranking, so a later edit to a row, to the weights, or to any component
-# cannot move it without saying so.
+# qwen3-coder-30b, qwen3.8-27b, devstral-small-2 and laguna-xs-2.1 are the
+# four rows in the ratings table backed by measurements rather than
+# placeholders -- all on suite v3, on this machine, so the table carries four
+# values that are comparable with each other, two of them tied at the suite's
+# ceiling. These pin what those measurements do to the ranking, so a later
+# edit to a row, to the weights, or to any component cannot move it without
+# saying so.
 
 # The machine the measurement was taken on: two cards, 29671 MB between them.
 # Written out rather than detected, because a test that asks the local machine
@@ -552,21 +555,46 @@ test_the_measured_ratings_reach_the_scores_instead_of_the_placeholders() {
   assert_eq "$SCORE_CODING_KNOWN" "1" "also evidence, not absence" || return 1
   score_model devstral-small-2 "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
   assert_eq "$SCORE_C_CODING" "80" "and the third measured row" || return 1
-  assert_eq "$SCORE_CODING_KNOWN" "1" "evidence for devstral too"
+  assert_eq "$SCORE_CODING_KNOWN" "1" "evidence for devstral too" || return 1
+  score_model laguna-xs-2.1 "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
+  assert_eq "$SCORE_C_CODING" "100" "and the fourth measured row" || return 1
+  assert_eq "$SCORE_CODING_KNOWN" "1" "evidence for laguna too"
 }
 
-test_the_measured_models_total_85_84_and_77_where_measured() {
+test_the_measured_models_total_94_85_84_and_77_where_measured() {
   # The whole point of recording a rating is that it changes a number. Coder:
   # 73 with the placeholder, 84 with the measurement -- unchanged by the v3
   # re-run because the value itself (93) did not move. Qwen3.8: 72 with the
   # placeholder, 85 with the measurement. Devstral: 69 with the placeholder,
-  # 77 with the measurement.
-  score_model qwen3-coder-30b "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
-  assert_eq "$SCORE_TOTAL" "84" "coder's total on the measuring machine" || return 1
+  # 77 with the measurement. Laguna: 81 with the placeholder, 94 with the
+  # measurement.
+  score_model laguna-xs-2.1 "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
+  assert_eq "$SCORE_TOTAL" "94" "laguna's total on the measuring machine" || return 1
   score_model qwen3.8-27b "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
   assert_eq "$SCORE_TOTAL" "85" "qwen3.8's total on the measuring machine" || return 1
+  score_model qwen3-coder-30b "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
+  assert_eq "$SCORE_TOTAL" "84" "coder's total on the measuring machine" || return 1
   score_model devstral-small-2 "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
   assert_eq "$SCORE_TOTAL" "77" "devstral's total on the measuring machine"
+}
+
+test_the_laguna_measurement_moves_its_total_from_81_to_94() {
+  # The before/after of the one row this change records, pinned from both
+  # sides: the same model on the same budget scores 81 as a placeholder and
+  # 94 measured. The 13-point move is the 25% coding weight applied to
+  # 100-against-50, and if either end drifts, a component moved.
+  local before
+  before="$(
+    eval "$(declare -f catalog_ratings | sed '1s/^catalog_ratings/catalog_ratings_shipped/')"
+    catalog_ratings() {
+      catalog_ratings_shipped \
+        | sed 's/^laguna-xs-2.1;.*/laguna-xs-2.1;unknown;-;none;-;none;-/'
+    }
+    score_model laguna-xs-2.1 "$SCORE_MEASURED_BUDGET" && printf '%s' "$SCORE_TOTAL"
+  )"
+  assert_eq "$before" "81" "the placeholder total it moved from" || return 1
+  score_model laguna-xs-2.1 "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
+  assert_eq "$SCORE_TOTAL" "94" "the measured total it moved to"
 }
 
 test_the_devstral_measurement_moves_its_total_from_69_to_77() {
@@ -588,42 +616,47 @@ test_the_devstral_measurement_moves_its_total_from_69_to_77() {
   assert_eq "$SCORE_TOTAL" "77" "the measured total it moved to"
 }
 
-test_devstral_ranks_fourth_in_medium_on_the_measuring_machine() {
-  # Where the 77 lands: behind both qwens and behind laguna-xs-2.1's 81 --
-  # which is a measured row sitting below a placeholder-fed one, allowed on
-  # purpose. The ranking reports the totals as computed; it does not bump a
-  # model for having been measured, so the position is pinned along with the
-  # neighbour above it.
+test_the_medium_top_four_are_the_four_measured_rows_in_order() {
+  # 94, 85, 84, 77: for the first time the whole head of the class is
+  # measured, so this ordering is a quality-bearing comparison from top to
+  # bottom -- with one caveat the pin exists to protect. Laguna's nine-point
+  # lead over qwen3.8 is NOT a coding-quality lead: both scored the suite's
+  # ceiling of 100, and the distance between their totals comes entirely
+  # from the other components, chiefly speed (2.7B active parameters against
+  # a 27.8B dense forward pass). The ranking reports the totals as computed;
+  # what the totals mean is written here so an edit has to contradict it.
   local medium
   medium="$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3 }')"
-  assert_eq "$(sed -n 3p <<<"$medium")" "laguna-xs-2.1" \
-    "the unmeasured 81 stays third" || return 1
+  assert_eq "$(sed -n 1p <<<"$medium")" "laguna-xs-2.1" \
+    "the measured 94 leads the class" || return 1
+  assert_eq "$(sed -n 2p <<<"$medium")" "qwen3.8-27b" \
+    "the measured 85 is second -- tied on coding, separated on speed" || return 1
+  assert_eq "$(sed -n 3p <<<"$medium")" "qwen3-coder-30b" \
+    "the measured 84 is third" || return 1
   assert_eq "$(sed -n 4p <<<"$medium")" "devstral-small-2" \
-    "and the measured 77 sits fourth, directly behind it"
+    "and the measured 77 is fourth"
 }
 
-test_the_measured_models_hold_the_first_two_places_in_their_class() {
-  # The ranking the two v3 measurements produce, pinned in order: qwen3.8
-  # first, coder second, in the class this machine actually runs. The one
-  # point separating them is the coding component -- 100 against 93 is
-  # format-diff, the task the reasoning model completes and the instruct
-  # model fails.
-  local first second
-  first="$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3; exit }')"
-  second="$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3 }' | sed -n 2p)"
-  assert_eq "$first" "qwen3.8-27b" "the 100 leads the class" || return 1
-  assert_eq "$second" "qwen3-coder-30b" "the 93 sits directly behind it"
+test_laguna_ranks_first_in_medium_on_the_measuring_machine() {
+  # The one placement this change makes, stated on its own: the measured
+  # laguna-xs-2.1 heads the medium class here at 94. Held apart from the
+  # top-four pin above because this line is the headline claim of the
+  # measurement, and a reshuffle below it must not obscure whether the head
+  # itself moved.
+  assert_eq "$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3; exit }')" \
+    "laguna-xs-2.1" "the measured 94 heads the medium class"
 }
 
 test_it_is_the_measurements_that_put_them_in_front() {
-  # The counterfactual, because "they rank first and second" on its own does
-  # not say why. With all three rows back to `unknown` the head of the class
-  # is laguna-xs-2.1 -- whose coding component is still a placeholder. So the
-  # lead is measured models ahead of unmeasured ones, which is a statement
-  # about evidence and not about which model writes better code.
+  # The counterfactual, because "the measured rows hold the top four" on its
+  # own does not say why. With all four rows back to `unknown` the head of
+  # the class is still laguna-xs-2.1 -- at a placeholder-fed 81 rather than
+  # its measured 94. That coincidence is worth keeping: the model that used
+  # to lead on metadata alone now leads on evidence, and this counterfactual
+  # is what distinguishes the two claims.
   local top_unrated
   top_unrated="$(
-    # Shadow the table with a copy of itself, all three rows reverted. Every
+    # Shadow the table with a copy of itself, all four rows reverted. Every
     # other row has to survive: score_rank walks all of catalog_ids and skips
     # any model whose rating row it cannot read.
     eval "$(declare -f catalog_ratings | sed '1s/^catalog_ratings/catalog_ratings_shipped/')"
@@ -631,7 +664,8 @@ test_it_is_the_measurements_that_put_them_in_front() {
       catalog_ratings_shipped \
         | sed -e 's/^qwen3-coder-30b;.*/qwen3-coder-30b;unknown;-;none;-;none;-/' \
               -e 's/^qwen3.8-27b;.*/qwen3.8-27b;unknown;-;none;-;none;-/' \
-              -e 's/^devstral-small-2;.*/devstral-small-2;unknown;-;none;-;none;-/'
+              -e 's/^devstral-small-2;.*/devstral-small-2;unknown;-;none;-;none;-/' \
+              -e 's/^laguna-xs-2.1;.*/laguna-xs-2.1;unknown;-;none;-;none;-/'
     }
     score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3; exit }'
   )"
@@ -647,7 +681,9 @@ test_the_measured_rows_report_medium_confidence_on_their_own() {
   assert_eq "$(score_confidence qwen3.8-27b missing)" "medium" \
     "and the same for the second measured row" || return 1
   assert_eq "$(score_confidence devstral-small-2 missing)" "medium" \
-    "and for the third"
+    "and for the third" || return 1
+  assert_eq "$(score_confidence laguna-xs-2.1 missing)" "medium" \
+    "and for the fourth"
 }
 
 test_the_measured_rows_can_reach_high_confidence_with_live_data() {
@@ -656,7 +692,9 @@ test_the_measured_rows_can_reach_high_confidence_with_live_data() {
   assert_eq "$(score_confidence qwen3-coder-30b fresh)" "high" \
     "verified facts + a sourced rating + current live data" || return 1
   assert_eq "$(score_confidence qwen3.8-27b fresh)" "high" \
-    "both measured rows clear the same bar"
+    "the measured rows clear the same bar" || return 1
+  assert_eq "$(score_confidence laguna-xs-2.1 fresh)" "high" \
+    "the newest measured row included"
 }
 
 run_suite
