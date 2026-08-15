@@ -526,73 +526,94 @@ test_the_budget_changes_the_ranking() {
     "the top medium model on a 6 GB card should not also be the top on a 60 GB one"
 }
 
-# --- the first measured rating ----------------------------------------------
+# --- the measured ratings ---------------------------------------------------
 #
-# qwen3-coder-30b is the one row in the ratings table backed by a measurement
-# rather than a placeholder. These pin what that measurement does to the
-# ranking, so a later edit to the row, to the weights, or to any component
-# cannot move it without saying so.
+# qwen3-coder-30b and qwen3.8-27b are the two rows in the ratings table backed
+# by measurements rather than placeholders -- both from one suite-v3 sitting,
+# so for the first time the table carries a pair of values that are comparable
+# with each other. These pin what those measurements do to the ranking, so a
+# later edit to a row, to the weights, or to any component cannot move it
+# without saying so.
 
 # The machine the measurement was taken on: two cards, 29671 MB between them.
 # Written out rather than detected, because a test that asks the local machine
 # what it has is a test that means something different on every machine.
 SCORE_MEASURED_BUDGET=29671
 
-test_the_measured_rating_reaches_the_score_instead_of_the_placeholder() {
+test_the_measured_ratings_reach_the_scores_instead_of_the_placeholders() {
   assert_eq "$(catalog_rating_get qwen3-coder-30b rating_value)" "93" \
-    "precondition: the measured row is the one from the 2026-08-13 run" || return 1
+    "precondition: the coder row is the one from the 2026-08-14 v3 run" || return 1
   score_model qwen3-coder-30b "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
   assert_eq "$SCORE_C_CODING" "93" "the recorded value, not the neutral 50" || return 1
-  assert_eq "$SCORE_CODING_KNOWN" "1" "and flagged as evidence rather than absence"
+  assert_eq "$SCORE_CODING_KNOWN" "1" "and flagged as evidence rather than absence" || return 1
+  score_model qwen3.8-27b "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
+  assert_eq "$SCORE_C_CODING" "100" "same for the second measured row" || return 1
+  assert_eq "$SCORE_CODING_KNOWN" "1" "also evidence, not absence"
 }
 
-test_the_measured_model_totals_eighty_four_on_the_rig_it_was_measured_on() {
-  # The whole point of recording a rating is that it changes a number. This is
-  # that number: 73 with the placeholder, 84 with the measurement.
+test_the_measured_models_total_eighty_four_and_eighty_five_where_measured() {
+  # The whole point of recording a rating is that it changes a number. Coder:
+  # 73 with the placeholder, 84 with the measurement -- unchanged by the v3
+  # re-run because the value itself (93) did not move. Qwen3.8: 72 with the
+  # placeholder, 85 with the measurement.
   score_model qwen3-coder-30b "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
-  assert_eq "$SCORE_TOTAL" "84" "total on the measuring machine"
+  assert_eq "$SCORE_TOTAL" "84" "coder's total on the measuring machine" || return 1
+  score_model qwen3.8-27b "$SCORE_MEASURED_BUDGET" || { _fail "scoring failed"; return 1; }
+  assert_eq "$SCORE_TOTAL" "85" "qwen3.8's total on the measuring machine"
 }
 
-test_the_measured_model_leads_its_size_class() {
-  local top
-  top="$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3; exit }')"
-  assert_eq "$top" "qwen3-coder-30b" "first in the class this machine can run"
+test_the_measured_models_hold_the_first_two_places_in_their_class() {
+  # The ranking the two v3 measurements produce, pinned in order: qwen3.8
+  # first, coder second, in the class this machine actually runs. The one
+  # point separating them is the coding component -- 100 against 93 is
+  # format-diff, the task the reasoning model completes and the instruct
+  # model fails.
+  local first second
+  first="$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3; exit }')"
+  second="$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3 }' | sed -n 2p)"
+  assert_eq "$first" "qwen3.8-27b" "the 100 leads the class" || return 1
+  assert_eq "$second" "qwen3-coder-30b" "the 93 sits directly behind it"
 }
 
-test_it_is_the_measurement_that_puts_it_in_front() {
-  # The counterfactual, because "it ranks first" on its own does not say why.
-  # With the same row back to `unknown` it drops behind laguna-xs-2.1 -- whose
-  # coding component is still a placeholder. So the lead is one measured model
-  # ahead of an unmeasured one, which is a statement about evidence and not
-  # about which model writes better code.
+test_it_is_the_measurements_that_put_them_in_front() {
+  # The counterfactual, because "they rank first and second" on its own does
+  # not say why. With both rows back to `unknown` the head of the class is
+  # laguna-xs-2.1 -- whose coding component is still a placeholder. So the
+  # lead is two measured models ahead of unmeasured ones, which is a
+  # statement about evidence and not about which model writes better code.
   local top_unrated
   top_unrated="$(
-    # Shadow the table with a copy of itself, one row reverted. Every other row
-    # has to survive: score_rank walks all of catalog_ids and skips any model
-    # whose rating row it cannot read.
+    # Shadow the table with a copy of itself, both rows reverted. Every other
+    # row has to survive: score_rank walks all of catalog_ids and skips any
+    # model whose rating row it cannot read.
     eval "$(declare -f catalog_ratings | sed '1s/^catalog_ratings/catalog_ratings_shipped/')"
     catalog_ratings() {
       catalog_ratings_shipped \
-        | sed 's/^qwen3-coder-30b;.*/qwen3-coder-30b;unknown;-;none;-;none;-/'
+        | sed -e 's/^qwen3-coder-30b;.*/qwen3-coder-30b;unknown;-;none;-;none;-/' \
+              -e 's/^qwen3.8-27b;.*/qwen3.8-27b;unknown;-;none;-;none;-/'
     }
     score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3; exit }'
   )"
   assert_eq "$top_unrated" "laguna-xs-2.1" \
-    "without the measurement the unmeasured model is back on top"
+    "without the measurements the unmeasured model is back on top"
 }
 
-test_the_measured_row_reports_medium_confidence_on_its_own() {
+test_the_measured_rows_report_medium_confidence_on_their_own() {
   # Two of the three kinds of evidence: verified facts and a sourced rating at
   # medium or better. Live download data is the third and is not in play here.
   assert_eq "$(score_confidence qwen3-coder-30b missing)" "medium" \
-    "a measurement without live data is medium, not high"
+    "a measurement without live data is medium, not high" || return 1
+  assert_eq "$(score_confidence qwen3.8-27b missing)" "medium" \
+    "and the same for the second measured row"
 }
 
-test_the_measured_row_can_reach_high_confidence_with_live_data() {
-  # The ceiling lifts for this row and only this row, which is what a rating
-  # is for. Nothing else in the table can get here.
+test_the_measured_rows_can_reach_high_confidence_with_live_data() {
+  # The ceiling lifts for these rows and only these rows, which is what a
+  # rating is for. Nothing else in the table can get here.
   assert_eq "$(score_confidence qwen3-coder-30b fresh)" "high" \
-    "verified facts + a sourced rating + current live data"
+    "verified facts + a sourced rating + current live data" || return 1
+  assert_eq "$(score_confidence qwen3.8-27b fresh)" "high" \
+    "both measured rows clear the same bar"
 }
 
 run_suite
