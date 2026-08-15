@@ -40,6 +40,31 @@ test_budgets_from_free_not_installed_vram() {
   assert_eq "$VRAM_MB" 14104 "tightest card free VRAM"
 }
 
+test_the_single_gpu_budget_takes_the_whole_kv_haircut() {
+  # A pinned server is confined to one card, so the ENTIRE KV pool for the
+  # configured context is allocated there. The budget used to subtract only
+  # KV_RESERVE_MB / GPU_COUNT -- split arithmetic -- which passed any dense
+  # model sized between the halved and the full haircut through the
+  # single-GPU gate and let it OOM at load (#66).
+  use_gpu dual_a4000
+  load_detect
+  assert_eq "$FIT_SINGLE_MB" $(( VRAM_MB - KV_RESERVE_MB - 900 )) \
+    "the full reserve comes off the one card" || return 1
+  # Spelled out against the fixture (14104 - 7065 - 900) so the formula
+  # assertion above cannot drift in lockstep with the implementation.
+  assert_eq "$FIT_SINGLE_MB" 6139 "the dual_a4000 figure"
+}
+
+test_a_single_gpu_box_is_unchanged_by_the_haircut_fix() {
+  # With one GPU the old division was a no-op, so #66 was multi-GPU only.
+  # 14104 free alone puts CTX in the 65536 auto tier: reserve 3532, budget
+  # 14104 - 3532 - 900.
+  synth_gpu 14104 1
+  load_detect
+  assert_eq "$KV_RESERVE_MB" 3532 "the 64k-tier reserve" || return 1
+  assert_eq "$FIT_SINGLE_MB" 9672 "full reserve off the only card, as always"
+}
+
 test_prefers_gpu_with_most_headroom() {
   # GPU0 drives the desktop and has less free memory, so a single-card model
   # must not be pinned to it. This is the bug the BEST_GPU logic exists for.

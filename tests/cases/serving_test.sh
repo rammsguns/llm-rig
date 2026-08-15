@@ -678,7 +678,8 @@ test_config_only_fails_closed_on_an_unreadable_vram_figure() {
 
 # One model per fit class, in one generated file. KV_RESERVE_MB is the
 # documented expert override in lib/detect.sh: pushing it up squeezes the
-# dual_a4000 single-card budget to ~104MB, so a sparse file (the generator
+# dual_a4000 single-card budget to exactly 104MB (14104 - 13100 - 900, the
+# WHOLE reserve off the one card -- #66), so a sparse file (the generator
 # sizes by du, which reads blocks, ~1MB) pins while 120MB of REAL blocks
 # splits. Sparse staging cannot make a model big here for the same reason.
 stage_one_of_each_fit() {
@@ -686,7 +687,7 @@ stage_one_of_each_fit() {
   mkdir -p "$MODELS_DIR/Wide-GGUF"
   dd if=/dev/zero of="$MODELS_DIR/Wide-GGUF/Wide-Q4_K_M.gguf" \
     bs=1M count=120 status=none
-  export KV_RESERVE_MB=26200
+  export KV_RESERVE_MB=13100
 }
 
 # The lines of one entry, from its key to the blank line that closes it. The
@@ -757,6 +758,57 @@ test_a_split_model_keeps_tensor_split_and_gains_no_env() {
   assert_contains "$tiny" 'env: ["CUDA_VISIBLE_DEVICES=1"]' \
     "while the pinned entry in the same file has one" || return 1
   assert_not_contains "$tiny" "--tensor-split" "and does not split"
+}
+
+# --- the single-GPU budget takes the whole KV haircut (#66) ------------------
+# A pinned server allocates its entire KV pool on the selected card, so the
+# single-GPU budget subtracts the FULL reserve. The old KV_RESERVE_MB /
+# GPU_COUNT haircut passed dense models in the gap through the gate and let
+# them OOM at load. stage_one_of_each_fit sets the budget to exactly 104MB
+# (14104 - 13100 - 900), which makes the boundary testable with small files.
+
+test_a_model_at_exactly_the_budget_still_pins() {
+  mkdir -p "$MODELS_DIR/Edge-GGUF"
+  dd if=/dev/zero of="$MODELS_DIR/Edge-GGUF/Edge-Q4_K_M.gguf" \
+    bs=1M count=104 status=none
+  export KV_RESERVE_MB=13100
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "generation must succeed: $RUN_OUTPUT" || return 1
+  local entry; entry="$(entry_block edge)"
+  assert_contains "$entry" 'env: ["CUDA_VISIBLE_DEVICES=1"]' \
+    "104MB at a 104MB budget pins" || return 1
+  assert_not_contains "$entry" "--tensor-split" "and does not split"
+}
+
+test_a_model_one_mb_over_the_budget_splits() {
+  # The other side of the same edge: under the halved haircut this file
+  # would have pinned (the old budget here was 6654MB), and on real
+  # hardware a model in that gap OOMs once the full KV pool lands beside
+  # its weights. Reverting the #66 fix flips this test.
+  mkdir -p "$MODELS_DIR/Edge-GGUF"
+  dd if=/dev/zero of="$MODELS_DIR/Edge-GGUF/Edge-Q4_K_M.gguf" \
+    bs=1M count=105 status=none
+  export KV_RESERVE_MB=13100
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "generation must succeed: $RUN_OUTPUT" || return 1
+  local entry; entry="$(entry_block edge)"
+  assert_contains "$entry" "--tensor-split 14104,14955" \
+    "105MB against a 104MB budget splits" || return 1
+  assert_not_contains "$entry" "env:" "and gains no pin"
+}
+
+test_a_reserve_bigger_than_the_card_fails_closed_to_the_split_path() {
+  # KV reserve above the card's free memory drives the single-GPU budget
+  # negative. That must mean "nothing pins" -- every model, however small,
+  # takes the split path -- not an error and not a bogus pin.
+  stage_gguf Tiny-GGUF Tiny-Q8_0.gguf >/dev/null
+  export KV_RESERVE_MB=14300
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "generation must succeed: $RUN_OUTPUT" || return 1
+  local entry; entry="$(entry_block tiny)"
+  assert_contains "$entry" "--tensor-split 14104,14955" \
+    "a sparse-tiny model splits when no card can hold the KV pool" || return 1
+  assert_not_contains "$entry" "env:" "and gains no pin"
 }
 
 test_the_generated_config_still_passes_the_readback_verifier() {

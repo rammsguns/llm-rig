@@ -170,8 +170,13 @@ detect_hw() {
   derive_kv_reserve
   CTX_OVERHEAD_MB=$(( GPU_COUNT * 900 ))
   FIT_TOTAL_MB=$(( VRAM_TOTAL_MB - KV_RESERVE_MB - CTX_OVERHEAD_MB ))
-  # Largest model that fits WITHOUT splitting (single card).
-  FIT_SINGLE_MB=$(( VRAM_MB - (KV_RESERVE_MB / GPU_COUNT) - 900 ))
+  # Largest model that fits WITHOUT splitting (single card). The whole reserve
+  # comes off this one card: a pinned server is confined to it, so the entire
+  # KV pool for the configured context is allocated there -- dividing the
+  # haircut by GPU_COUNT models a split, and let dense models in the gap
+  # between the two figures pass this gate and OOM at load (#66). Non-positive
+  # is fine: it means nothing pins and every model takes the split path.
+  FIT_SINGLE_MB=$(( VRAM_MB - KV_RESERVE_MB - 900 ))
 
   # System RAM available for MoE expert offload. With lots of RAM, a big MoE
   # is viable even when it can't fit in VRAM, because only ~3B params are
