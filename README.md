@@ -116,6 +116,17 @@ named artifact. That is the only kind of number this table accepts. Note the
 tie: on measured coding quality Laguna XS 2.1 and Qwen3.8 are
 indistinguishable — both hit the suite's ceiling.
 
+One served model has been run without becoming measured: `qwen3-1.7b` stays
+`unknown` because suite v3 rejected its run as incomplete — 10 of 12 tasks
+answered, the other two truncated at the fixed 1024-token budget before this
+small reasoner finished thinking
+([#63](https://github.com/rammsguns/llm-rig/issues/63) tracks the gap). The
+run's artifact records a diagnostic value of 80 over the answered subset; a
+number computed from ten answers is not comparable to one computed from
+twelve, so it is not a rating and this table does not carry it. That is the
+[incompleteness gate](#a-truncated-response-is-not-a-wrong-answer) doing its
+job, not a hole in the leaderboard's coverage.
+
 Filling in the rest is what [`./61-rate-models.sh`](61-rate-models.sh) is for —
 it measures the models **you** serve and prints rows you can paste in. Rows for
 models you do not serve stay `unknown`, because the shipped table cannot

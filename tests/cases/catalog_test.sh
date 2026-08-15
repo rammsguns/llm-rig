@@ -1045,6 +1045,24 @@ test_exactly_four_rating_rows_are_measured() {
     "and thirteen rows still honestly say unknown"
 }
 
+test_the_readme_qwen17_boundary_note_cannot_go_silently_stale() {
+  # #63: qwen3-1.7b is served but non-recordable under suite v3, and the
+  # README says so by name. Two ways that statement goes quietly false, both
+  # closed here: the row gets measured while the paragraph still claims it
+  # cannot be, or the paragraph is dropped and the boundary loses its only
+  # documentation. Recording a real qwen3-1.7b rating therefore has to
+  # rewrite the README paragraph AND this test, in the same change.
+  local para
+  para="$(grep -A9 'run without becoming measured' "$REPO_ROOT/README.md")"
+  assert_contains "$para" "qwen3-1.7b" "the boundary names the model" || return 1
+  assert_contains "$para" "10 of 12" "and records how much of the run answered" || return 1
+  assert_contains "$para" "not a rating" "and disclaims the diagnostic value" || return 1
+  assert_eq "$(catalog_rating_get qwen3-1.7b rating_value)" "unknown" \
+    "the row the paragraph describes is still unknown" || return 1
+  assert_eq "$(catalog_rating_get qwen3-1.7b rating_method)" "none" \
+    "with no method claiming otherwise"
+}
+
 test_every_local_benchmark_row_is_on_suite_v3() {
   # The single-suite rule, checked against the shipped table rather than a
   # fixture: the validator enforces "one suite version" structurally, and this
