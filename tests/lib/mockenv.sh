@@ -42,6 +42,10 @@ mock_init() {
   # need a binary stage one there.
   mkdir -p "$SANDBOX/bin"
   export SWAP_BIN="$SANDBOX/bin/llama-swap"
+  # llama-server is read the same way (lib/llamasrc.sh, LLAMA_SERVER_BIN), and
+  # this host has a real one installed -- same reasoning, same sandbox. Tests
+  # that need a binary stage one there.
+  export LLAMA_SERVER_BIN="$SANDBOX/bin/llama-server"
 
   # Defaults; individual tests override.
   export MOCK_GPU_FIXTURE="${MOCK_GPU_FIXTURE:-dual_a4000}"

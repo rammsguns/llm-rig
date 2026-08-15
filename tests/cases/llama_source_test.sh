@@ -269,6 +269,135 @@ test_a_pinned_build_does_not_nag_about_pinning() {
   assert_not_contains "$RUN_OUTPUT" "may build something else" "no unpinned warning"
 }
 
+# --- drift against the committed pin (#49) ------------------------------------
+#
+# The swap pin taught the lesson (#40): a pin nothing compares against is not a
+# pin. These exercise the read-only comparison; the verifier's use of it is
+# covered in verify_runtime_test.sh.
+
+FULL_REV="1234567aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+SHORT_REV="1234567"
+
+# A llama-server that reports the revision it is told to, at the sandboxed
+# LLAMA_SERVER_BIN mockenv points into (never the real install target).
+fake_llama_server() {
+  { echo '#!/usr/bin/env bash'
+    echo "echo 'version: 1 ($1)'"
+    echo "echo 'built with GNU 13.3.0 for Linux x86_64'"
+  } >"$LLAMA_SERVER_BIN"
+  chmod +x "$LLAMA_SERVER_BIN"
+}
+
+test_the_installed_revision_is_the_hash_not_the_build_number() {
+  # The build number counts the checkout's local history, so two builds of the
+  # same revision can disagree on it. Only the hash identifies anything.
+  fake_llama_server "$SHORT_REV"
+  assert_eq "$(llama_installed_rev)" "$SHORT_REV" "the parenthesised hash" || return 1
+  run llama_installed_rev
+  assert_ok "and it reads cleanly"
+}
+
+test_an_absent_or_hashless_binary_yields_no_revision() {
+  run llama_installed_rev
+  assert_fails "no binary, no revision" || return 1
+  printf '#!/usr/bin/env bash\necho "not a version line"\n' >"$LLAMA_SERVER_BIN"
+  chmod +x "$LLAMA_SERVER_BIN"
+  run llama_installed_rev
+  assert_fails "output without a hash is not a revision"
+}
+
+test_the_revision_comes_from_the_version_line_not_elsewhere() {
+  # --version also names the compiler, and toolchain banners put hex-looking
+  # ids in parentheses too. Only the "version:" line states this binary's
+  # identity; a hash anywhere else must be ignored, not harvested.
+  { echo '#!/usr/bin/env bash'
+    echo "echo 'built with gcc (deadbee) 13.3.0 for Linux'"
+    echo "echo 'version: 1 ($SHORT_REV)'"
+  } >"$LLAMA_SERVER_BIN"
+  chmod +x "$LLAMA_SERVER_BIN"
+  assert_eq "$(llama_installed_rev)" "$SHORT_REV" "the version line wins over an earlier decoy" || return 1
+
+  { echo '#!/usr/bin/env bash'
+    echo "echo 'built with gcc (deadbee) 13.3.0 for Linux'"
+  } >"$LLAMA_SERVER_BIN"
+  run llama_installed_rev
+  assert_fails "a hash off the version line is not an identity"
+}
+
+test_a_short_hash_matches_its_own_full_hash_and_nothing_else() {
+  run llama_rev_matches "$SHORT_REV" "$FULL_REV"
+  assert_ok "short is a prefix of full" || return 1
+  run llama_rev_matches "$FULL_REV" "$FULL_REV"
+  assert_ok "equal matches" || return 1
+  run llama_rev_matches "fedcba9" "$FULL_REV"
+  assert_fails "a different revision does not" || return 1
+  run llama_rev_matches "" "$FULL_REV"
+  assert_fails "emptiness is not a wildcard"
+}
+
+test_pin_drift_distinguishes_match_drift_unknown_and_unpinned() {
+  unset LLAMA_REF LLAMA_REF_SOURCE
+  local out
+  # unpinned: no pin file at all -- its own verdict, not folded into drift,
+  # because "commit a pin" and "rebuild at the pin" are different responses.
+  fake_llama_server "$SHORT_REV"
+  out="$(llama_pin_drift)"; assert_eq "$?" "3" "no pin is unpinned" || return 1
+  assert_contains "$out" "unpinned" "and says so" || return 1
+
+  printf '%s\n' "$FULL_REV" >"$RIG_DIR/llamacpp.ref"
+  out="$(llama_pin_drift)"; assert_eq "$?" "0" "short hash matches the full pin" || return 1
+  assert_eq "$out" "$(printf 'match\t%s\t%s' "$SHORT_REV" "$FULL_REV")" "verdict, installed, pinned" || return 1
+
+  fake_llama_server "fedcba9"
+  out="$(llama_pin_drift)"; assert_eq "$?" "1" "a different revision is drift" || return 1
+
+  rm -f "$LLAMA_SERVER_BIN"
+  out="$(llama_pin_drift)"; assert_eq "$?" "2" "an unreadable binary is unknown" || return 1
+  assert_contains "$out" "unknown" "and says so"
+}
+
+test_pin_drift_never_consults_the_build_record() {
+  # .llamacpp-rev says what llm-rig BUILT, not what is installed. A binary
+  # built elsewhere and copied over the install target must still be drift.
+  unset LLAMA_REF LLAMA_REF_SOURCE
+  printf '%s\n' "$FULL_REV" >"$RIG_DIR/llamacpp.ref"
+  printf '%s\n' "$FULL_REV" >"$RIG_DIR/.llamacpp-rev"
+  fake_llama_server "fedcba9"
+  run llama_pin_drift
+  assert_fails "a matching record must not rescue a drifted binary"
+}
+
+test_an_exported_llama_ref_cannot_rescue_a_drifted_binary() {
+  # LLAMA_REF belongs to the build. If exporting it could substitute for the
+  # committed pin, drift would be one shell variable away from invisible.
+  unset LLAMA_REF LLAMA_REF_SOURCE
+  printf '%s\n' "$FULL_REV" >"$RIG_DIR/llamacpp.ref"
+  fake_llama_server "fedcba9"
+  export LLAMA_REF="fedcba9fedcba9fedcba9fedcba9fedcba9fedcb"
+  local out; out="$(llama_pin_drift)"
+  assert_eq "$?" "1" "still drift against the committed pin" || return 1
+  assert_contains "$out" "$FULL_REV" "and the pin compared is the committed one"
+}
+
+test_an_exported_llama_ref_cannot_fake_drift_on_a_matching_binary() {
+  # The other direction of the same rule: a stray override must not fail a
+  # binary that matches what the repository commits.
+  unset LLAMA_REF LLAMA_REF_SOURCE
+  printf '%s\n' "$FULL_REV" >"$RIG_DIR/llamacpp.ref"
+  fake_llama_server "$SHORT_REV"
+  export LLAMA_REF="fedcba9fedcba9fedcba9fedcba9fedcba9fedcb"
+  run llama_pin_drift
+  assert_ok "the verdict comes from llamacpp.ref, not the environment"
+}
+
+test_the_recorded_revision_reads_back() {
+  printf '%s\n' "$FULL_REV" >"$RIG_DIR/.llamacpp-rev"
+  assert_eq "$(llama_recorded_rev)" "$FULL_REV" "the record" || return 1
+  rm -f "$RIG_DIR/.llamacpp-rev"
+  run llama_recorded_rev
+  assert_fails "no record is an answer, not an empty string"
+}
+
 # --- build directory safety -------------------------------------------------
 
 test_build_dir_defaults_outside_the_checkout() {

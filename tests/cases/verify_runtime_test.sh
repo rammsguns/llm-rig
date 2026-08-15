@@ -389,5 +389,168 @@ test_a_record_disagreeing_with_the_binary_is_flagged() {
   assert_contains "$RUN_OUTPUT" "replaced by something other than llm-rig" "flagged"
 }
 
+# --- the llama.cpp pin, three sources kept separate (#49) ---------------------
+#
+# The committed llamacpp.ref is the second runtime pin, and it gets the same
+# treatment the swap pin got after #40: read-only comparison, its own
+# assertion name, and evidence sources that are never conflated -- what the
+# binary reports, what the pin says, and what llm-rig recorded building.
+
+PIN_FULL="1234567aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+PIN_SHORT="1234567"
+
+write_llamacpp_pin() {
+  printf '# the revision this rig was verified against\n%s\n' "$PIN_FULL" \
+    >"$RIG_DIR/llamacpp.ref"
+}
+
+# A llama-server that reports the revision it is told to, so llama.cpp drift
+# can be staged without an 18-minute build.
+install_fake_llama_server() {
+  { echo '#!/usr/bin/env bash'
+    echo "echo 'version: 1 ($1)'"
+    echo "echo 'built with GNU 13.3.0 for Linux x86_64'"
+  } >"$LLAMA_SERVER_BIN"
+  chmod +x "$LLAMA_SERVER_BIN"
+}
+
+test_the_llamacpp_sandbox_binary_is_never_the_real_one() {
+  # Same guard as the swap binary above: if this ever points at the install
+  # target, the tests below grade the developer's machine.
+  assert_contains "$LLAMA_SERVER_BIN" "$SANDBOX" "the binary under test is in the sandbox" || return 1
+  assert_ne "$LLAMA_SERVER_BIN" "/usr/local/bin/llama-server" "and never the real one"
+}
+
+test_a_matching_llamacpp_pin_is_established_from_binary_and_pin() {
+  write_config
+  write_llamacpp_pin
+  install_fake_llama_server "$PIN_SHORT"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require llamacpp-pin
+  assert_ok "a binary at the pinned revision establishes the assertion" || return 1
+  assert_contains "$RUN_OUTPUT" "matching the pin" "the evidence names the match"
+}
+
+test_llamacpp_drift_fails_the_gate_and_changes_nothing() {
+  write_config
+  write_llamacpp_pin
+  install_fake_llama_server "fedcba9"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  local bin_before pin_before
+  bin_before="$(sha256sum "$LLAMA_SERVER_BIN" | cut -d' ' -f1)"
+  pin_before="$(sha256sum "$RIG_DIR/llamacpp.ref" | cut -d' ' -f1)"
+  run_verify --require llamacpp-pin
+  assert_fails "drift must fail a gate that asked for the pin" || return 1
+  assert_contains "$RUN_OUTPUT" "fedcba9" "what is installed" || return 1
+  assert_contains "$RUN_OUTPUT" "$PIN_FULL" "what was pinned" || return 1
+  assert_contains "$RUN_OUTPUT" "20-build-llamacpp.sh" "names the rebuilding command" || return 1
+  assert_contains "$RUN_OUTPUT" "Nothing has been changed" "says so" || return 1
+  assert_eq "$(sha256sum "$LLAMA_SERVER_BIN" | cut -d' ' -f1)" "$bin_before" "binary untouched" || return 1
+  assert_eq "$(sha256sum "$RIG_DIR/llamacpp.ref" | cut -d' ' -f1)" "$pin_before" "pin untouched" || return 1
+  assert_not_called 'curl .*github' "nothing was fetched"
+}
+
+test_a_missing_llamacpp_pin_fails_the_gate() {
+  write_config
+  install_fake_llama_server "$PIN_SHORT"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require llamacpp-pin
+  assert_fails "no pin means nothing to establish against" || return 1
+  assert_contains "$RUN_OUTPUT" "llamacpp.ref" "names the missing file"
+}
+
+test_an_absent_llama_server_fails_the_llamacpp_gate() {
+  write_config
+  write_llamacpp_pin
+  rm -f "$LLAMA_SERVER_BIN"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require llamacpp-pin
+  assert_fails "an absent runtime cannot satisfy a pin assertion" || return 1
+  assert_contains "$RUN_OUTPUT" "could NOT be established" "diagnostic"
+}
+
+test_a_binary_without_a_revision_fails_the_llamacpp_gate() {
+  # Unreadable is not the same as wrong, but it is equally not established.
+  write_config
+  write_llamacpp_pin
+  printf '#!/usr/bin/env bash\necho "not a version line"\n' >"$LLAMA_SERVER_BIN"
+  chmod +x "$LLAMA_SERVER_BIN"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require llamacpp-pin
+  assert_fails "output without a revision establishes nothing" || return 1
+  assert_contains "$RUN_OUTPUT" "no revision could be read" "diagnostic"
+}
+
+test_a_binary_llm_rig_did_not_build_is_disclosed() {
+  # No .llamacpp-rev. Identity and provenance are separate claims: the pin can
+  # still match, but where the binary came from is disclosed as unknown.
+  write_config
+  write_llamacpp_pin
+  install_fake_llama_server "$PIN_SHORT"
+  rm -f "$RIG_DIR/.llamacpp-rev"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require llamacpp-pin
+  assert_ok "provenance does not gate identity" || return 1
+  assert_contains "$RUN_OUTPUT" "llm-rig did not build this binary" "disclosed"
+}
+
+test_a_build_record_disagreeing_with_the_binary_is_flagged() {
+  # llm-rig built one revision; the installed binary reports another. The
+  # record then describes a binary that is no longer there, and saying so is
+  # the point of keeping it separate from the pin verdict.
+  write_config
+  write_llamacpp_pin
+  install_fake_llama_server "$PIN_SHORT"
+  printf '%s\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" >"$RIG_DIR/.llamacpp-rev"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify
+  assert_contains "$RUN_OUTPUT" "built or replaced by something other than llm-rig" "flagged"
+}
+
+# --- swap-pin / llamacpp-pin are separate assertions --------------------------
+
+test_the_two_pins_are_separate_summary_lines() {
+  write_config
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify
+  assert_matches "$RUN_OUTPUT" "swap-pin +not established" "the swap pin has its own line" || return 1
+  assert_matches "$RUN_OUTPUT" "llamacpp-pin +not established" "and so does the llama.cpp pin"
+}
+
+test_one_pin_matching_does_not_establish_the_other() {
+  write_config
+  write_llamacpp_pin
+  install_fake_llama_server "$PIN_SHORT"
+  # No llama-swap binary staged, so the swap side stays unestablished.
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require llamacpp-pin --require swap-pin
+  assert_fails "the swap pin is still unestablished" || return 1
+  assert_contains "$RUN_OUTPUT" "required 'llamacpp-pin' established" "but the llama.cpp side is" || return 1
+  assert_contains "$RUN_OUTPUT" "required 'swap-pin' could NOT be established" "and each is named"
+}
+
+test_require_swap_pin_gates_what_require_pin_always_gated() {
+  write_config
+  install_fake_swap v248
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require swap-pin
+  assert_fails "swap drift fails the new name too"
+}
+
+test_require_pin_remains_an_alias_for_the_swap_pin() {
+  # Backward compatibility: 'pin' predates the llama.cpp pin and must keep
+  # gating exactly what it always gated -- the swap side -- even when the
+  # llama.cpp side matches. Re-pointing the old name would flip existing gates
+  # without anyone changing a call.
+  write_config
+  write_llamacpp_pin
+  install_fake_llama_server "$PIN_SHORT"
+  install_fake_swap v248
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require pin
+  assert_fails "the alias still gates the swap pin" || return 1
+  assert_contains "$RUN_OUTPUT" "required 'pin' could NOT be established" "under its old name"
+}
+
 run_suite
 suite_exit
