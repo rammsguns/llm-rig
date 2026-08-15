@@ -100,7 +100,7 @@ every change, and past roughly twenty the answer is to retire rows instead.
 of the suite that produced the number. These are a different kind of claim,
 cannot be confirmed the same way, and so are kept somewhere else entirely.
 
-**Three ratings are measured; the other fourteen read `unknown`, and that is
+**Four ratings are measured; the other thirteen read `unknown`, and that is
 the honest answer.** Publishers report different benchmarks, public leaderboards
 disagree and are not reproducible here, and sorting one vendor's SWE-bench
 figure against another's HumanEval figure produces an ordering that means
@@ -108,11 +108,13 @@ nothing. The validator enforces the consequence in both directions: a value
 cannot be recorded without a method and a source behind it, and a method
 claiming evidence cannot be recorded without a value.
 
-The exceptions are `qwen3.8-27b` (100), `qwen3-coder-30b` (93) and
-`devstral-small-2` (80), measured here with
-[`./61-rate-models.sh`](61-rate-models.sh) under suite v3 on 2026-08-14 —
-three repeats each, no disagreement between them, each against a named
-artifact. That is the only kind of number this table accepts.
+The exceptions are `laguna-xs-2.1` (100), `qwen3.8-27b` (100),
+`qwen3-coder-30b` (93) and `devstral-small-2` (80), measured here with
+[`./61-rate-models.sh`](61-rate-models.sh) under suite v3 on 2026-08-14 and
+2026-08-15 — three repeats each, no disagreement between them, each against a
+named artifact. That is the only kind of number this table accepts. Note the
+tie: on measured coding quality Laguna XS 2.1 and Qwen3.8 are
+indistinguishable — both hit the suite's ceiling.
 
 Filling in the rest is what [`./61-rate-models.sh`](61-rate-models.sh) is for —
 it measures the models **you** serve and prints rows you can paste in. Rows for
@@ -180,24 +182,31 @@ that says it fits. Only the four this repo references have bits-per-weight
 entries, each measured from the published files rather than estimated; an
 unlisted one fails loudly instead of guessing.
 
-**Their ratings are `unknown` even though a vendor number exists.** Poolside
-ships `.eval_results/swe-bench_verified.yaml` in the model repo claiming 70.9%
-resolved for XS 2.1. No other row here has a SWE-bench figure, so recording it
-would not rank Laguna against the catalog — it would rank *published a number*
+**The vendor number never became a rating, even after one of them was
+measured.** Poolside ships `.eval_results/swe-bench_verified.yaml` in its
+model repos. No other row here has a SWE-bench figure, so recording one would
+not rank Laguna against the catalog — it would rank *published a number*
 against *did not*, and the result would look like a quality judgement while
-measuring disclosure practice.
+measuring disclosure practice. XS 2.1's rating row was instead filled the
+same way as every other measured row — by the local suite — and S 2.1 stays
+`unknown` until the same suite runs it.
 
-One consequence to be aware of: with fourteen of seventeen coding ratings
-still `unknown`, the quality term barely discriminates, so the ranking runs
-mostly on freshness, hardware fit, speed and features. On a 31 GB machine that
-used to make Laguna XS 2.1 the top `medium` pick ahead of `qwen3-coder-30b`,
-on metadata alone. Benchmarking `qwen3-coder-30b` reversed that — 84 against
-81 — and benchmarking `qwen3.8-27b` under suite v3 put it ahead of both at 85.
-But only the measured trio — 85, 84 and `devstral-small-2`'s 77 — compare like
-for like: same suite, same machine. Against Laguna the gap in either direction
-is still a measured score against a neutral placeholder — the Qwens sit above
-its 81 and Devstral below it — and running the benchmark is what fixes that,
-for Laguna and for the rest of the table.
+One consequence to be aware of: with thirteen of seventeen coding ratings
+still `unknown`, the quality term barely discriminates among the unmeasured,
+so their ordering runs mostly on freshness, hardware fit, speed and features.
+On a 31 GB machine that once made Laguna XS 2.1 the top `medium` pick ahead
+of `qwen3-coder-30b` on metadata alone — an ordering the first measurements
+reversed (84 against its placeholder-fed 81) precisely because it was
+metadata, not evidence. The suite-v3 measurement of Laguna itself closed that
+loop on 2026-08-15: a perfect 100, twelve tasks over three repeats without a
+flip. Its composite lands at 94, back on top of the class it once led by
+default — but this time the comparison is like for like. The measured four —
+94, `qwen3.8-27b`'s 85, `qwen3-coder-30b`'s 84 and `devstral-small-2`'s 77 —
+share one suite and one machine, and the top two are **tied at 100 on
+measured coding quality**: Laguna's nine-point composite lead over Qwen3.8 is
+speed and fit (2.7B active parameters against a 27.8B dense forward pass),
+not a coding-quality verdict. Running the benchmark is what fixes the
+remaining thirteen rows too.
 
 Running them here: XS 2.1 at `Q4_K_M` is 18.9 GiB and needs both cards
 (`-sm layer`); S 2.1 at `UD-Q4_K_XL` is 68.4 GiB and runs with the experts in
@@ -267,7 +276,7 @@ model unrunnable on the laptop.
 | Component | Weight | What it measures |
 | --- | --- | --- |
 | Hardware fit | 30% | Does it run here, and with how much headroom. |
-| Coding / agent | 25% | Coding quality, from the ratings table — measured for `qwen3.8-27b`, `qwen3-coder-30b` and `devstral-small-2`, **neutral 50 for every other row**, because no comparable evidence exists yet. |
+| Coding / agent | 25% | Coding quality, from the ratings table — measured for `laguna-xs-2.1`, `qwen3.8-27b`, `qwen3-coder-30b` and `devstral-small-2`, **neutral 50 for every other row**, because no comparable evidence exists yet. |
 | Tools / context | 15% | Tool use, agentic capability, usable context length. |
 | Speed | 15% | Driven by **active** parameters, plus an offload penalty. |
 | Freshness | 10% | Age of the **model** — never the GGUF repo's timestamp. |
@@ -305,7 +314,7 @@ every other row, is not.
 
 Confidence counts three independent kinds of evidence — verified facts, a
 sourced rating, and current live data. Three of three is `high`, two is
-`medium`, fewer is `low`. **Only the three measured rows can reach `high`**,
+`medium`, fewer is `low`. **Only the four measured rows can reach `high`**,
 because they are the only ones with ratings; every other row is capped at
 `medium` until you record one with
 [`./61-rate-models.sh`](61-rate-models.sh).
@@ -316,20 +325,20 @@ qualifier is load-bearing: a single unrepeated benchmark pass is recorded as
 ranking it feeds.
 
 Note what the neutral rating does to the ranking: with the quality term equal
-across fourteen of the seventeen rows, the total is driven mostly by fit and
+across thirteen of the seventeen rows, the total is driven mostly by fit and
 speed, so the smallest model that fits tends to win outright. That is why the
 default recommendation leads with a **Medium** model rather than the top of the
 list — scoring alone would point a 48 GB workstation at a 4B.
 
 It also means the measured rows have to be read for what they are.
-`qwen3.8-27b` leads the `medium` class on this rig at 85, with
-`qwen3-coder-30b` at 84 and `devstral-small-2` at 77 — and those gaps are real
-quality comparisons: all three models measured, on the same suite, on the same
-machine. Laguna XS 2.1's 81 is a different kind of claim in both directions —
-it sits between measured scores while its own coding component is still a
-neutral 50 — so neither the Qwens' lead over it nor its lead over Devstral
-says anything about coding. That part of the ordering only becomes a quality
-judgement when the rows being compared are measured too.
+`laguna-xs-2.1` leads the `medium` class on this rig at 94, with
+`qwen3.8-27b` at 85, `qwen3-coder-30b` at 84 and `devstral-small-2` at 77 —
+the whole head of the class measured, on the same suite, on the same machine.
+One reading trap remains, at the top: Laguna and Qwen3.8 are **tied at 100 on
+measured coding quality** — suite v3 cannot separate them — so the nine
+composite points between them are speed and fit, not a verdict on who writes
+better code. The rest of the ordering only becomes a quality judgement when
+the rows being compared are measured too.
 
 ```bash
 # The whole shortlist for a 20 GB usable budget

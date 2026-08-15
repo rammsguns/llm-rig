@@ -259,19 +259,20 @@ test_the_default_leads_with_a_medium_model() {
   assert_eq "$class" "medium" "the first recommendation is a medium model"
 }
 
-test_the_default_now_coincides_with_the_highest_scoring_model() {
-  # This used to document the gap between "best score" and "best
-  # recommendation": with everything unrated, the raw scores favoured a small
-  # model the recommendation would never lead with. The suite-v3 measurements
-  # closed that gap -- qwen3.8-27b is now both the top raw score and the
-  # first pick, so the recommendation and the evidence finally agree. Pinned
-  # as equality so that if a future measurement reopens the gap, someone has
-  # to look at this again.
+test_the_laguna_measurement_reopens_the_score_vs_recommendation_gap() {
+  # The previous version of this test pinned an equality: qwen3.8-27b was
+  # both the top raw score and the first pick, and the comment promised that
+  # a measurement reopening the gap would drag someone back here. This is
+  # that measurement. On this budget laguna-xs-2.1 classes as large and its
+  # measured rating lifts it to the top raw score (88 against qwen3.8's 85),
+  # but the recommendation still leads with the medium class by design --
+  # a class-first menu, not a global leaderboard. The gap is back, and this
+  # time both of its endpoints are measured models.
   local top_overall top_default
   top_overall="$(score_rank "$BUDGET" "$OFFLOAD" | sort -t$'\t' -k2,2nr | head -1 | cut -f3)"
   top_default="$(selector_default_picks | head -1)"
-  assert_eq "$top_overall" "qwen3.8-27b" "the measured 100 is the top raw score" || return 1
-  assert_eq "$top_default" "$top_overall" "and the recommendation leads with it"
+  assert_eq "$top_overall" "laguna-xs-2.1" "the measured 88 is the top raw score" || return 1
+  assert_eq "$top_default" "qwen3.8-27b" "and the recommendation still leads medium-first"
 }
 
 test_the_default_offers_one_model_per_class() {
@@ -314,21 +315,25 @@ test_the_default_positions_resolve_to_the_default_models() {
 # the product intent independently of the scores; whether that is worth
 # keeping is a decision for a change that touches lib/select.sh, not this one.
 
-test_the_default_medium_is_the_named_pick_and_now_also_the_scored_head() {
-  # This test used to be where the override earned its keep: the named pick
-  # led the recommendation WHILE the scored head was a different model. The
-  # v3 measurement of qwen3.8 collapsed that distinction -- both assertions
-  # now point at the same model, and this is the test the old comment said
-  # would start the dead-weight conversation.
+test_the_default_medium_is_the_named_pick_not_the_scored_head() {
+  # The override is back to earning its keep. On the measuring machine the
+  # medium class is now headed by the measured laguna-xs-2.1 at 94, yet the
+  # recommendation still leads with the named pick qwen3.8-27b -- a
+  # deliberate divergence, pinned from both sides. Whether the named pick
+  # should follow the measurement is a decision for a human with the two
+  # artifacts open, not something a rating row gets to decide by itself:
+  # on coding quality the two models are tied at 100, and laguna's lead in
+  # the totals is speed and fit, which the named default already weighs
+  # differently.
   local first head_medium
   first="$(
     selector_build 29671 0
     selector_default_picks | head -1
   )"
   head_medium="$(score_rank 29671 0 | awk -F'\t' '$1=="medium" { print $3; exit }')"
-  assert_eq "$first" "qwen3.8-27b" "the named pick leads the recommendation" || return 1
-  assert_eq "$head_medium" "qwen3.8-27b" \
-    "and the scored head agrees with it, now that the slot's model is measured"
+  assert_eq "$first" "qwen3.8-27b" "the named pick still leads the recommendation" || return 1
+  assert_eq "$head_medium" "laguna-xs-2.1" \
+    "while the scored head of the class is the measured laguna"
 }
 
 test_the_named_default_keeps_its_computed_score_and_confidence() {
@@ -443,7 +448,7 @@ test_every_unrated_model_reports_low_confidence_on_the_menu() {
       assert_ne "$conf" "low" "a measured rating must show on the menu for $id" || return 1
     fi
   done
-  assert_eq "$rated" 3 "exactly three offered models are measured today"
+  assert_eq "$rated" 4 "exactly four offered models are measured today"
 }
 
 test_devstral_ranks_second_in_medium_on_the_fixture_budget() {
@@ -459,15 +464,19 @@ test_devstral_ranks_second_in_medium_on_the_fixture_budget() {
     "and the measured 80 is directly behind it"
 }
 
-test_the_default_picks_survive_the_devstral_measurement() {
-  # The devstral rating moved its own row and nothing else: the three
-  # defaults are the same models that were recommended before it landed.
-  # Pinned by name so a rating that silently reshuffles the recommendation
-  # has to come through here and say so.
+test_the_laguna_measurement_moves_the_large_pick() {
+  # The devstral version of this test pinned the picks so that "a rating
+  # that silently reshuffles the recommendation has to come through here and
+  # say so". This rating reshuffles it, so here is the saying-so: on the
+  # fixture budget laguna-xs-2.1 classes as large, and its measured row
+  # lifts it past qwen3-coder-30b (88 against 78) into the large slot. The
+  # medium and small picks are untouched, and the medium pick is still the
+  # named default -- laguna displaced a fellow large, not the headline
+  # recommendation.
   local picks
   picks="$(selector_default_picks | paste -sd' ')"
-  assert_eq "$picks" "qwen3.8-27b qwen3-coder-30b qwen3-1.7b" \
-    "the recommendation is unchanged by the third measurement"
+  assert_eq "$picks" "qwen3.8-27b laguna-xs-2.1 qwen3-1.7b" \
+    "the large slot flips to laguna; medium and small hold"
 }
 
 test_the_menu_states_the_confidence_rather_than_only_the_score() {
