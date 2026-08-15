@@ -100,7 +100,7 @@ every change, and past roughly twenty the answer is to retire rows instead.
 of the suite that produced the number. These are a different kind of claim,
 cannot be confirmed the same way, and so are kept somewhere else entirely.
 
-**One rating is measured; the other sixteen read `unknown`, and that is the
+**Two ratings are measured; the other fifteen read `unknown`, and that is the
 honest answer.** Publishers report different benchmarks, public leaderboards
 disagree and are not reproducible here, and sorting one vendor's SWE-bench
 figure against another's HumanEval figure produces an ordering that means
@@ -186,14 +186,16 @@ would not rank Laguna against the catalog — it would rank *published a number*
 against *did not*, and the result would look like a quality judgement while
 measuring disclosure practice.
 
-One consequence to be aware of: with sixteen of seventeen coding ratings still
+One consequence to be aware of: with fifteen of seventeen coding ratings still
 `unknown`, the quality term barely discriminates, so the ranking runs mostly on
 freshness, hardware fit, speed and features. On a 31 GB machine that used to
 make Laguna XS 2.1 the top `medium` pick ahead of `qwen3-coder-30b`, on
 metadata alone. Benchmarking `qwen3-coder-30b` reversed that — 84 against 81 —
-but the two are still not being compared like for like: one has a measured
-coding score and the other a neutral placeholder. Running the benchmark is what
-fixes that, for Laguna and for the rest of the table.
+and benchmarking `qwen3.8-27b` under suite v3 put it ahead of both at 85. But
+only the 85-against-84 pair is a like-for-like comparison: both measured, same
+suite, same machine. Against Laguna the lead is still a measured score beating
+a neutral placeholder, and running the benchmark is what fixes that, for
+Laguna and for the rest of the table.
 
 Running them here: XS 2.1 at `Q4_K_M` is 18.9 GiB and needs both cards
 (`-sm layer`); S 2.1 at `UD-Q4_K_XL` is 68.4 GiB and runs with the experts in
@@ -312,16 +314,19 @@ qualifier is load-bearing: a single unrepeated benchmark pass is recorded as
 ranking it feeds.
 
 Note what the neutral rating does to the ranking: with the quality term equal
-across sixteen of the seventeen rows, the total is driven mostly by fit and
+across fifteen of the seventeen rows, the total is driven mostly by fit and
 speed, so the smallest model that fits tends to win outright. That is why the
 default recommendation leads with a **Medium** model rather than the top of the
 list — scoring alone would point a 48 GB workstation at a 4B.
 
-It also means the one measured row has to be read carefully. `qwen3-coder-30b`
-now leads the `medium` class on this rig at 84 against Laguna XS 2.1's 81, but
-that is a measured 93 beating a neutral 50, not one model beating another on
-coding. The comparison only becomes a quality judgement when both rows have
-been measured.
+It also means the measured rows have to be read for what they are.
+`qwen3.8-27b` now leads the `medium` class on this rig at 85, with
+`qwen3-coder-30b` directly behind it at 84 — and that one-point gap is the
+first real quality comparison in the table: both models measured, on the same
+suite, on the same machine, in one sitting. Their lead over Laguna XS 2.1's 81
+is a different kind of claim — measured scores beating a neutral 50, not one
+model beating another on coding. That part of the ordering only becomes a
+quality judgement when the rows being compared are measured too.
 
 ```bash
 # The whole shortlist for a 20 GB usable budget
@@ -491,10 +496,12 @@ The catalog enforces comparability structurally: the validator rejects any
 table in which two `local-benchmark` rows carry different suite versions.
 Upgrading the suite therefore means re-rating **every** measured model and
 landing the replacement rows together — a partial submission fails CI instead
-of waiting for a reviewer to notice a mixed leaderboard. The existing
-`qwen3-coder-30b` row is annotated `v2` and otherwise untouched: its value,
-provenance and confidence are the v2 measurement's own, and stay until a v3
-re-rating replaces the row.
+of waiting for a reviewer to notice a mixed leaderboard. That path has been
+walked once already: when the `rating_suite` column arrived, the existing
+`qwen3-coder-30b` row was annotated `v2` and otherwise left untouched, and it
+stayed that way until the v3 re-rating replaced the whole row — landed in the
+same change as `qwen3.8-27b`'s first measurement, because the validator would
+have refused them apart.
 
 A direct (non-reasoning) model re-rated under v3 is expected to reproduce its
 v2 result — identical task outcomes and identical normalized graded answers —
@@ -502,7 +509,9 @@ because at temperature 0 a bigger cap only matters to responses that
 previously hit it. Artifacts and raw generation are not guaranteed
 byte-identical; the claim is about what the grader sees. A divergence in task
 outcomes on the re-rating is a finding about the serving stack, to be
-investigated before either row is recorded.
+investigated before either row is recorded. The coder re-rating bore this
+out: the same eleven tasks passed, the same one (`format-diff`) failed, and
+the value came out at 93 both times.
 
 The suite history, so far: **v2** reclassified truncation — the arithmetic was
 untouched, but the same responses could yield a different `answered`, and

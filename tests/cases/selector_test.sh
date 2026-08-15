@@ -259,14 +259,19 @@ test_the_default_leads_with_a_medium_model() {
   assert_eq "$class" "medium" "the first recommendation is a medium model"
 }
 
-test_the_default_is_not_merely_the_highest_scoring_model() {
-  # Documents the gap between "best score" and "best recommendation", so that
-  # if ratings ever land and the two converge, someone has to look at this.
+test_the_default_now_coincides_with_the_highest_scoring_model() {
+  # This used to document the gap between "best score" and "best
+  # recommendation": with everything unrated, the raw scores favoured a small
+  # model the recommendation would never lead with. The suite-v3 measurements
+  # closed that gap -- qwen3.8-27b is now both the top raw score and the
+  # first pick, so the recommendation and the evidence finally agree. Pinned
+  # as equality so that if a future measurement reopens the gap, someone has
+  # to look at this again.
   local top_overall top_default
   top_overall="$(score_rank "$BUDGET" "$OFFLOAD" | sort -t$'\t' -k2,2nr | head -1 | cut -f3)"
   top_default="$(selector_default_picks | head -1)"
-  assert_ne "$top_default" "$top_overall" \
-    "the highest raw score is a small model; the recommendation is not"
+  assert_eq "$top_overall" "qwen3.8-27b" "the measured 100 is the top raw score" || return 1
+  assert_eq "$top_default" "$top_overall" "and the recommendation leads with it"
 }
 
 test_the_default_offers_one_model_per_class() {
@@ -300,16 +305,21 @@ test_the_default_positions_resolve_to_the_default_models() {
 }
 
 # --- the explicit default medium ----------------------------------------------
-# SELECT_DEFAULT_MEDIUM names the medium slot's pick. The scores cannot make
-# this call yet -- one measured row against sixteen unknowns means "best medium
-# by score" is just "the measured one" -- so it is a product decision, made
-# visible, with the numbers left exactly as computed.
+# SELECT_DEFAULT_MEDIUM names the medium slot's pick. When it was introduced
+# the scores could not make this call -- one measured row against sixteen
+# unknowns -- so it was a product decision, made visible, with the numbers
+# left exactly as computed. The suite-v3 measurements have since caught up:
+# the named pick and the scored head are now the same model, which makes the
+# override confirmation rather than correction. It stays because it states
+# the product intent independently of the scores; whether that is worth
+# keeping is a decision for a change that touches lib/select.sh, not this one.
 
-test_the_default_medium_is_the_named_pick_not_the_scored_head() {
-  # At this rig's real budget the scored head of the medium class is the one
-  # measured model. The named default takes the slot anyway; if the two ever
-  # converge, the override is dead weight and this test is where that
-  # conversation starts.
+test_the_default_medium_is_the_named_pick_and_now_also_the_scored_head() {
+  # This test used to be where the override earned its keep: the named pick
+  # led the recommendation WHILE the scored head was a different model. The
+  # v3 measurement of qwen3.8 collapsed that distinction -- both assertions
+  # now point at the same model, and this is the test the old comment said
+  # would start the dead-weight conversation.
   local first head_medium
   first="$(
     selector_build 29671 0
@@ -317,31 +327,38 @@ test_the_default_medium_is_the_named_pick_not_the_scored_head() {
   )"
   head_medium="$(score_rank 29671 0 | awk -F'\t' '$1=="medium" { print $3; exit }')"
   assert_eq "$first" "qwen3.8-27b" "the named pick leads the recommendation" || return 1
-  assert_eq "$head_medium" "qwen3-coder-30b" \
-    "while the scored head is the measured model, so the override is doing work"
+  assert_eq "$head_medium" "qwen3.8-27b" \
+    "and the scored head agrees with it, now that the slot's model is measured"
 }
 
 test_the_named_default_keeps_its_computed_score_and_confidence() {
   # Naming the pick changes the recommendation, never the row: the menu line
-  # keeps the calculated score and the low-confidence label an unmeasured
-  # model has earned. A default that inflated its own numbers would be the
-  # menu lying in the one place a user reads most carefully.
+  # keeps the calculated score and the confidence the evidence has earned --
+  # which, now that qwen3.8 is measured, is medium rather than the low it
+  # carried as a placeholder. A default that inflated (or froze) its own
+  # numbers would be the menu lying in the one place a user reads most
+  # carefully.
   local row ranked
   row="$(printf '%s\n' "${SELECT_ROWS[@]}" | awk -F'\t' '$3=="qwen3.8-27b"')"
   ranked="$(score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$3=="qwen3.8-27b" { print $2 }')"
   assert_ne "$row" "" "the named default is on the menu" || return 1
-  assert_eq "$(cut -f5 <<<"$row")" "low" "unmeasured means low, default or not" || return 1
+  assert_eq "$(cut -f5 <<<"$row")" "medium" "measured means medium, default or not" || return 1
   assert_eq "$(cut -f2 <<<"$row")" "$ranked" "and the score is the computed one, untouched"
 }
 
-test_the_named_default_scores_below_the_measured_model() {
-  # The gap the override spans, pinned so it stays visible: the default
-  # medium is NOT the best-scoring medium, and anything presenting it as such
-  # has broken the honesty this mechanism promises.
+test_the_named_default_now_outscores_the_other_measured_model() {
+  # Before the v3 re-rating this pinned the opposite: the named default at a
+  # neutral 72 sat below the measured 84, and the override visibly spanned
+  # that gap. The measurement reversed the order -- 85 against 84, one point,
+  # from the one task that separates the two models on the suite. Exact
+  # values on purpose: if either total moves, some component moved, and this
+  # is where that has to be noticed.
   local named measured
   named="$(score_rank 29671 0 | awk -F'\t' '$3=="qwen3.8-27b" { print $2 }')"
   measured="$(score_rank 29671 0 | awk -F'\t' '$3=="qwen3-coder-30b" { print $2 }')"
-  assert_lt "$named" "$measured" "the recommendation outranks the score, never the reverse"
+  assert_eq "$named" "85" "the default medium's total on the measuring machine" || return 1
+  assert_eq "$measured" "84" "the coder's total on the measuring machine" || return 1
+  assert_gt "$named" "$measured" "the recommendation and the ranking now agree"
 }
 
 test_a_named_default_outside_the_medium_class_falls_back() {
@@ -413,8 +430,8 @@ test_the_selection_is_reproducible_from_model_selection() {
 test_every_unrated_model_reports_low_confidence_on_the_menu() {
   # The honest consequence of shipping mostly-unknown ratings, surfaced on the
   # menu rather than buried. Every row without a rating is `low`; the measured
-  # one is checked separately below, because it stopped being low the moment
-  # the evidence landed -- which is the whole point of recording it.
+  # ones are checked separately below, because they stopped being low the
+  # moment the evidence landed -- which is the whole point of recording it.
   local line conf id rated=0
   for line in "${SELECT_ROWS[@]}"; do
     id="$(printf '%s' "$line" | cut -f3)"
@@ -426,7 +443,7 @@ test_every_unrated_model_reports_low_confidence_on_the_menu() {
       assert_ne "$conf" "low" "a measured rating must show on the menu for $id" || return 1
     fi
   done
-  assert_eq "$rated" 1 "exactly one offered model is measured today"
+  assert_eq "$rated" 2 "exactly two offered models are measured today"
 }
 
 test_the_menu_states_the_confidence_rather_than_only_the_score() {

@@ -522,7 +522,7 @@ test_an_unknown_rating_id_is_an_error() {
 test_the_suite_field_reads_through_the_named_accessor() {
   # Like every other rating field: by name, from the schema list, so a
   # reordering cannot re-point it at confidence.
-  assert_eq "$(catalog_rating_get qwen3-coder-30b rating_suite)" "v2" \
+  assert_eq "$(catalog_rating_get qwen3-coder-30b rating_suite)" "v3" \
     "the measured row's suite" || return 1
   assert_eq "$(catalog_rating_get qwen3-4b rating_suite)" "-" \
     "an unmeasured row has none"
@@ -831,13 +831,16 @@ test_qwen3_32b_is_retired_from_both_tables() {
   assert_eq "$(catalog_rows | wc -l)" "$CATALOG_MAX_ROWS" "still exactly at the cap"
 }
 
-test_the_qwen38_rating_is_unknown_not_imported() {
+test_the_qwen38_rating_is_the_local_measurement_not_the_vendor_import() {
   # Qwen publishes eval results beside the weights. They were measured on the
   # vendor's harness against the vendor's baselines, which makes them
-  # incomparable with this rig's local benchmark -- so the column says
-  # `unknown` until this rig measures it, and stays low-confidence until then.
+  # incomparable with this rig's local benchmark -- so the row said `unknown`
+  # until this rig measured it. It now has: the 100 is a suite-v3 run of
+  # 61-rate-models.sh on this machine, not an imported number, and the method
+  # field is what says so.
   assert_eq "$(catalog_ratings | grep '^qwen3\.8-27b;')" \
-    "qwen3.8-27b;unknown;-;none;-;none;-" "the honest placeholder, verbatim"
+    "qwen3.8-27b;100;2026-08-14;local-benchmark;file:llm-rating-20260814-2123.txt;medium;v3" \
+    "the local measurement, verbatim"
 }
 
 test_the_qwen38_fit_estimate_holds_up_against_the_published_file() {
@@ -990,32 +993,72 @@ test_laguna_ratings_stay_unknown_despite_a_published_vendor_number() {
   return 0
 }
 
-test_the_measured_rating_row_is_the_one_that_was_produced() {
-  # Pinned in full. The value, the date, the method, the artifact name and the
-  # confidence were all produced by one run of 61-rate-models.sh, and a rating
-  # row is only auditable if the reader can find that run again -- so an edit
-  # to any single field has to be deliberate.
+test_the_measured_rating_rows_are_the_ones_that_were_produced() {
+  # Pinned in full, both of them. Value, date, method, artifact name,
+  # confidence and suite were all produced by one sitting of
+  # 61-rate-models.sh, and a rating row is only auditable if the reader can
+  # find that run again -- so an edit to any single field has to be
+  # deliberate.
   #
-  # The `v2` on the end is the one deliberate edit: when the rating_suite
-  # column arrived, the measurement gained an annotation saying which suite
-  # produced it, and nothing else. It keeps its v2 fields verbatim until a v3
-  # re-rating replaces the whole row.
+  # This is the v3 re-rating the old row's `v2` annotation promised: the
+  # coder row was replaced whole (same value, 93, from a new run and a new
+  # artifact), and qwen3.8 got its first measured row. The two landed
+  # together because the validator would have refused them apart.
   local row
   row="$(catalog_ratings | awk -F';' '$1=="qwen3-coder-30b"')"
   assert_eq "$row" \
-    "qwen3-coder-30b;93;2026-08-13;local-benchmark;file:llm-rating-20260813-1621.txt;medium;v2" \
-    "the measured row"
+    "qwen3-coder-30b;93;2026-08-14;local-benchmark;file:llm-rating-20260814-2122.txt;medium;v3" \
+    "the coder row: still 93, still medium, now suite v3" || return 1
+  row="$(catalog_ratings | awk -F';' '$1=="qwen3.8-27b"')"
+  assert_eq "$row" \
+    "qwen3.8-27b;100;2026-08-14;local-benchmark;file:llm-rating-20260814-2123.txt;medium;v3" \
+    "the qwen3.8 row: 100, medium, suite v3"
 }
 
-test_exactly_one_rating_row_is_measured() {
-  # The leaderboard caveat, as a test. One measured row against sixteen
-  # placeholders means the ordering is mostly still a statement about hardware
-  # fit, and anything written about the ranking has to say so. When a second
-  # model is measured this fails, which is the reminder to go and update that
-  # wording rather than let it quietly become false.
+test_exactly_two_rating_rows_are_measured() {
+  # The leaderboard caveat, as a test. Two measured rows against fifteen
+  # placeholders means the 100-vs-93 pair is a real comparison and everything
+  # else is still a statement about hardware fit -- and anything written about
+  # the ranking has to say so. When a third model is measured this fails,
+  # which is the reminder to go and update that wording rather than let it
+  # quietly become false.
   local measured
-  measured="$(catalog_ratings | awk -F';' '$4 != "none" { print $1 }')"
-  assert_eq "$measured" "qwen3-coder-30b" "the only row backed by a measurement"
+  measured="$(catalog_ratings | awk -F';' '$4 != "none" { print $1 }' | paste -sd' ')"
+  assert_eq "$measured" "qwen3-coder-30b qwen3.8-27b" \
+    "the only rows backed by measurements" || return 1
+  assert_eq "$(catalog_ratings | awk -F';' '$4 == "none"' | wc -l)" "15" \
+    "and fifteen rows still honestly say unknown"
+}
+
+test_every_local_benchmark_row_is_on_suite_v3() {
+  # The single-suite rule, checked against the shipped table rather than a
+  # fixture: the validator enforces "one suite version" structurally, and this
+  # pins WHICH version that is today, so a future v4 migration has to touch a
+  # test that says v3 out loud.
+  local suites
+  suites="$(catalog_ratings | awk -F';' '$4=="local-benchmark" { print $7 }' | sort -u)"
+  assert_eq "$suites" "v3" "every measured row ran the same suite, and it is v3"
+}
+
+test_a_partial_qwen38_only_v3_update_would_have_failed() {
+  # The counterfactual behind landing both rows in one change: the same table
+  # with the coder row still on its old v2 measurement does not validate. This
+  # is the shipped data walking through the mixed-suite gate, not a synthetic
+  # fixture -- if someone had tried to record qwen3.8's v3 rating on its own,
+  # this is the refusal they would have hit.
+  eval "$(declare -f catalog_ratings | sed '1s/^catalog_ratings/catalog_ratings_shipped/')"
+  catalog_ratings() {
+    catalog_ratings_shipped \
+      | sed 's|^qwen3-coder-30b;.*|qwen3-coder-30b;93;2026-08-13;local-benchmark;file:llm-rating-20260813-1621.txt;medium;v2|'
+  }
+  if catalog_validate; then
+    _fail "a mixed v2/v3 leaderboard must not validate"
+    return 1
+  fi
+  assert_contains "$CATALOG_ERRORS" "all local-benchmark rows must share one suite version" \
+    "the rule" || return 1
+  assert_contains "$CATALOG_ERRORS" "qwen3-coder-30b" "one side named" || return 1
+  assert_contains "$CATALOG_ERRORS" "qwen3.8-27b" "and the other"
 }
 
 run_suite
