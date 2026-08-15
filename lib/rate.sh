@@ -51,33 +51,58 @@ source "$(dirname "${BASH_SOURCE[0]}")/bench.sh"
 # answer. The arithmetic did not change -- a truncated task contributed zero
 # weight before and contributes zero weight now -- but `answered` does, and
 # `confidence` is derived from `answered`. So one v1 run and one v2 run over
-# byte-identical responses can report a different confidence, and confidence
-# is part of the catalog row. That is a comparability break even though the
+# the same responses can report a different confidence, and confidence is
+# part of the catalog row. That is a comparability break even though the
 # 0-100 value is untouched, which is why this is a bump and not a patch.
+#
+# v3: the token budget moved from 256 to 1024, so a reasoning model that
+# spends most of its completion on hidden thinking can still reach the answer.
+# The budget covers TOTAL completion output -- reasoning plus answer --
+# because max_tokens is the only budget the API enforces deterministically;
+# grading remains answer-only and is unchanged from v2. A budget change is a
+# comparability break by the rule v2 itself documents ("a separate run at a
+# higher budget ... NOT comparable"), hence the bump. Two more things arrived
+# with it: the RESULT line and the catalog row now carry the suite token, and
+# a run at a non-default budget is blocked from producing a row mechanically
+# rather than by convention (see rate_row_blocked).
 # shellcheck disable=SC2034  # documented return channel, read by callers
-RATE_SUITE_VERSION=2
+RATE_SUITE_VERSION=3
+
+# The one spelling of the version that leaves this file: `v3` in the artifact
+# header, on the RESULT line, and in the catalog's rating_suite field. Derived
+# from the number above so the two cannot disagree.
+RATE_SUITE_TOKEN="v${RATE_SUITE_VERSION}"
 
 # Sampling. Zero temperature and a fixed seed because a rating that changes
 # between runs is not a rating; `--repeats` exists to check that it doesn't.
 RATE_TEMPERATURE="${RATE_TEMPERATURE:-0}"
 RATE_SEED="${RATE_SEED:-42}"
-# 256 is the suite-v1 budget and stays the suite-v2 budget. It is deliberately
-# small: these are one-word, one-object and one-diff answers, and a model that
-# needs more than 256 tokens to say `bash` has failed the task the suite is
-# actually setting.
+# 1024 is the suite-v3 budget, and it covers TOTAL completion output --
+# reasoning plus answer. v1 and v2 ran at 256, calibrated for models that
+# answer directly; a reasoning model spends most of its completion on hidden
+# thinking before the answer, and the first one measured needed 380 tokens for
+# the simplest possible diff. 512 would leave 1.35x that and recreate the
+# failure on a slightly more verbose reasoner; 1024 leaves headroom while
+# staying small enough that a degenerate reasoning loop still fails visibly as
+# truncation. Budget discipline is now carried entirely by the strict format
+# kinds, which grade the whole response and are indifferent to budget.
 #
-# Raising it is a diagnostic, not a fix. If a model runs out of budget, the
-# suite now says so (see truncation, below) instead of scoring it -- and the
-# way to investigate is a separate run at a higher budget, whose numbers are
-# NOT comparable with the default ones and must never be recorded as a rating:
+# The default is a constant of the suite version, separate from the override
+# below, so that "this run used the suite's budget" is a checkable fact rather
+# than an assumption. rate_row_blocked compares the two: a run at any other
+# budget is measured, written to the artifact, and refused a catalog row --
+# mechanically, where v2 relied on convention.
+RATE_MAX_TOKENS_DEFAULT=1024
+# The diagnostic override. If a model runs out of budget, the suite says so
+# (see truncation, below) instead of scoring it -- and the way to investigate
+# is a separate run at a higher budget:
 #
 #   RATE_MAX_TOKENS=4096 ./61-rate-models.sh --model <served-name>
 #
-# Nothing enforces that by itself, because the value is a knob and the artifact
-# records what it was set to. What enforces it is that mixing the two in one
-# catalog row would be mixing sampling settings, which is the same error as
-# mixing suite versions.
-RATE_MAX_TOKENS="${RATE_MAX_TOKENS:-256}"
+# Those numbers are NOT comparable with the default ones and can never be
+# recorded as a rating: the artifact records the value, and rate_row_blocked
+# blocks the row whenever it differs from the default above.
+RATE_MAX_TOKENS="${RATE_MAX_TOKENS:-$RATE_MAX_TOKENS_DEFAULT}"
 # shellcheck disable=SC2034  # the driver reads and overrides this one
 RATE_REPEATS="${RATE_REPEATS:-1}"
 RATE_TIMEOUT="${RATE_TIMEOUT:-600}"   # first call to a cold model loads it
@@ -335,6 +360,12 @@ rate_provenance_missing() {
 # may. Every reason names what is wrong, because "no rows to record" at the end
 # of a run that looked like it worked is the least actionable message the
 # script could print.
+#
+# The sampling check reads RATE_MAX_TOKENS rather than taking it as a
+# parameter, the same way rate_payload does: the budget is run-wide state, and
+# threading it through every caller would invite passing a value the run did
+# not actually use. A run at a non-default budget is a diagnostic -- v2
+# documented that and relied on nobody recording one; this makes it a gate.
 rate_row_blocked() {
   local cid="$1" answered="$2" total="$3" missing="$4"
   if [[ -z "$cid" ]]; then
@@ -343,6 +374,9 @@ rate_row_blocked() {
     printf 'incomplete run: %s of %s tasks answered' "$answered" "$total"
   elif [[ -n "$missing" ]]; then
     printf 'incomplete runtime provenance: %s' "$missing"
+  elif [[ "$RATE_MAX_TOKENS" != "$RATE_MAX_TOKENS_DEFAULT" ]]; then
+    printf 'non-default sampling: max_tokens=%s (the suite default is %s)' \
+      "$RATE_MAX_TOKENS" "$RATE_MAX_TOKENS_DEFAULT"
   else
     return 1
   fi
@@ -481,8 +515,11 @@ rate_live_ctx() {
 # consistently wrong -- and that number is indistinguishable, in the artifact
 # and in the catalog, from a model that genuinely cannot do the task.
 #
-# Reasoning models hit this constantly on a 256-token budget: the whole budget
-# goes into hidden reasoning and the final answer is never emitted.
+# Reasoning models hit this constantly on a budget sized for direct answers:
+# the whole budget goes into hidden reasoning and the final answer is never
+# emitted. The v3 budget is sized to fit them (see RATE_MAX_TOKENS_DEFAULT),
+# but a budget that fits today's models is still a budget, and the
+# classification below is what keeps running out of it honest.
 
 # The reason string recorded for a task that ran out of budget. One constant
 # because the driver prints it, the artifact carries it, and a test asserts on
@@ -716,10 +753,15 @@ rate_catalog_id() {
 # basename, not a URL: the evidence is a file in the runner's $HOME, and
 # citing an https address for it would be a fabrication. catalog_validate
 # enforces that distinction rather than trusting this function.
+#
+# The suite token is emitted by this function, not passed in, so a row can
+# only ever claim the version that actually ran. The validator's single-suite
+# rule then makes a partial re-rating -- one row on the new suite, another
+# still on the old -- a validation failure instead of a mixed leaderboard.
 rate_row() {
   local id="$1" value="$2" date="$3" artifact="$4" conf="$5"
-  printf '%s;%s;%s;local-benchmark;file:%s;%s' \
-    "$id" "$value" "$date" "${artifact##*/}" "$conf"
+  printf '%s;%s;%s;local-benchmark;file:%s;%s;%s' \
+    "$id" "$value" "$date" "${artifact##*/}" "$conf" "$RATE_SUITE_TOKEN"
 }
 
 # --- artifacts --------------------------------------------------------------

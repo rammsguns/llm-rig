@@ -441,22 +441,22 @@ test_a_rating_landing_lifts_confidence_on_the_menu() {
   local out
   out="$(
     catalog_ratings() {
-      printf '%s\n' 'devstral-small;77;2026-01-01;local-benchmark;https://example.com/run;medium'
+      printf '%s\n' 'devstral-small;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'
       command sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'R'
-qwen3-coder-30b;unknown;-;none;-;none
-qwen3-30b-a3b;unknown;-;none;-;none
-qwen3.8-27b;unknown;-;none;-;none
-qwen3-14b;unknown;-;none;-;none
-qwen3-8b;unknown;-;none;-;none
-qwen3-4b;unknown;-;none;-;none
-qwen3-1.7b;unknown;-;none;-;none
-qwen2.5-coder-32b;unknown;-;none;-;none
-qwen2.5-coder-7b;unknown;-;none;-;none
-gemma-3-27b;unknown;-;none;-;none
-gemma-3-12b;unknown;-;none;-;none
-llama-3.3-70b;unknown;-;none;-;none
-mistral-small-3.2;unknown;-;none;-;none
-phi-4;unknown;-;none;-;none
+qwen3-coder-30b;unknown;-;none;-;none;-
+qwen3-30b-a3b;unknown;-;none;-;none;-
+qwen3.8-27b;unknown;-;none;-;none;-
+qwen3-14b;unknown;-;none;-;none;-
+qwen3-8b;unknown;-;none;-;none;-
+qwen3-4b;unknown;-;none;-;none;-
+qwen3-1.7b;unknown;-;none;-;none;-
+qwen2.5-coder-32b;unknown;-;none;-;none;-
+qwen2.5-coder-7b;unknown;-;none;-;none;-
+gemma-3-27b;unknown;-;none;-;none;-
+gemma-3-12b;unknown;-;none;-;none;-
+llama-3.3-70b;unknown;-;none;-;none;-
+mistral-small-3.2;unknown;-;none;-;none;-
+phi-4;unknown;-;none;-;none;-
 R
     }
     SCORE_LIVE_SOURCE=fresh
