@@ -279,11 +279,13 @@ LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-/usr/local/bin/llama-server}"
 # reports, or status 1. `--version` prints "version: N (hash)", and the hash is
 # the identity: the build NUMBER is counted from the checkout's local history,
 # so two builds of the same revision can disagree on it. It is ignored.
+# Anchored to the "version:" line -- --version also names the compiler, and a
+# parenthesised hex string on any other line is not this binary's identity.
 llama_installed_rev() {
   local bin="${1:-$LLAMA_SERVER_BIN}" out rev
   [[ -x "$bin" ]] || return 1
   out="$("$bin" --version 2>&1)" || true
-  rev="$(grep -oE '\([0-9a-f]{7,40}\)' <<<"$out" | head -1 | tr -d '()')"
+  rev="$(sed -nE 's/^version:[^(]*\(([0-9a-f]{7,40})\).*/\1/p' <<<"$out" | head -1)"
   [[ -n "$rev" ]] || return 1
   printf '%s' "$rev"
 }
@@ -311,14 +313,6 @@ llama_rev_matches() {
   [[ "$a" == "$b"* || "$b" == "$a"* ]]
 }
 
-# Where the pin the comparison used came from, mirroring swap_pin_origin: an
-# operator who exported LLAMA_REF is not comparing against the committed pin
-# any more, and a drift report that does not say so is describing a comparison
-# the reader cannot reproduce.
-llama_pin_origin() {
-  if [[ -n "${LLAMA_REF:-}" ]]; then printf 'environment'; else printf 'repo'; fi
-}
-
 # llama_pin_drift [bin]
 #
 # Prints "<verdict>\t<installed>\t<pinned>" and returns:
@@ -337,11 +331,15 @@ llama_pin_origin() {
 # over the install target would satisfy a record comparison while being exactly
 # the drift this exists to catch. The record is reported separately, by
 # llama_recorded_rev, as the separate claim it is.
+#
+# Nor does it consult LLAMA_REF. The environment override belongs to the BUILD
+# (llama_resolve_ref): verification exists to answer "does what is installed
+# match what this repo commits", and an exported variable that could rescue a
+# drifted binary -- or fake drift on a matching one -- would make the verdict
+# depend on the caller's shell rather than on the repository.
 llama_pin_drift() {
   local bin="${1:-$LLAMA_SERVER_BIN}" installed pinned
-  if [[ -n "${LLAMA_REF:-}" ]]; then
-    pinned="$LLAMA_REF"
-  elif ! pinned="$(llama_pinned_rev)"; then
+  if ! pinned="$(llama_pinned_rev)"; then
     printf 'unpinned\t-\t-'
     return 3
   fi

@@ -306,6 +306,24 @@ test_an_absent_or_hashless_binary_yields_no_revision() {
   assert_fails "output without a hash is not a revision"
 }
 
+test_the_revision_comes_from_the_version_line_not_elsewhere() {
+  # --version also names the compiler, and toolchain banners put hex-looking
+  # ids in parentheses too. Only the "version:" line states this binary's
+  # identity; a hash anywhere else must be ignored, not harvested.
+  { echo '#!/usr/bin/env bash'
+    echo "echo 'built with gcc (deadbee) 13.3.0 for Linux'"
+    echo "echo 'version: 1 ($SHORT_REV)'"
+  } >"$LLAMA_SERVER_BIN"
+  chmod +x "$LLAMA_SERVER_BIN"
+  assert_eq "$(llama_installed_rev)" "$SHORT_REV" "the version line wins over an earlier decoy" || return 1
+
+  { echo '#!/usr/bin/env bash'
+    echo "echo 'built with gcc (deadbee) 13.3.0 for Linux'"
+  } >"$LLAMA_SERVER_BIN"
+  run llama_installed_rev
+  assert_fails "a hash off the version line is not an identity"
+}
+
 test_a_short_hash_matches_its_own_full_hash_and_nothing_else() {
   run llama_rev_matches "$SHORT_REV" "$FULL_REV"
   assert_ok "short is a prefix of full" || return 1
@@ -349,17 +367,27 @@ test_pin_drift_never_consults_the_build_record() {
   assert_fails "a matching record must not rescue a drifted binary"
 }
 
-test_an_env_override_is_compared_and_attributed() {
-  # An operator who exported LLAMA_REF is not comparing against the committed
-  # pin any more; the origin says so, mirroring swap_pin_origin.
+test_an_exported_llama_ref_cannot_rescue_a_drifted_binary() {
+  # LLAMA_REF belongs to the build. If exporting it could substitute for the
+  # committed pin, drift would be one shell variable away from invisible.
+  unset LLAMA_REF LLAMA_REF_SOURCE
+  printf '%s\n' "$FULL_REV" >"$RIG_DIR/llamacpp.ref"
+  fake_llama_server "fedcba9"
+  export LLAMA_REF="fedcba9fedcba9fedcba9fedcba9fedcba9fedcb"
+  local out; out="$(llama_pin_drift)"
+  assert_eq "$?" "1" "still drift against the committed pin" || return 1
+  assert_contains "$out" "$FULL_REV" "and the pin compared is the committed one"
+}
+
+test_an_exported_llama_ref_cannot_fake_drift_on_a_matching_binary() {
+  # The other direction of the same rule: a stray override must not fail a
+  # binary that matches what the repository commits.
   unset LLAMA_REF LLAMA_REF_SOURCE
   printf '%s\n' "$FULL_REV" >"$RIG_DIR/llamacpp.ref"
   fake_llama_server "$SHORT_REV"
-  assert_eq "$(llama_pin_origin)" "repo" "no override, repo pin" || return 1
   export LLAMA_REF="fedcba9fedcba9fedcba9fedcba9fedcba9fedcb"
-  assert_eq "$(llama_pin_origin)" "environment" "override attributed" || return 1
   run llama_pin_drift
-  assert_fails "and the comparison follows the override, not the file"
+  assert_ok "the verdict comes from llamacpp.ref, not the environment"
 }
 
 test_the_recorded_revision_reads_back() {

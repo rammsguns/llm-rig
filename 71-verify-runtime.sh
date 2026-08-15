@@ -116,7 +116,7 @@ ldrift="$(llama_pin_drift)"; ldrift_rc=$?
 IFS=$'\t' read -r _ linstalled lpinned <<<"$ldrift"
 c_info "[runtime] llama-server binary at $LLAMA_SERVER_BIN"
 printf '    %-14s %s\n' "installed" "$linstalled" >&2
-printf '    %-14s %s (%s)\n' "pinned" "$lpinned" "$(llama_pin_origin)" >&2
+printf '    %-14s %s\n' "pinned" "$lpinned" >&2
 
 if lrec="$(llama_recorded_rev)"; then
   printf '    %-14s %s\n' "record" "$lrec" >&2

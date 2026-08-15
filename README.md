@@ -883,7 +883,8 @@ running it.
 
 The llama.cpp side keeps three sources of identity separate, because they make separate
 claims: **installed** is what `llama-server --version` reports, **pinned** is what the
-committed `llamacpp.ref` says it should be, and **record** is what llm-rig last built
+committed `llamacpp.ref` says it should be — always the committed file: `LLAMA_REF`
+steers builds, never the verifier's comparison — and **record** is what llm-rig last built
 (`.llamacpp-rev`) — provenance, not identity, so it never feeds the verdict. A binary
 built elsewhere and copied over the install target would satisfy a record comparison
 while being exactly the drift the pin exists to catch. On drift the reconciling command
