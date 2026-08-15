@@ -747,6 +747,37 @@ rate_catalog_id() {
   return 1
 }
 
+# rate_model_candidates <arg> <served-list>
+#
+# The served models `--model <arg>` denotes, one per line: every served model
+# whose name is exactly the argument, plus every served model whose catalog id
+# is exactly the argument. Nothing else -- no prefixes, no globs, no case
+# folding. The catalog side goes through rate_catalog_id, the same mapping the
+# recorder trusts, so the id that selects a model here is the id its row would
+# be written against.
+#
+# This function proposes; the driver disposes. Zero candidates is status 1
+# with nothing printed. Two or more are all printed, because the caller's
+# error has to name them: deciding which one the operator meant would put a
+# measurement on weights nobody chose, which is the same failure an unmapped
+# model is refused for.
+rate_model_candidates() {
+  local want="$1" available="$2" served cid found=0
+  while IFS= read -r served; do
+    [[ -n "$served" ]] || continue
+    # `continue` after the name match, so one served model can never be
+    # printed twice -- a row whose name and catalog id are the same string
+    # (phi-4) matches both ways.
+    if [[ "$served" == "$want" ]]; then
+      printf '%s\n' "$served"; found=1; continue
+    fi
+    if cid="$(rate_catalog_id "$served")" && [[ "$cid" == "$want" ]]; then
+      printf '%s\n' "$served"; found=1
+    fi
+  done <<<"$available"
+  (( found ))
+}
+
 # rate_row <catalog-id> <value> <date> <artifact-basename> <confidence>
 #
 # The line to paste into catalog_ratings(). The source is the artifact's

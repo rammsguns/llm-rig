@@ -705,6 +705,65 @@ test_every_catalogued_model_is_reachable_from_its_served_name() {
   done < <(catalog_rows)
 }
 
+# --- the --model argument ----------------------------------------------------
+# Exact served name or exact catalog id, nothing in between (#58). The
+# function proposes candidates; 61-rate-models.sh counts them, and anything
+# other than exactly one is a refusal with the set named.
+
+test_the_model_argument_matches_an_exact_served_name() {
+  assert_eq "$(rate_model_candidates qwen3-4b $'qwen3-4b\nphi-4')" "qwen3-4b" \
+    "the served name itself"
+}
+
+test_the_model_argument_matches_an_exact_catalog_id() {
+  # The invocation #55 actually needed: the row says devstral-small-2, the
+  # server says devstral-small-2-24b-instruct-2512, and the operator should be
+  # able to speak the catalog's language.
+  assert_eq "$(rate_model_candidates devstral-small-2 $'devstral-small-2-24b-instruct-2512\nqwen3-4b')" \
+    "devstral-small-2-24b-instruct-2512" "the catalog id reaches the served model it maps to"
+}
+
+test_the_model_argument_never_matches_a_prefix() {
+  local avail=$'devstral-small-2-24b-instruct-2512\nqwen3-4b'
+  run rate_model_candidates devstral "$avail"
+  assert_fails "a prefix of the id is not the id" || return 1
+  run rate_model_candidates devstral-small-2-24b "$avail"
+  assert_fails "a prefix of the served name is not the name either"
+}
+
+test_an_argument_matching_nothing_is_a_failure_with_no_candidates() {
+  run rate_model_candidates qwen2.5-coder-32b $'qwen3-4b\nphi-4'
+  assert_fails "zero candidates is status 1, not an empty success" || return 1
+  assert_eq "$RUN_OUTPUT" "" "and nothing is proposed"
+}
+
+test_an_uncatalogued_served_model_is_still_selectable_by_its_name() {
+  # rate_catalog_id refuses it, and must: there is no row to record against.
+  # But the driver measures uncatalogued models, with a warning and without a
+  # row, and the served-name branch keeps that reachable.
+  assert_eq "$(rate_model_candidates some-finetune-nobody-catalogued \
+      $'some-finetune-nobody-catalogued\nqwen3-4b')" \
+    "some-finetune-nobody-catalogued" "selectable, measured, still not recorded"
+}
+
+test_a_name_and_its_alias_are_two_candidates_not_a_tiebreak() {
+  # llama-swap can list a model and its -local alias side by side. Both answer
+  # to the bare id -- one as its served name, one through the alias mapping --
+  # and both come back. The driver refuses the pair by count; preferring the
+  # name match here would be a tiebreak, and the flag promises exactness, not
+  # precedence.
+  local out
+  out="$(rate_model_candidates qwen3-4b $'qwen3-4b\nqwen3-4b-local')"
+  assert_eq "$(wc -l <<<"$out")" "2" "both candidates come back" || return 1
+  assert_contains "$out" "qwen3-4b-local" "including the alias"
+}
+
+test_one_served_model_matching_both_ways_is_one_candidate() {
+  # phi-4's served name IS its catalog id. Matching by name and again by id
+  # must not print it twice and turn the one model it denotes into a refusal.
+  assert_eq "$(rate_model_candidates phi-4 $'phi-4\nqwen3-4b')" "phi-4" "once, not twice"
+}
+
 test_the_row_cites_the_artifact_and_not_a_url() {
   local row
   row="$(rate_row qwen3-4b 67 2026-08-11 "$HOME/llm-rating-20260811-1930.txt" medium)"
@@ -1453,6 +1512,114 @@ test_an_unserved_model_is_refused_by_name() {
   assert_fails "a model the endpoint does not serve" || return 1
   assert_contains "$RUN_OUTPUT" "does not serve" "named, not 'invalid input'" || return 1
   assert_contains "$RUN_OUTPUT" "qwen3-4b" "and what it does serve is listed"
+}
+
+# Two served models whose names differ from their catalog ids differently:
+# devstral maps devstral-small-2-24b-instruct-2512 -> devstral-small-2, and
+# qwen3-4b is its own id. Every task is answered, so a selection bug shows up
+# as the wrong model being measured rather than as a failed run.
+serve_two_models() {
+  {
+    printf 'GET\t/v1/models\t200\t{"data":[{"id":"devstral-small-2-24b-instruct-2512"},{"id":"qwen3-4b"}]}\n'
+    printf 'POST\t/v1/messages\t200\t{"content":[{"type":"text","text":"6"}]}\n'
+  } >"$MOCK_ROUTES"
+}
+
+test_the_model_flag_accepts_a_catalog_id_end_to_end() {
+  serve_two_models
+  drive "--model devstral-small-2"
+  assert_ok "the catalog id selects its served model: $RUN_OUTPUT" || return 1
+
+  local art
+  art="$(cat "$(rate_latest_artifact "$HOME")")"
+  assert_contains "$art" "model: devstral-small-2-24b-instruct-2512" \
+    "measured under its served name" || return 1
+  assert_contains "$art" "catalog-id: devstral-small-2" \
+    "recorded against its catalog id, same as a served-name run" || return 1
+  assert_contains "$art" "RESULT devstral-small-2 " "and the RESULT line keys on the id"
+}
+
+test_selecting_by_catalog_id_contacts_no_other_model() {
+  serve_two_models
+  drive "--model devstral-small-2"
+  assert_ok "the run must complete" || return 1
+  assert_contains "$(cat "$MOCK_CALLS")" '"model":"devstral-small-2-24b-instruct-2512"' \
+    "every task goes to the selected model" || return 1
+  assert_not_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3-4b"' \
+    "and none to the one that was not asked for" || return 1
+  assert_not_contains "$(cat "$(rate_latest_artifact "$HOME")")" "model: qwen3-4b" \
+    "which therefore has no artifact entry either"
+}
+
+test_the_model_flag_still_accepts_the_exact_served_name() {
+  serve_two_models
+  drive "--model devstral-small-2-24b-instruct-2512"
+  assert_ok "the pre-#58 spelling keeps working" || return 1
+  assert_contains "$(cat "$(rate_latest_artifact "$HOME")")" \
+    "model: devstral-small-2-24b-instruct-2512" "same selection, longer name"
+}
+
+test_a_catalog_id_nothing_serves_is_refused_with_both_readings_named() {
+  serve_model 6   # qwen3-4b only
+  drive "--model devstral-small-2"
+  assert_fails "a catalog id whose model is not being served" || return 1
+  assert_contains "$RUN_OUTPUT" "does not serve" "refused" || return 1
+  assert_contains "$RUN_OUTPUT" "catalog id" "saying both readings were tried" || return 1
+  assert_contains "$RUN_OUTPUT" "qwen3-4b" "and listing what is served"
+}
+
+# qwen3-4b served beside its -local alias: the bare name answers twice (as a
+# served name, and as the catalog id the alias maps to), the alias only once.
+serve_a_name_and_its_alias() {
+  {
+    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3-4b"},{"id":"qwen3-4b-local"}]}\n'
+    printf 'POST\t/v1/messages\t200\t{"content":[{"type":"text","text":"6"}]}\n'
+  } >"$MOCK_ROUTES"
+}
+
+test_an_ambiguous_model_argument_is_refused_with_the_candidates_named() {
+  serve_a_name_and_its_alias
+  drive "--model qwen3-4b"
+  assert_fails "two served models answer to the argument" || return 1
+  assert_contains "$RUN_OUTPUT" "more than one" "the refusal names the class" || return 1
+  assert_contains "$RUN_OUTPUT" "qwen3-4b-local" "and the candidates themselves" || return 1
+  # 'qwen3-4b' IS an exact served name here, so the remediation must not send
+  # the operator back to it -- it has to point at a spelling with one reading.
+  assert_contains "$RUN_OUTPUT" "unambiguous served name" \
+    "the remediation asks for a one-reading spelling" || return 1
+  assert_contains "$RUN_OUTPUT" "alias" "and points at the listed alias" || return 1
+  assert_not_contains "$(cat "$MOCK_CALLS")" "/v1/messages" "nothing was measured" || return 1
+  assert_eq "$(rate_latest_artifact "$HOME")" "" "and no artifact is left behind"
+}
+
+test_the_listed_alias_succeeds_where_the_bare_name_is_ambiguous() {
+  serve_a_name_and_its_alias
+  drive "--model qwen3-4b-local"
+  assert_ok "the alias answers only as a served name: $RUN_OUTPUT" || return 1
+  assert_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3-4b-local"' \
+    "every task goes to the alias" || return 1
+  assert_not_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3-4b"' \
+    "and none to the bare-name model" || return 1
+
+  local art
+  art="$(cat "$(rate_latest_artifact "$HOME")")"
+  assert_contains "$art" "model: qwen3-4b-local" "measured under the alias" || return 1
+  assert_contains "$art" "catalog-id: qwen3-4b" \
+    "recorded against the id the alias maps to" || return 1
+  assert_contains "$art" "RESULT qwen3-4b " "and the RESULT line keys on the id"
+}
+
+test_dry_run_with_a_catalog_id_maps_and_calls_nothing() {
+  # Resolution happens before the dry-run gate, so the plan shows exactly what
+  # a real run would measure -- and still measures nothing.
+  serve_two_models
+  drive "--model devstral-small-2 --dry-run"
+  assert_ok "dry run" || return 1
+  assert_contains "$RUN_OUTPUT" "devstral-small-2-24b-instruct-2512" \
+    "the served model it resolved to" || return 1
+  assert_not_contains "$RUN_OUTPUT" "qwen3-4b" "and only that one" || return 1
+  assert_not_contains "$(cat "$MOCK_CALLS")" "/v1/messages" "no task may be sent" || return 1
+  assert_eq "$(rate_latest_artifact "$HOME")" "" "and nothing is written"
 }
 
 test_repeats_must_be_a_positive_integer() {
