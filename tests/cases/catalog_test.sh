@@ -996,16 +996,17 @@ test_laguna_ratings_stay_unknown_despite_a_published_vendor_number() {
 }
 
 test_the_measured_rating_rows_are_the_ones_that_were_produced() {
-  # Pinned in full, both of them. Value, date, method, artifact name,
-  # confidence and suite were all produced by one sitting of
-  # 61-rate-models.sh, and a rating row is only auditable if the reader can
-  # find that run again -- so an edit to any single field has to be
-  # deliberate.
+  # Pinned in full, all three of them. Value, date, method, artifact name,
+  # confidence and suite were all produced by runs of 61-rate-models.sh, and
+  # a rating row is only auditable if the reader can find that run again --
+  # so an edit to any single field has to be deliberate.
   #
-  # This is the v3 re-rating the old row's `v2` annotation promised: the
-  # coder row was replaced whole (same value, 93, from a new run and a new
-  # artifact), and qwen3.8 got its first measured row. The two landed
-  # together because the validator would have refused them apart.
+  # The qwen pair is the v3 re-rating the old row's `v2` annotation promised:
+  # the coder row was replaced whole (same value, 93, from a new run and a
+  # new artifact), and qwen3.8 got its first measured row. The two landed
+  # together because the validator would have refused them apart. The
+  # devstral row landed on its own afterwards, which the validator allows
+  # precisely because it arrived already on v3.
   local row
   row="$(catalog_ratings | awk -F';' '$1=="qwen3-coder-30b"')"
   assert_eq "$row" \
@@ -1014,22 +1015,26 @@ test_the_measured_rating_rows_are_the_ones_that_were_produced() {
   row="$(catalog_ratings | awk -F';' '$1=="qwen3.8-27b"')"
   assert_eq "$row" \
     "qwen3.8-27b;100;2026-08-14;local-benchmark;file:llm-rating-20260814-2123.txt;medium;v3" \
-    "the qwen3.8 row: 100, medium, suite v3"
+    "the qwen3.8 row: 100, medium, suite v3" || return 1
+  row="$(catalog_ratings | awk -F';' '$1=="devstral-small-2"')"
+  assert_eq "$row" \
+    "devstral-small-2;80;2026-08-14;local-benchmark;file:llm-rating-20260814-2307.txt;medium;v3" \
+    "the devstral row: 80, medium, suite v3"
 }
 
-test_exactly_two_rating_rows_are_measured() {
-  # The leaderboard caveat, as a test. Two measured rows against fifteen
-  # placeholders means the 100-vs-93 pair is a real comparison and everything
-  # else is still a statement about hardware fit -- and anything written about
-  # the ranking has to say so. When a third model is measured this fails,
-  # which is the reminder to go and update that wording rather than let it
-  # quietly become false.
+test_exactly_three_rating_rows_are_measured() {
+  # The leaderboard caveat, as a test. Three measured rows against fourteen
+  # placeholders means the 100-93-80 ordering is a real comparison and
+  # everything else is still a statement about hardware fit -- and anything
+  # written about the ranking has to say so. When a fourth model is measured
+  # this fails, which is the reminder to go and update that wording rather
+  # than let it quietly become false.
   local measured
   measured="$(catalog_ratings | awk -F';' '$4 != "none" { print $1 }' | paste -sd' ')"
-  assert_eq "$measured" "qwen3-coder-30b qwen3.8-27b" \
+  assert_eq "$measured" "qwen3-coder-30b devstral-small-2 qwen3.8-27b" \
     "the only rows backed by measurements" || return 1
-  assert_eq "$(catalog_ratings | awk -F';' '$4 == "none"' | wc -l)" "15" \
-    "and fifteen rows still honestly say unknown"
+  assert_eq "$(catalog_ratings | awk -F';' '$4 == "none"' | wc -l)" "14" \
+    "and fourteen rows still honestly say unknown"
 }
 
 test_every_local_benchmark_row_is_on_suite_v3() {
@@ -1039,7 +1044,9 @@ test_every_local_benchmark_row_is_on_suite_v3() {
   # test that says v3 out loud.
   local suites
   suites="$(catalog_ratings | awk -F';' '$4=="local-benchmark" { print $7 }' | sort -u)"
-  assert_eq "$suites" "v3" "every measured row ran the same suite, and it is v3"
+  assert_eq "$suites" "v3" "every measured row ran the same suite, and it is v3" || return 1
+  assert_eq "$(catalog_ratings | awk -F';' '$4=="local-benchmark"' | wc -l)" "3" \
+    "and all three local measurements are on it"
 }
 
 test_a_partial_qwen38_only_v3_update_would_have_failed() {
@@ -1060,7 +1067,9 @@ test_a_partial_qwen38_only_v3_update_would_have_failed() {
   assert_contains "$CATALOG_ERRORS" "all local-benchmark rows must share one suite version" \
     "the rule" || return 1
   assert_contains "$CATALOG_ERRORS" "qwen3-coder-30b" "one side named" || return 1
-  assert_contains "$CATALOG_ERRORS" "qwen3.8-27b" "and the other"
+  # The other side is the first v3 row after the v2 one in table order --
+  # which, now that devstral is measured, is devstral rather than qwen3.8.
+  assert_contains "$CATALOG_ERRORS" "devstral-small-2" "and the other"
 }
 
 run_suite

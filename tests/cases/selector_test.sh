@@ -443,7 +443,31 @@ test_every_unrated_model_reports_low_confidence_on_the_menu() {
       assert_ne "$conf" "low" "a measured rating must show on the menu for $id" || return 1
     fi
   done
-  assert_eq "$rated" 2 "exactly two offered models are measured today"
+  assert_eq "$rated" 3 "exactly three offered models are measured today"
+}
+
+test_devstral_ranks_second_in_medium_on_the_fixture_budget() {
+  # On the fixture budget the coder and laguna rows class as large, so the
+  # medium group thins out and the devstral measurement lands it directly
+  # behind the default pick: 85, then 77. Pinned here because this is the
+  # screen where a user reads that order, not just the ranking that computes
+  # it.
+  local medium
+  medium="$(score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$1=="medium" { print $3 }')"
+  assert_eq "$(sed -n 1p <<<"$medium")" "qwen3.8-27b" "the measured 100 leads" || return 1
+  assert_eq "$(sed -n 2p <<<"$medium")" "devstral-small-2" \
+    "and the measured 80 is directly behind it"
+}
+
+test_the_default_picks_survive_the_devstral_measurement() {
+  # The devstral rating moved its own row and nothing else: the three
+  # defaults are the same models that were recommended before it landed.
+  # Pinned by name so a rating that silently reshuffles the recommendation
+  # has to come through here and say so.
+  local picks
+  picks="$(selector_default_picks | paste -sd' ')"
+  assert_eq "$picks" "qwen3.8-27b qwen3-coder-30b qwen3-1.7b" \
+    "the recommendation is unchanged by the third measurement"
 }
 
 test_the_menu_states_the_confidence_rather_than_only_the_score() {
