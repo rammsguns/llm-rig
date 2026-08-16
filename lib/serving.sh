@@ -154,6 +154,62 @@ serving_resolve() {
   return 0
 }
 
+# serving_ctx_overrides <plan> [key=N ...] -- validated per-model context
+# overrides, as `key<TAB>N` lines.
+#
+# The mechanism behind 40-serve.sh's `--ctx KEY=N` (#65): an operator-stated
+# per-model context, emitted as a per-entry `-c N` after the shared macro so
+# the later flag wins at the pinned runtime. Same contract as serving_resolve:
+# every bad argument is reported before returning, status 1 if any, so an
+# operator fixing three bad overrides learns about all three in one run.
+#
+# The PLAN is the authority a key is checked against, not the models
+# directory: an override for a model that is not being served is a mistake to
+# surface, never an entry to ignore. (The plan is total over discovered
+# models, so "no such key" and "not selected for serving" are the same check
+# here by construction.)
+#
+# N must be a positive integer. Whether N is SENSIBLE for the model is a
+# different question -- the generator cannot read GGUF metadata -- so
+# semantic validation lives with the caller as an advisory catalog
+# cross-check, deliberately not here: this function refuses malformed input
+# and never second-guesses well-formed input.
+serving_ctx_overrides() {
+  local plan="$1"; shift
+  local -A seen=()
+  local ov key n bad=0 k p plankeys=""
+  local -a out=()
+
+  while IFS=$'\t' read -r k p; do
+    [[ -n "$k" && -n "$p" ]] && plankeys+="$k"$'\n'
+  done <<<"$plan"
+
+  for ov in "$@"; do
+    key="${ov%%=*}"; n="${ov#*=}"
+    if [[ "$ov" != *=* || -z "$key" || -z "$n" ]]; then
+      printf 'not KEY=N: %s\n' "$ov" >&2; bad=1; continue
+    fi
+    if [[ ! "$n" =~ ^[1-9][0-9]*$ ]]; then
+      printf '%s: context must be a positive integer, got: %s\n' "$key" "$n" >&2
+      bad=1; continue
+    fi
+    if ! grep -qxF -- "$key" <<<"$plankeys"; then
+      printf '%s: not in the serving plan -- --ctx applies only to models being served\n' \
+        "$key" >&2
+      bad=1; continue
+    fi
+    if [[ -n "${seen[$key]:-}" ]]; then
+      printf '%s: context set more than once\n' "$key" >&2; bad=1; continue
+    fi
+    seen["$key"]="$n"
+    out+=("$key"$'\t'"$n")
+  done
+
+  (( bad == 0 )) || return 1
+  (( ${#out[@]} )) && printf '%s\n' "${out[@]}"
+  return 0
+}
+
 # serving_config_keys <file> -- the model keys a generated config declares.
 serving_config_keys() {
   [[ -f "$1" ]] || return 1
