@@ -1214,5 +1214,64 @@ test_config_only_needs_no_privilege_at_all() {
   assert_not_called systemctl
 }
 
+test_a_noninteractive_run_keeps_every_privileged_call_noninteractive() {
+  # The forecast validates the credential once; the guarantee that matters is
+  # that NO later call can prompt either. With no terminal, every privileged
+  # call must go through sudo -n for the whole run.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  SERVE_TTY="$SANDBOX/no-such-tty" run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "a covered credential completes: $RUN_OUTPUT" || return 1
+  assert_called 'sudo -n systemctl' "privileged calls are routed through -n" || return 1
+  assert_not_called 'sudo systemctl' "and none of them can prompt"
+}
+
+test_an_interactive_run_keeps_ordinary_prompting() {
+  # With a terminal, sudo prompts normally: no -n anywhere, exactly as before
+  # this guard existed.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  : >"$SANDBOX/fake-tty"
+  MOCK_SUDO_NEEDS_PASSWORD=1 SERVE_TTY="$SANDBOX/fake-tty" \
+    run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "interactive still serves: $RUN_OUTPUT" || return 1
+  assert_called 'sudo systemctl' "ordinary sudo at the call sites" || return 1
+  assert_not_called 'sudo -n' "nothing is forced noninteractive"
+}
+
+test_a_credential_expiring_mid_run_stops_at_the_next_privileged_call() {
+  # The re-review finding on the first cut of this guard: the forecast's one
+  # sudo -n passes on a warm cache, but sizing can outlive the timestamp, and
+  # the very hang the forecast exists to prevent was observed at the far end
+  # of a long run. Model exactly that: one -n success left (the preflight
+  # spends it), then the cache is expired for everything after.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  printf '1\n' >"$SANDBOX/sudo-uses"
+  MOCK_SUDO_CRED_USES_FILE="$SANDBOX/sudo-uses" SERVE_TTY="$SANDBOX/no-such-tty" \
+    run bash "$REPO_ROOT/40-serve.sh"
+  assert_fails "must stop at the first uncovered call, not hang or shrug" || return 1
+  assert_contains "$RUN_OUTPUT" "privileged command failed" "a clear diagnostic" || return 1
+  assert_contains "$RUN_OUTPUT" "sudo -v" "with the remediation" || return 1
+  assert_not_called '^systemctl restart' "and the run never continued to a restart"
+}
+
+test_the_noninteractive_guard_covers_sourced_helpers() {
+  # ensure_gpus_idle lives in lib/detect.sh and runs `sudo systemctl stop` in
+  # this same shell -- the guard must catch privileged calls it never sees the
+  # source of, not just the literal ones in 40-serve.sh.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  services_active "llama-swap"
+  gpu_holders_are '1925, llama-server, 15000 MiB'
+  printf '1\n' >"$SANDBOX/sudo-uses"
+  MOCK_SUDO_CRED_USES_FILE="$SANDBOX/sudo-uses" SERVE_TTY="$SANDBOX/no-such-tty" \
+    run bash "$REPO_ROOT/40-serve.sh"
+  assert_fails "the helper's stop must be refused promptly" || return 1
+  assert_contains "$RUN_OUTPUT" "privileged command failed" "caught by the guard" || return 1
+  assert_contains "$RUN_OUTPUT" "systemctl stop llama-swap" "naming the exact call" || return 1
+  assert_not_called '^systemctl stop' "the stop itself was never reached"
+}
+
 run_suite
 suite_exit

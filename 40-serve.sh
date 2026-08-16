@@ -52,8 +52,11 @@
 # anything is read or changed. A full run also forecasts its sudo needs
 # before touching anything: with no cached credential and no terminal to
 # prompt on, it fails immediately instead of stopping the service and then
-# hanging on a prompt nobody can see. --config-only needs no privilege and
-# keeps working everywhere.
+# hanging on a prompt nobody can see. And because a run can outlive the sudo
+# timestamp, a no-terminal run keeps every later privileged call
+# noninteractive too, stopping at the first one an expired credential no
+# longer covers. --config-only needs no privilege and keeps working
+# everywhere.
 set -uo pipefail
 source "$(dirname "$0")/lib/detect.sh"
 # Pinned + verified llama-swap install; see the header of lib/swap.sh.
@@ -77,7 +80,7 @@ while (( $# )); do
     --ctx=*)           CTX_OVERRIDE_ARGS+=("${1#--ctx=}") ;;
     --config-only)     CONFIG_ONLY=1 ;;
     --reconcile-swap)  RECONCILE_SWAP=1 ;;
-    -h|--help)         sed -n '2,56p' "$0"; exit 0 ;;
+    -h|--help)         sed -n '2,59p' "$0"; exit 0 ;;
     *)                 die "unknown argument: $1" ;;
   esac
   shift
@@ -132,8 +135,11 @@ fi
 # --config-only (which never calls sudo at all and is handled by the guard
 # condition). SERVE_TTY is a testing seam: the suite must drive both branches
 # regardless of whether the runner itself has a controlling terminal.
-if (( ! CONFIG_ONLY )); then
-  if ! sudo -n true 2>/dev/null && ! { : <"${SERVE_TTY:-/dev/tty}"; } 2>/dev/null; then
+SERVE_INTERACTIVE=0
+{ : <"${SERVE_TTY:-/dev/tty}"; } 2>/dev/null && SERVE_INTERACTIVE=1
+
+if (( ! CONFIG_ONLY && ! SERVE_INTERACTIVE )); then
+  if ! sudo -n true 2>/dev/null; then
     die "a full run needs sudo (stop and restart the service, install the
      unit), but no sudo credential is cached and there is no terminal to
      prompt on. Continuing would stop the service and then hang on an
@@ -143,6 +149,37 @@ if (( ! CONFIG_ONLY )); then
 
          sudo -v && $(pin_env_quoted)$0 $(orig_args_quoted)"
   fi
+fi
+
+# The forecast above validates the credential ONCE, but a run can outlive the
+# sudo timestamp: sizing and generation are the slow part, and the very hang
+# the forecast exists to prevent was observed at the far end of a long run.
+# So with no terminal the forecast is not enough -- every later privileged
+# call must also refuse to prompt. This function shadows the sudo binary for
+# this whole process, including the calls inside sourced helpers
+# (ensure_gpus_idle's systemctl stop/start run in this same shell), and stops
+# the run at the first call the cache no longer covers, rather than
+# continuing past a failed service operation. With a terminal it is not
+# defined at all: ordinary interactive prompting stays exactly as it was.
+#
+# The diagnostic writes to a copy of stderr saved HERE, because several call
+# sites redirect the call's own stderr (that redirect is how the original
+# hang became invisible), and a refusal nobody can see is half a fix.
+if (( ! SERVE_INTERACTIVE )); then
+  exec {SERVE_ERR_FD}>&2
+  sudo() {
+    command sudo -n "$@" && return 0
+    c_err "privileged command failed with no terminal to prompt on:
+
+         sudo $*
+
+     The cached sudo credential expired mid-run (sudo -n refuses to prompt).
+     Stopping HERE rather than continuing past a failed privileged
+     operation. Check the service state, then from a terminal:
+
+         sudo -v && $(pin_env_quoted)$0 $(orig_args_quoted)" 2>&"$SERVE_ERR_FD"
+    exit 1
+  }
 fi
 
 if (( CONFIG_ONLY && RECONCILE_SWAP )); then

@@ -8,9 +8,19 @@ while [[ "${1:-}" == -* ]]; do
   case "$1" in
     # Real `sudo -n` fails when no credential is cached. The default here is a
     # cached credential (succeed), because that is the state every pre-existing
-    # test was written under; MOCK_SUDO_NEEDS_PASSWORD=1 models the expired
-    # cache so the privilege-preflight refusal paths can be driven.
-    -n) if [[ "${MOCK_SUDO_NEEDS_PASSWORD:-0}" == 1 ]]; then
+    # test was written under. Two ways to model the expired cache:
+    #   MOCK_SUDO_NEEDS_PASSWORD=1      -- never cached (preflight refusals)
+    #   MOCK_SUDO_CRED_USES_FILE=<file> -- cached NOW but expiring: the file
+    #     holds how many -n calls succeed before the timestamp runs out, so a
+    #     test can pass the preflight and then fail a later privileged call.
+    -n) if [[ -n "${MOCK_SUDO_CRED_USES_FILE:-}" ]]; then
+          uses="$(cat "$MOCK_SUDO_CRED_USES_FILE" 2>/dev/null || echo 0)"
+          if (( uses <= 0 )); then
+            printf 'sudo: a password is required\n' >&2
+            exit 1
+          fi
+          printf '%s\n' "$(( uses - 1 ))" >"$MOCK_SUDO_CRED_USES_FILE"
+        elif [[ "${MOCK_SUDO_NEEDS_PASSWORD:-0}" == 1 ]]; then
           printf 'sudo: a password is required\n' >&2
           exit 1
         fi
