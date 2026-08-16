@@ -346,6 +346,134 @@ test_no_temporary_config_is_left_behind() {
   assert_eq "$leftovers" "" "the temporary file is moved, not accumulated"
 }
 
+# --- the compute pool at generation time --------------------------------------
+# The declared pool (etc/inference-gpus, machine-local) must shape everything
+# 40-serve.sh writes: split ratios, single-model pins, and the systemd unit
+# that confines the service. The UUIDs are the fixture's own inventions.
+
+POOL_A='GPU-aaaaaaaa-1111-1111-1111-111111111111'
+POOL_B='GPU-bbbbbbbb-2222-2222-2222-222222222222'
+POOL_T='GPU-cccccccc-3333-3333-3333-333333333333'
+
+declare_pool() { printf '%s\n' "$@" > "$RIG_DIR/etc/inference-gpus"; }
+
+# Two small compute cards beside the display card. Small on purpose: pool
+# free memory totals 6100, so CTX lands in the 32k tier (reserve 1766) and
+# the single-card budget is 3000-1766-900 = 334 MB -- a ~400 MB staged file
+# takes the split path without the test needing gigabytes of disk.
+pool_gpu_fixture() {
+  local f="$SANDBOX/pool_gpu.tsv"
+  {
+    printf 'index\tname\tuuid\tmemory.total\tmemory.free\tcompute_cap\n'
+    printf '0\tNVIDIA RTX A4000\t%s\t16376\t3100\t8.6\n' "$POOL_A"
+    printf '1\tNVIDIA RTX A4000\t%s\t16376\t3000\t8.6\n' "$POOL_B"
+    printf '2\tNVIDIA T1000 8GB\t%s\t8192\t7490\t7.5\n' "$POOL_T"
+  } > "$f"
+  export MOCK_GPU_FIXTURE="$f"
+}
+
+# A file with real disk usage, because entry sizing reads `du`.
+stage_solid_gguf() {
+  local dir="$MODELS_DIR/$1"; mkdir -p "$dir"
+  fallocate -l "${3:-400M}" "$dir/$2" 2>/dev/null \
+    || dd if=/dev/zero of="$dir/$2" bs=1M count="${3%M}" status=none
+  printf '%s\n' "$dir/$2"
+}
+
+test_a_split_entry_lists_pool_ratios_and_nothing_else() {
+  pool_gpu_fixture
+  declare_pool "$POOL_A" "$POOL_B"
+  stage_solid_gguf Solid-GGUF Solid-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "generation over a declared pool must succeed: $RUN_OUTPUT" || return 1
+  local cfg; cfg="$(cat "$RIG_DIR/etc/llama-swap.yaml")"
+  assert_contains "$cfg" -- "--tensor-split 3100,3000" \
+    "the ratios are the pool cards' free memory" || return 1
+  assert_not_contains "$cfg" "7490" "the display card is in no ratio" || return 1
+  assert_not_contains "$cfg" "$POOL_T" "and in no pin"
+}
+
+test_a_pinned_entry_names_a_pool_uuid_not_an_index() {
+  pool_gpu_fixture
+  declare_pool "$POOL_A" "$POOL_B"
+  # Sparse: du reads ~0 MB, inside the 334 MB single budget -> pinned path.
+  stage_gguf Tiny-GGUF Tiny-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "runs: $RUN_OUTPUT" || return 1
+  local cfg; cfg="$(cat "$RIG_DIR/etc/llama-swap.yaml")"
+  assert_contains "$cfg" "env: [\"CUDA_VISIBLE_DEVICES=$POOL_A\"]" \
+    "pinned to the pool member with most headroom, by UUID" || return 1
+  assert_not_contains "$cfg" 'CUDA_VISIBLE_DEVICES=0' \
+    "no bare index pin under a declared pool"
+}
+
+test_without_a_declaration_the_pin_stays_an_index() {
+  # The ordinary homogeneous machine keeps today's exact behavior.
+  use_gpu dual_a4000
+  stage_gguf Tiny-GGUF Tiny-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "runs: $RUN_OUTPUT" || return 1
+  assert_contains "$(cat "$RIG_DIR/etc/llama-swap.yaml")" \
+    'env: ["CUDA_VISIBLE_DEVICES=1"]' "the index pin, unchanged"
+}
+
+test_the_generated_unit_confines_the_service_to_the_pool() {
+  # The unit is what actually keeps every spawned llama-server off the
+  # display card; the sizing filter only makes the arithmetic agree with it.
+  pool_gpu_fixture
+  declare_pool "$POOL_A" "$POOL_B"
+  stage_gguf Tiny-GGUF Tiny-Q4_K_M.gguf >/dev/null
+  export UNIT_FILE="$SANDBOX/unit.rendered"
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "runs: $RUN_OUTPUT" || return 1
+  assert_contains "$(cat "$UNIT_FILE")" \
+    "Environment=CUDA_VISIBLE_DEVICES=$POOL_A,$POOL_B" \
+    "the service allowlist is the declared pool" || return 1
+  assert_called 'systemctl daemon-reload' "the unit is reloaded" || return 1
+  assert_called 'systemctl restart llama-swap' "and the service restarted on it"
+}
+
+test_an_undeclared_machine_gets_no_allowlist_line() {
+  use_gpu dual_a4000
+  stage_gguf Tiny-GGUF Tiny-Q4_K_M.gguf >/dev/null
+  export UNIT_FILE="$SANDBOX/unit.rendered"
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "runs: $RUN_OUTPUT" || return 1
+  assert_not_contains "$(cat "$UNIT_FILE")" "CUDA_VISIBLE_DEVICES" \
+    "no declaration, no confinement line -- unchanged"
+}
+
+test_regenerating_reproduces_the_confinement() {
+  # Regeneration is the attack this whole design defends against: the run
+  # that would have silently un-excluded the display card. Run it twice and
+  # the second output must confine exactly like the first.
+  pool_gpu_fixture
+  declare_pool "$POOL_A" "$POOL_B"
+  stage_solid_gguf Solid-GGUF Solid-Q4_K_M.gguf >/dev/null
+  export UNIT_FILE="$SANDBOX/unit.rendered"
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "first generation: $RUN_OUTPUT" || return 1
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "regeneration: $RUN_OUTPUT" || return 1
+  assert_contains "$(cat "$RIG_DIR/etc/llama-swap.yaml")" -- "--tensor-split 3100,3000" \
+    "the split still names only the pool" || return 1
+  assert_contains "$(cat "$UNIT_FILE")" \
+    "Environment=CUDA_VISIBLE_DEVICES=$POOL_A,$POOL_B" \
+    "the unit still carries the allowlist"
+}
+
+test_a_pool_matching_no_gpu_fails_closed_before_writing_anything() {
+  pool_gpu_fixture
+  declare_pool 'GPU-eeeeeeee-0000-0000-0000-000000000000'
+  stage_gguf Tiny-GGUF Tiny-Q4_K_M.gguf >/dev/null
+  printf 'previous\n' > "$RIG_DIR/etc/llama-swap.yaml"
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_fails "no eligible compute GPU must abort" || return 1
+  assert_eq "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "previous" \
+    "and the config in use is untouched" || return 1
+  assert_not_called 'systemctl restart' "the service is never touched"
+}
+
 test_an_unknown_argument_is_refused() {
   run bash "$REPO_ROOT/40-serve.sh" --wat
   assert_fails "unknown flag" || return 1

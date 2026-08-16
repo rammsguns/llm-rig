@@ -457,10 +457,11 @@ fi
 # this by capacity instead.
 TENSOR_SPLIT=""
 if (( MULTI_GPU )); then
-  # Weight the split by FREE memory. Splitting evenly across cards with unequal
-  # headroom OOMs the busier one -- here GPU0 is down ~1.2GB to the desktop.
-  TENSOR_SPLIT=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits \
-                 | awk '{print $1}' | paste -sd, - )
+  # Weight the split by FREE memory, over the COMPUTE POOL only (gpu_query is
+  # detect.sh's pool-filtered read): a card outside the pool -- the display
+  # card -- must not appear in any ratio, because the server processes are
+  # confined away from it and a ratio slot for it would misdirect weights.
+  TENSOR_SPLIT=$(gpu_query memory.free nounits | awk '{print $1}' | paste -sd, - )
   c_info "Multi-GPU: $GPU_COUNT cards, tensor-split=$TENSOR_SPLIT, NVLink=$( ((NVLINK)) && echo yes || echo no )"
   ((NVLINK)) || c_warn "No NVLink -- splitting a dense model costs PCIe traffic at every
      layer boundary. Models that fit on ONE card are pinned to one card below."
@@ -536,8 +537,15 @@ while IFS=$'\t' read -r name gguf; do
       # The pin rides llama-swap's per-model env: list, NOT a VAR=value prefix
       # on cmd: llama-swap execs the argv directly, without a shell, so a
       # prefix is handed to exec(2) as the program name and the entry can
-      # never start (#61).
-      envline="env: [\"CUDA_VISIBLE_DEVICES=$BEST_GPU\"]"
+      # never start (#61). With a declared compute pool the pin is the pool
+      # member's UUID: a per-model env REPLACES the service-level allowlist
+      # for that process, so an index here could name a card outside the
+      # pool after a PCI renumber -- a UUID cannot.
+      if [[ -n "${GPU_POOL:-}" ]]; then
+        envline="env: [\"CUDA_VISIBLE_DEVICES=$BEST_GPU_UUID\"]"
+      else
+        envline="env: [\"CUDA_VISIBLE_DEVICES=$BEST_GPU\"]"
+      fi
       note="pinned to GPU$BEST_GPU (fits in ${FIT_SINGLE_MB}MB, no split overhead)"
     else
       extra="--tensor-split $TENSOR_SPLIT"
@@ -629,8 +637,12 @@ mkdir -p "$RIG_DIR/logs"
 
 # --- systemd service --------------------------------------------------------
 # llama-swap binds LAN-wide; llama-server instances stay on localhost behind it.
+# UNIT_FILE is a testing seam, like MEMINFO in lib/detect.sh: the fixture
+# tests point it into their sandbox to assert on the rendered unit without
+# a privileged write.
+UNIT_FILE="${UNIT_FILE:-/etc/systemd/system/llama-swap.service}"
 c_info "Installing llama-swap.service (LAN on port $LLAMA_PORT)"
-sudo tee /etc/systemd/system/llama-swap.service >/dev/null <<EOF
+sudo tee "$UNIT_FILE" >/dev/null <<EOF
 [Unit]
 Description=llama-swap (llama.cpp model router)
 After=network-online.target llm-gpu-tune.service
@@ -641,6 +653,9 @@ Type=simple
 User=$USER
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin
 Environment=LLAMA_CACHE=$MODELS_DIR/.cache
+$( [[ -n "${GPU_POOL:-}" ]] && printf '%s\n' \
+"# Inference is confined to the declared compute pool (etc/inference-gpus).
+Environment=CUDA_VISIBLE_DEVICES=$GPU_POOL" )
 ExecStart=/usr/local/bin/llama-swap --config $CFG --listen 0.0.0.0:$LLAMA_PORT
 Restart=on-failure
 RestartSec=5

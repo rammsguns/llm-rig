@@ -869,6 +869,34 @@ different geometry, or set `KV_RESERVE_MB` to bypass the derivation entirely. Bo
 effective context and the reserve (with where each came from) are printed by
 `00-specs.sh`, `30-models.sh`, and `40-serve.sh`.
 
+### The compute pool
+
+By default every detected GPU is eligible for inference, which is right for
+machines whose cards are identical. It is wrong the moment a display-only card
+joins them: the budgets would key to the smallest card, the tensor split would
+put weights on silicon the pinned build was never compiled for, and the idle
+check would wait forever on the desktop's own GPU contexts.
+
+Declare the pool in `etc/inference-gpus` — one GPU UUID per line, `#` comments
+allowed, UUIDs from `nvidia-smi --query-gpu=uuid,name --format=csv`. The file
+is machine-local and gitignored, like the generated `etc/llama-swap.yaml`: it
+names this host's silicon and must never be committed.
+
+With a declaration, every figure the scripts derive — counts, budgets, best-GPU
+choice, tensor split, compute arch — is computed over pool members only;
+`40-serve.sh` writes `CUDA_VISIBLE_DEVICES` with those UUIDs into the systemd
+unit so the servers are confined to the same set the sizing assumed, and
+single-model pins name a pool member's UUID rather than an index. UUIDs, not
+indexes, because indexes follow PCI enumeration and a firmware update can
+renumber the display card into the pool.
+
+The declaration **fails closed**: an unknown UUID, a duplicate, or a file that
+matches nothing refuses to proceed rather than silently widening the pool back
+to "all cards". A machine whose GPUs differ in compute capability with *no*
+declaration is refused the same way — one binary serves one capability, so the
+operator must say which cards count. `00-specs.sh` still prints its report in
+these states; sizing and generation stop.
+
 ### Your llama.cpp checkout is safe
 
 `20-build-llamacpp.sh` never rewrites a checkout it did not create. If `LLAMA_DIR` points
