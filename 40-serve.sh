@@ -6,12 +6,24 @@
 # Usage:
 #   ./40-serve.sh                                  # serve every model found
 #   ./40-serve.sh --select <key>=<exact.gguf>      # settle an ambiguous key
+#   ./40-serve.sh --ctx <key>=<tokens>             # per-model context override
 #   ./40-serve.sh --config-only                    # write the config, nothing else
 #   ./40-serve.sh --reconcile-swap                 # authorize replacing a drifted runtime
 #
 # A models directory holding two quantisations of one model derives one serving
 # key twice. That is refused rather than guessed; --select names the exact file
 # and may be repeated. See lib/serving.sh for why nothing picks for you.
+#
+# --ctx (#65) states a per-model context for a served key, emitted as a
+# per-entry `-c N` after the shared macro (the later flag wins). For a model
+# whose native context is below the shared cap this stops the config claiming
+# a context the runtime silently re-derives, and stops a KV pool being sized
+# for tokens the model can never address. Repeatable; refused (before anything
+# changes) for malformed values, duplicates, and keys not in the serving plan.
+# When the key resolves to a catalog row, a value above the row's verified
+# native context draws a warning -- advisory only: the catalog is not ground
+# truth for the GGUF on disk, so it never blocks. With no --ctx the generated
+# config is byte-for-byte what it was before this flag existed.
 #
 # --config-only regenerates etc/llama-swap.yaml and stops: no binary install, no
 # unit rewrite, no restart, no firewall change. It exists because "make the
@@ -38,6 +50,7 @@ source "$(dirname "$0")/lib/swap.sh"
 source "$(dirname "$0")/lib/serving.sh"
 
 SELECTIONS=()
+CTX_OVERRIDE_ARGS=()
 CONFIG_ONLY=0
 RECONCILE_SWAP=0
 # Kept so a refusal can hand back the exact command to re-run. The parse loop
@@ -48,9 +61,11 @@ while (( $# )); do
   case "$1" in
     --select)          shift; SELECTIONS+=("${1:-}") ;;
     --select=*)        SELECTIONS+=("${1#--select=}") ;;
+    --ctx)             shift; CTX_OVERRIDE_ARGS+=("${1:-}") ;;
+    --ctx=*)           CTX_OVERRIDE_ARGS+=("${1#--ctx=}") ;;
     --config-only)     CONFIG_ONLY=1 ;;
     --reconcile-swap)  RECONCILE_SWAP=1 ;;
-    -h|--help)         sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help)         sed -n '2,45p' "$0"; exit 0 ;;
     *)                 die "unknown argument: $1" ;;
   esac
   shift
@@ -165,6 +180,45 @@ if [[ -n "$SERVING_PLAN" ]]; then
   while IFS=$'\t' read -r _k _p; do
     [[ -n "$_k" ]] && printf '    %-40s %s\n' "$_k" "$_p"
   done <<<"$SERVING_PLAN"
+fi
+
+# Validate the context overrides against the settled plan, still before
+# anything changes -- a bad --ctx has to abort while the running stack is
+# untouched, exactly like a bad --select.
+CTX_PLAN=""
+if (( ${#CTX_OVERRIDE_ARGS[@]} )); then
+  CTX_PLAN="$(serving_ctx_overrides "$SERVING_PLAN" "${CTX_OVERRIDE_ARGS[@]}")" \
+    || die "cannot apply the context overrides; see above. Nothing has been changed."
+
+  # Advisory catalog cross-check, WARN ONLY. The catalog's context column is
+  # verified against the publisher, but the generator serves whatever GGUF is
+  # on disk, and the catalog is not ground truth for that file -- so a
+  # disagreement is worth a warning naming both numbers, never a refusal.
+  # Stating LESS than native is not flagged at all: capping below budget is a
+  # deliberate operator decision (it is the whole point of the flag for the
+  # models this exists for). An unmapped key is silent: no row, no claim.
+  # rate_catalog_id is the SAME served-name -> catalog-id join the rating
+  # recorder trusts, sourced rather than re-derived so the two can never
+  # drift apart.
+  # shellcheck source=lib/rate.sh
+  source "$(dirname "$0")/lib/rate.sh"
+  while IFS=$'\t' read -r _k _n; do
+    [[ -n "$_k" ]] || continue
+    if _cid="$(rate_catalog_id "$_k")"; then
+      _native="$(catalog_get "$_cid" context)" || continue
+      if (( _n > _native )); then
+        c_warn "--ctx $_k=$_n exceeds the catalog's verified native context for $_cid ($_native).
+     The runtime caps each slot at the model's training context, so tokens
+     past it are KV pool the model cannot address. If the GGUF on disk really
+     is a longer-context build, this warning is wrong and safe to ignore."
+      fi
+    fi
+  done <<<"$CTX_PLAN"
+
+  c_info "Context overrides:"
+  while IFS=$'\t' read -r _k _n; do
+    [[ -n "$_k" ]] && printf '    %-40s -c %s\n' "$_k" "$_n"
+  done <<<"$CTX_PLAN"
 fi
 
 # Re-running this while llama-swap holds a model resident would measure ~3GB free
@@ -403,10 +457,11 @@ fi
 # this by capacity instead.
 TENSOR_SPLIT=""
 if (( MULTI_GPU )); then
-  # Weight the split by FREE memory. Splitting evenly across cards with unequal
-  # headroom OOMs the busier one -- here GPU0 is down ~1.2GB to the desktop.
-  TENSOR_SPLIT=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits \
-                 | awk '{print $1}' | paste -sd, - )
+  # Weight the split by FREE memory, over the COMPUTE POOL only (gpu_query is
+  # detect.sh's pool-filtered read): a card outside the pool -- the display
+  # card -- must not appear in any ratio, because the server processes are
+  # confined away from it and a ratio slot for it would misdirect weights.
+  TENSOR_SPLIT=$(gpu_query memory.free nounits | awk '{print $1}' | paste -sd, - )
   c_info "Multi-GPU: $GPU_COUNT cards, tensor-split=$TENSOR_SPLIT, NVLink=$( ((NVLINK)) && echo yes || echo no )"
   ((NVLINK)) || c_warn "No NVLink -- splitting a dense model costs PCIe traffic at every
      layer boundary. Models that fit on ONE card are pinned to one card below."
@@ -482,8 +537,15 @@ while IFS=$'\t' read -r name gguf; do
       # The pin rides llama-swap's per-model env: list, NOT a VAR=value prefix
       # on cmd: llama-swap execs the argv directly, without a shell, so a
       # prefix is handed to exec(2) as the program name and the entry can
-      # never start (#61).
-      envline="env: [\"CUDA_VISIBLE_DEVICES=$BEST_GPU\"]"
+      # never start (#61). With a declared compute pool the pin is the pool
+      # member's UUID: a per-model env REPLACES the service-level allowlist
+      # for that process, so an index here could name a card outside the
+      # pool after a PCI renumber -- a UUID cannot.
+      if [[ -n "${GPU_POOL:-}" ]]; then
+        envline="env: [\"CUDA_VISIBLE_DEVICES=$BEST_GPU_UUID\"]"
+      else
+        envline="env: [\"CUDA_VISIBLE_DEVICES=$BEST_GPU\"]"
+      fi
       note="pinned to GPU$BEST_GPU (fits in ${FIT_SINGLE_MB}MB, no split overhead)"
     else
       extra="--tensor-split $TENSOR_SPLIT"
@@ -491,6 +553,19 @@ while IFS=$'\t' read -r name gguf; do
       # split-mode row can beat layer on 2 cards, but needs working P2P. Layer
       # is the safe default; 60-bench.sh measures whether row is worth it here.
       ((NVLINK)) && extra="$extra --split-mode row"
+    fi
+  fi
+
+  # An operator-stated context for this entry (--ctx, validated above).
+  # Appended after ${base}, so the later -c wins at the runtime; the entry
+  # comment records the override so an audit reads the reason where it reads
+  # the number. Entries without an override are UNTOUCHED -- with no --ctx
+  # this block adds nothing anywhere.
+  if [[ -n "$CTX_PLAN" ]]; then
+    ctx_override="$(awk -F'\t' -v k="$name" '$1 == k { print $2 }' <<<"$CTX_PLAN")"
+    if [[ -n "$ctx_override" ]]; then
+      extra="${extra:+$extra }-c $ctx_override"
+      note="${note:+$note; }ctx $ctx_override (operator --ctx; base -c $CTX overridden)"
     fi
   fi
 
@@ -562,8 +637,12 @@ mkdir -p "$RIG_DIR/logs"
 
 # --- systemd service --------------------------------------------------------
 # llama-swap binds LAN-wide; llama-server instances stay on localhost behind it.
+# UNIT_FILE is a testing seam, like MEMINFO in lib/detect.sh: the fixture
+# tests point it into their sandbox to assert on the rendered unit without
+# a privileged write.
+UNIT_FILE="${UNIT_FILE:-/etc/systemd/system/llama-swap.service}"
 c_info "Installing llama-swap.service (LAN on port $LLAMA_PORT)"
-sudo tee /etc/systemd/system/llama-swap.service >/dev/null <<EOF
+sudo tee "$UNIT_FILE" >/dev/null <<EOF
 [Unit]
 Description=llama-swap (llama.cpp model router)
 After=network-online.target llm-gpu-tune.service
@@ -574,6 +653,9 @@ Type=simple
 User=$USER
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin
 Environment=LLAMA_CACHE=$MODELS_DIR/.cache
+$( [[ -n "${GPU_POOL:-}" ]] && printf '%s\n' \
+"# Inference is confined to the declared compute pool (etc/inference-gpus).
+Environment=CUDA_VISIBLE_DEVICES=$GPU_POOL" )
 ExecStart=/usr/local/bin/llama-swap --config $CFG --listen 0.0.0.0:$LLAMA_PORT
 Restart=on-failure
 RestartSec=5

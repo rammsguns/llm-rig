@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Mock tee. Behaves like real tee for paths inside the sandbox, so a test can
+# capture what a script writes -- including privileged writes, which arrive
+# here through the sudo mock's dispatch. Paths outside the sandbox are logged
+# and swallowed, so a test can never write to the real system. Faithful to
+# the flags this repo uses (-a); stdin is always consumed so the writing
+# process never sees a broken pipe.
+set -uo pipefail
+printf 'tee %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
+
+append=0; files=()
+for a in "$@"; do
+  case "$a" in
+    -a|--append) append=1 ;;
+    -*)          ;;
+    *)           files+=("$a") ;;
+  esac
+done
+
+# No file arguments: plain passthrough, exactly like real tee.
+if (( ${#files[@]} == 0 )); then exec cat; fi
+
+inside=1
+for f in "${files[@]}"; do
+  [[ -n "${SANDBOX:-}" && "$f" == "$SANDBOX"* ]] || inside=0
+done
+
+if (( inside )); then
+  if (( append )); then exec /usr/bin/tee -a "${files[@]}"; fi
+  exec /usr/bin/tee "${files[@]}"
+fi
+
+cat >/dev/null
+exit 0

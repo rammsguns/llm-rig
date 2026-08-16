@@ -4,6 +4,11 @@
 etc/llama-swap.yaml
 claude-code-local.env
 
+# Operator-declared compute pool: which GPUs may serve inference, by UUID.
+# Machine-local configuration -- it names this host's silicon and must never
+# be committed. Format and rationale: README "The compute pool".
+etc/inference-gpus
+
 # What llm-rig installed on THIS machine: version, digest, timestamp. Machine
 # state, not configuration -- the deliberate pin lives in lib/swap.sh.
 etc/llama-swap.installed

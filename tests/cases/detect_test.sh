@@ -187,5 +187,157 @@ test_ensure_gpus_idle_is_a_noop_when_gpus_are_free() {
   assert_not_called 'systemctl stop' "no service should be stopped"
 }
 
+# --- the compute pool ---------------------------------------------------------
+# etc/inference-gpus declares which GPUs may serve inference, by UUID. The
+# fixture models this machine since 2026-08-15: two identical compute cards
+# beside a display-only card of a different compute capability. The UUIDs are
+# the FIXTURE'S, invented for the test -- real ones are machine-local
+# configuration and never enter the repository.
+
+POOL_A='GPU-aaaaaaaa-1111-1111-1111-111111111111'   # compute, most free
+POOL_B='GPU-bbbbbbbb-2222-2222-2222-222222222222'   # compute
+POOL_T='GPU-cccccccc-3333-3333-3333-333333333333'   # display card
+
+declare_pool() { printf '%s\n' "$@" > "$RIG_DIR/etc/inference-gpus"; }
+
+test_no_declaration_leaves_every_gpu_eligible() {
+  # The ordinary machine: identical cards, no pool file. Nothing changes.
+  use_gpu dual_a4000
+  load_detect
+  assert_eq "$GPU_POOL" "" "no pool is loaded" || return 1
+  assert_eq "$GPU_COUNT" 2 "every card counts"
+}
+
+test_a_mixed_machine_without_a_declaration_refuses_to_size() {
+  # One binary is compiled for one compute capability. A machine whose cards
+  # differ has to be told which ones count -- guessing is how weights end up
+  # on a display card the build cannot execute on.
+  use_gpu dual_a4000_plus_t1000
+  run bash -c "source '$REPO_ROOT/lib/detect.sh'; detect_hw"
+  assert_fails "mixed compute capabilities must not size silently" || return 1
+  assert_contains "$RUN_OUTPUT" "compute pool must be declared" "the fix is named"
+}
+
+test_the_mixed_machine_soft_fails_into_report_only_mode() {
+  # 00-specs.sh must still describe the machine it refuses to size.
+  use_gpu dual_a4000_plus_t1000
+  run bash -c "DETECT_SOFT_FAIL=1; export DETECT_SOFT_FAIL
+               source '$REPO_ROOT/lib/detect.sh'
+               detect_hw || printf 'DECLINED '
+               printf 'STILL-ALIVE'"
+  assert_ok "soft-fail must not kill the caller" || return 1
+  assert_contains "$RUN_OUTPUT" "DECLINED STILL-ALIVE" "declined, and the report goes on"
+}
+
+test_a_declared_pool_confines_every_figure() {
+  # With the two compute cards declared, every exported figure must be
+  # computed as if the display card did not exist.
+  use_gpu dual_a4000_plus_t1000
+  declare_pool "$POOL_A" "$POOL_B"
+  load_detect
+  assert_eq "$GPU_COUNT" 2 "two eligible cards" || return 1
+  assert_eq "$MULTI_GPU" 1 "still a multi-GPU machine" || return 1
+  assert_eq "$GPU_NAME" "NVIDIA RTX A4000" "named for the pool, not the head of the list" || return 1
+  assert_eq "$VRAM_TOTAL_MB" 30924 "15971 + 14953, the display card's 7490 not among them" || return 1
+  assert_eq "$VRAM_INSTALLED_MB" 32752 "installed follows the pool too" || return 1
+  assert_eq "$VRAM_MB" 14953 "the tightest POOL card binds, not the display card" || return 1
+  assert_eq "$GPU_CC" "8.6" "compute cap of the pool" || return 1
+  assert_eq "$CUDA_ARCH" "86" "and the build arch follows it"
+}
+
+test_the_pool_budgets_match_the_haircut_arithmetic() {
+  # Spelled out against the fixture, as the #66 test does: 30924 usable puts
+  # CTX in the 128k auto tier (reserve 7065); total = 30924 - 7065 - 2*900;
+  # single = 14953 - 7065 - 900.
+  use_gpu dual_a4000_plus_t1000
+  declare_pool "$POOL_A" "$POOL_B"
+  load_detect
+  assert_eq "$FIT_TOTAL_MB" 22059 "split budget over the pool" || return 1
+  assert_eq "$FIT_SINGLE_MB" 6988 "single budget keyed to the tightest pool card"
+}
+
+test_the_pin_target_is_a_pool_member_uuid() {
+  # BEST_GPU stays an index for humans; the pin the config writes is the
+  # UUID, so a per-model env can never name a card outside the allowlist.
+  use_gpu dual_a4000_plus_t1000
+  declare_pool "$POOL_A" "$POOL_B"
+  load_detect
+  assert_eq "$BEST_GPU" 0 "most headroom in the pool" || return 1
+  assert_eq "$BEST_GPU_UUID" "$POOL_A" "pinned by UUID, and it is a pool member"
+}
+
+test_a_pool_of_one_is_a_single_gpu_machine() {
+  use_gpu dual_a4000_plus_t1000
+  declare_pool "$POOL_A"
+  load_detect
+  assert_eq "$GPU_COUNT" 1 "one eligible card" || return 1
+  assert_eq "$MULTI_GPU" 0 "so no splitting" || return 1
+  # 15971 alone is the 64k auto tier: reserve 3532, single = 15971-3532-900.
+  assert_eq "$FIT_SINGLE_MB" 11539 "sized to the one declared card"
+}
+
+test_an_unknown_uuid_is_refused() {
+  # A typo must stop the run, not silently widen the pool back to all cards.
+  use_gpu dual_a4000_plus_t1000
+  declare_pool "$POOL_A" 'GPU-eeeeeeee-0000-0000-0000-000000000000'
+  run bash -c "source '$REPO_ROOT/lib/detect.sh'; detect_hw"
+  assert_fails "an unknown UUID must refuse" || return 1
+  assert_contains "$RUN_OUTPUT" "GPU-eeeeeeee" "naming the offender"
+}
+
+test_a_duplicate_uuid_is_refused() {
+  use_gpu dual_a4000_plus_t1000
+  declare_pool "$POOL_A" "$POOL_A"
+  run bash -c "source '$REPO_ROOT/lib/detect.sh'; detect_hw"
+  assert_fails "a duplicate must refuse" || return 1
+  assert_contains "$RUN_OUTPUT" "twice" "and say why"
+}
+
+test_a_declaration_matching_nothing_is_refused() {
+  # Comments and blank lines are fine; a file with nothing else means the
+  # operator meant to declare something and did not.
+  use_gpu dual_a4000_plus_t1000
+  printf '# my pool\n\n' > "$RIG_DIR/etc/inference-gpus"
+  run bash -c "source '$REPO_ROOT/lib/detect.sh'; detect_hw"
+  assert_fails "an empty declaration must refuse" || return 1
+  assert_contains "$RUN_OUTPUT" "declares no GPUs" "diagnostic"
+}
+
+test_a_mixed_pool_is_refused_like_a_mixed_machine() {
+  use_gpu dual_a4000_plus_t1000
+  declare_pool "$POOL_A" "$POOL_T"
+  run bash -c "source '$REPO_ROOT/lib/detect.sh'; detect_hw"
+  assert_fails "a pool mixing compute caps must refuse" || return 1
+  assert_contains "$RUN_OUTPUT" "mixes compute capabilities" "diagnostic"
+}
+
+test_gpu_holders_sees_only_pool_cards() {
+  # The display card's compositor and desktop apps hold small compute
+  # contexts permanently. If the idle check counted them, no sizing run
+  # could ever start again on this machine.
+  use_gpu dual_a4000_plus_t1000
+  declare_pool "$POOL_A" "$POOL_B"
+  gpu_holders_are "$POOL_T, 4540, xdg-desktop-portal, 68 MiB
+$POOL_A, 20751, llama-server, 11226 MiB"
+  source "$REPO_ROOT/lib/detect.sh"
+  load_gpu_pool
+  local out; out="$(gpu_holders)"
+  assert_contains "$out" "llama-server" "a pool card's holder is reported" || return 1
+  assert_not_contains "$out" "xdg-desktop-portal" "the display card's holders are not"
+}
+
+test_ensure_gpus_idle_ignores_the_display_cards_holders() {
+  # Same fact, one level up: desktop processes on the display card must not
+  # trigger a service stop.
+  use_gpu dual_a4000_plus_t1000
+  declare_pool "$POOL_A" "$POOL_B"
+  gpu_holders_are "$POOL_T, 4540, xdg-desktop-portal, 68 MiB"
+  services_active "llama-swap"
+  source "$REPO_ROOT/lib/detect.sh"
+  load_gpu_pool
+  ensure_gpus_idle
+  assert_not_called 'systemctl stop' "nothing on the pool cards, nothing to stop"
+}
+
 run_suite
 suite_exit
