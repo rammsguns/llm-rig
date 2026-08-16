@@ -885,6 +885,26 @@ test_the_replacement_rows_match_the_published_facts() {
   return 0
 }
 
+test_the_replacement_rows_carry_their_published_capabilities() {
+  # Pinned verbatim because the agentic bit alone moves a composite by five
+  # points -- a capability field is a scoring input, not decoration. The
+  # basis, per the closed vocabulary's own rules: all four Qwen3.5/3.6 repos
+  # are image-text-to-text with a vision encoder (vision); the shared
+  # Qwen3.5 card claims performance "across reasoning, coding, agents, and
+  # visual understanding" and the Qwen3.6 card headlines Agentic Coding and
+  # documents Thinking Preservation (coding, agentic, reasoning); every chat
+  # template implements tool calls (tools). Coder-Next is the text-only
+  # agentic coder: no vision claim, no documented thinking mode.
+  local id
+  for id in qwen3.5-2b qwen3.5-4b qwen3.5-9b qwen3.6-35b-a3b; do
+    assert_eq "$(catalog_get "$id" capabilities)" \
+      "coding,agentic,tools,reasoning,vision" \
+      "$id capabilities per its official card" || return 1
+  done
+  assert_eq "$(catalog_get qwen3-coder-next capabilities)" "coding,agentic,tools" \
+    "coder-next stays text-only with no thinking-mode claim"
+}
+
 test_the_qwen38_rating_is_the_local_measurement_not_the_vendor_import() {
   # Qwen publishes eval results beside the weights. They were measured on the
   # vendor's harness against the vendor's baselines, which makes them

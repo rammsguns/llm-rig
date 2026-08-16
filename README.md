@@ -346,9 +346,12 @@ list — scoring alone would point a 48 GB workstation at a 4B.
 
 It also means the measured rows have to be read for what they are.
 `laguna-xs-2.1` leads the `medium` class on this rig at 94, with
-`qwen3.8-27b` at 85, `qwen3-coder-30b` at 84 and `devstral-small-2` at 77 —
-the whole head of the class measured, on the same suite, on the same machine.
-One reading trap remains, at the top: Laguna and Qwen3.8 are **tied at 100 on
+`qwen3.8-27b` at 85 and `qwen3-coder-30b` at 84 — the top three measured, on
+the same suite, on the same machine. Directly behind them the table shows the
+trap this section exists for: the unmeasured `qwen3.6-35b-a3b` at 79 sits
+above the measured `devstral-small-2` at 77, entirely on card-claimed
+capabilities and fit — that gap is not a quality verdict, because one side of
+it has never run the suite. Another reading trap sits at the top: Laguna and Qwen3.8 are **tied at 100 on
 measured coding quality** — suite v3 cannot separate them — so the nine
 composite points between them are speed and fit, not a verdict on who writes
 better code. The rest of the ordering only becomes a quality judgement when

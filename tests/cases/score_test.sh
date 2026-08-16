@@ -619,15 +619,19 @@ test_the_devstral_measurement_moves_its_total_from_69_to_77() {
   assert_eq "$SCORE_TOTAL" "77" "the measured total it moved to"
 }
 
-test_the_medium_top_four_are_the_four_measured_rows_in_order() {
-  # 94, 85, 84, 77: for the first time the whole head of the class is
-  # measured, so this ordering is a quality-bearing comparison from top to
-  # bottom -- with one caveat the pin exists to protect. Laguna's nine-point
-  # lead over qwen3.8 is NOT a coding-quality lead: both scored the suite's
-  # ceiling of 100, and the distance between their totals comes entirely
-  # from the other components, chiefly speed (2.7B active parameters against
-  # a 27.8B dense forward pass). The ranking reports the totals as computed;
-  # what the totals mean is written here so an edit has to contradict it.
+test_the_medium_head_is_measured_and_the_unmeasured_79_splits_it() {
+  # 94, 85, 84 measured at the head, then the unmeasured qwen3.6-35b-a3b at
+  # 79 ABOVE the measured devstral-small-2 at 77. Until the 2026-08-15
+  # capability correction the whole head of the class was measured; the
+  # corrected card capabilities (agentic coding) lift qwen3.6's features
+  # component past devstral's total, on metadata alone. Both placements are
+  # pinned so the two caveats stay written down: laguna's nine-point lead
+  # over qwen3.8 is NOT a coding-quality lead (both scored the suite's
+  # ceiling of 100 -- the distance is speed, 2.7B active parameters against
+  # a 27.8B dense forward pass), and qwen3.6's two points over devstral are
+  # not a quality verdict at all, because qwen3.6 has never run the suite.
+  # The ranking reports the totals as computed; what the totals mean is
+  # written here so an edit has to contradict it.
   local medium
   medium="$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3 }')"
   assert_eq "$(sed -n 1p <<<"$medium")" "laguna-xs-2.1" \
@@ -636,14 +640,16 @@ test_the_medium_top_four_are_the_four_measured_rows_in_order() {
     "the measured 85 is second -- tied on coding, separated on speed" || return 1
   assert_eq "$(sed -n 3p <<<"$medium")" "qwen3-coder-30b" \
     "the measured 84 is third" || return 1
-  assert_eq "$(sed -n 4p <<<"$medium")" "devstral-small-2" \
-    "and the measured 77 is fourth"
+  assert_eq "$(sed -n 4p <<<"$medium")" "qwen3.6-35b-a3b" \
+    "the unmeasured 79 is fourth, on capabilities alone" || return 1
+  assert_eq "$(sed -n 5p <<<"$medium")" "devstral-small-2" \
+    "and the measured 77 is directly behind it"
 }
 
 test_laguna_ranks_first_in_medium_on_the_measuring_machine() {
   # The one placement this change makes, stated on its own: the measured
   # laguna-xs-2.1 heads the medium class here at 94. Held apart from the
-  # top-four pin above because this line is the headline claim of the
+  # class-order pin above because this line is the headline claim of the
   # measurement, and a reshuffle below it must not obscure whether the head
   # itself moved.
   assert_eq "$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3; exit }')" \
@@ -651,7 +657,7 @@ test_laguna_ranks_first_in_medium_on_the_measuring_machine() {
 }
 
 test_it_is_the_measurements_that_put_them_in_front() {
-  # The counterfactual, because "the measured rows hold the top four" on its
+  # The counterfactual, because "the measured rows lead the class" on its
   # own does not say why. With all four rows back to `unknown` the head of
   # the class is still laguna-xs-2.1 -- at a placeholder-fed 81 rather than
   # its measured 94. That coincidence is worth keeping: the model that used
@@ -696,25 +702,27 @@ test_the_complete_ranking_after_the_qwen_refresh() {
   # claim in a PR description. What moved, relative to the retired table:
   # qwen3-coder-next lands one point behind laguna-s-2.1 (58 vs 59, both
   # unmeasured -- the composite cannot meaningfully separate them);
-  # qwen3.6-35b-a3b enters medium at 74, below all four measured rows; and
-  # the small class is now headed by qwen3.5-2b at 77 over the served
-  # qwen3-1.7b's 71 -- the approved small-default flip, asserted from the
-  # selector's side in selector_test.sh. Every measured row keeps its exact
-  # position; every retired row was a non-pick.
+  # qwen3.6-35b-a3b enters medium at 79, above the measured devstral-small-2
+  # (its card claims agentic coding, so the agentic capability lifts its
+  # features component to saturation); and the small class is now headed by
+  # qwen3.5-2b at 82 over the served qwen3-1.7b's 71 -- the approved
+  # small-default flip, asserted from the selector's side in
+  # selector_test.sh. The medium and large HEADS are all measured rows in
+  # their exact positions; every retired row was a non-pick.
   local want='large 59 laguna-s-2.1
 large 58 qwen3-coder-next
 large 31 llama-3.3-70b
 medium 94 laguna-xs-2.1
 medium 85 qwen3.8-27b
 medium 84 qwen3-coder-30b
+medium 79 qwen3.6-35b-a3b
 medium 77 devstral-small-2
-medium 74 qwen3.6-35b-a3b
 medium 62 mistral-small-3.2
 medium 56 gemma-3-27b
-small 77 qwen3.5-2b
-small 74 qwen3.5-4b
+small 82 qwen3.5-2b
+small 79 qwen3.5-4b
+small 76 qwen3.5-9b
 small 71 qwen3-1.7b
-small 71 qwen3.5-9b
 small 62 gemma-3-12b
 small 56 phi-4'
   local got

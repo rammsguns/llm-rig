@@ -199,8 +199,12 @@ qwen3-coder-next;Qwen/Qwen3-Coder-Next;2026-01-30;79.7;3.0;moe;262144;apache-2.0
 # this table still carried the April-2025 row. Hybrid linear/full attention
 # (qwen35moe arch), supported by the pinned llama.cpp build. Active params
 # 3.0 per the card ("35B in total and 3B activated"; config: 256 experts,
-# top-8 + 1 shared), same basis as the coder-next row above.
-qwen3.6-35b-a3b;Qwen/Qwen3.6-35B-A3B;2026-04-15;36.0;3.0;moe;262144;apache-2.0;tools,reasoning;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.6-35B-A3B;2026-08-15
+# top-8 + 1 shared), same basis as the coder-next row above. Capabilities per
+# the card: "Agentic Coding" is the release's headline claim (coding, agentic),
+# the Thinking Preservation section documents the reasoning mode, and the repo
+# is image-text-to-text with a vision encoder (vision) -- this rig would serve
+# it text-only, like the other vision-capable rows.
+qwen3.6-35b-a3b;Qwen/Qwen3.6-35B-A3B;2026-04-15;36.0;3.0;moe;262144;apache-2.0;coding,agentic,tools,reasoning,vision;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.6-35B-A3B;2026-08-15
 # Devstral Small 2 replaced Devstral Small 2507 (2026-08-14, same slot:
 # Mistral's agentic-coding dense mid-size). The 2507 row was retired unmeasured
 # -- this machine serves the 2512 release, and keeping a row for weights the
@@ -234,9 +238,13 @@ qwen3.8-27b;Qwen/Qwen3.8-27B;2026-08-05;27.8;27.8;dense;262144;apache-2.0;coding
 # tool template + documented thinking mode, hybrid linear/full attention
 # (qwen35 arch, same family as the served qwen3.8-27b). params_b from each
 # repo's safetensors index, per the rule above: 2.27B, 4.66B, 9.65B.
-qwen3.5-9b;Qwen/Qwen3.5-9B;2026-02-27;9.7;9.7;dense;262144;apache-2.0;tools,reasoning;Q6_K|Q5_K_M;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-9B;2026-08-15
-qwen3.5-4b;Qwen/Qwen3.5-4B;2026-02-27;4.7;4.7;dense;262144;apache-2.0;tools,reasoning;Q8_0|Q6_K;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-4B;2026-08-15
-qwen3.5-2b;Qwen/Qwen3.5-2B;2026-02-28;2.3;2.3;dense;262144;apache-2.0;tools,reasoning;Q8_0|Q6_K;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-2B;2026-08-15
+# Capabilities per the shared Qwen3.5 card text: it claims parity "across
+# reasoning, coding, agents, and visual understanding benchmarks" (coding,
+# agentic, reasoning), and every repo is image-text-to-text with a vision
+# encoder (vision); this rig would serve them text-only.
+qwen3.5-9b;Qwen/Qwen3.5-9B;2026-02-27;9.7;9.7;dense;262144;apache-2.0;coding,agentic,tools,reasoning,vision;Q6_K|Q5_K_M;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-9B;2026-08-15
+qwen3.5-4b;Qwen/Qwen3.5-4B;2026-02-27;4.7;4.7;dense;262144;apache-2.0;coding,agentic,tools,reasoning,vision;Q8_0|Q6_K;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-4B;2026-08-15
+qwen3.5-2b;Qwen/Qwen3.5-2B;2026-02-28;2.3;2.3;dense;262144;apache-2.0;coding,agentic,tools,reasoning,vision;Q8_0|Q6_K;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-2B;2026-08-15
 # qwen3-1.7b outlived its April-2025 siblings because this rig SERVES it --
 # it is the #63 rating-boundary row, and retiring it would orphan the served
 # model, the README paragraph and the tripwire that keeps them honest.

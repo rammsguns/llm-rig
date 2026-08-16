@@ -471,7 +471,7 @@ test_the_laguna_measurement_moves_the_large_pick() {
   # on the fixture budget laguna-xs-2.1 classes as large, and its measured
   # row lifts it past qwen3-coder-30b (88 against 78) into the large slot.
   # The 2026-08-15 Qwen refresh: the small slot flips from the served
-  # qwen3-1.7b (71) to qwen3.5-2b (77) -- the approved small-default change,
+  # qwen3-1.7b (71) to qwen3.5-2b (82) -- the approved small-default change,
   # scored on metadata because both rows are unmeasured. The medium pick is
   # still the named default throughout.
   local picks
@@ -483,10 +483,12 @@ test_the_laguna_measurement_moves_the_large_pick() {
 test_the_refresh_flips_the_small_default_to_qwen35_2b() {
   # The counterfactual behind the flip, so the pick is traceable to the rows
   # that caused it rather than asserted as a coincidence of the fixture:
-  # qwen3.5-2b outscores the served qwen3-1.7b in the small class (77 vs 71
+  # qwen3.5-2b outscores the served qwen3-1.7b in the small class (82 vs 71
   # -- fresher, 262k context against 40960, six times the parameters at the
-  # same class), and with the two new small rows shadowed back out of the
-  # table the old pick returns. The SERVED small model does not change here:
+  # same class, and card-claimed agentic capability), and with all three new
+  # small rows shadowed back out of the table the old pick returns. All
+  # three must go: since the capability correction, qwen3.5-9b (76) beats
+  # the served row on its own. The SERVED small model does not change here:
   # that is a deployment decision, gated separately.
   local head_small old_head
   head_small="$(score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$1=="small" { print $3; exit }')"
@@ -494,10 +496,10 @@ test_the_refresh_flips_the_small_default_to_qwen35_2b() {
   old_head="$(
     _rows_shipped() { :; }
     eval "_rows_shipped() { $(declare -f catalog_rows | tail -n +2) }"
-    catalog_rows() { _rows_shipped | grep -Ev '^qwen3\.5-(2b|4b);'; }
+    catalog_rows() { _rows_shipped | grep -Ev '^qwen3\.5-(2b|4b|9b);'; }
     catalog_ratings_orig() { :; }
     eval "catalog_ratings_orig() { $(declare -f catalog_ratings | tail -n +2) }"
-    catalog_ratings() { catalog_ratings_orig | grep -Ev '^qwen3\.5-(2b|4b);'; }
+    catalog_ratings() { catalog_ratings_orig | grep -Ev '^qwen3\.5-(2b|4b|9b);'; }
     score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$1=="small" { print $3; exit }'
   )"
   assert_eq "$old_head" "qwen3-1.7b" "without the new rows the served model still leads"
