@@ -321,7 +321,7 @@ test_the_repo_date_and_the_model_release_date_genuinely_differ() {
   local repo_mod model_rel
   repo_mod="$(printf '%s' "$HFMETA_JSON" | hfmeta_gguf_repo_last_modified)"
   repo_mod="${repo_mod%%T*}"
-  model_rel="$(catalog_get qwen3-4b release_date)"
+  model_rel="$(catalog_get qwen3.5-4b release_date)"
   assert_ne "$repo_mod" "$model_rel" "the two dates must not be interchangeable" || return 1
   local repo_epoch model_epoch
   repo_epoch="$(date -d "$repo_mod" +%s)"

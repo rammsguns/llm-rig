@@ -55,14 +55,14 @@ test_popularity_has_no_weight_at_all() {
 # --- hardware fit -----------------------------------------------------------
 
 test_a_model_that_fits_with_room_scores_full_hardware_fit() {
-  # qwen3-4b at Q4_K_M is 2500 MB.
-  assert_eq "$(score_hw_fit qwen3-4b 20000 Q4_K_M)" "100" "plenty of headroom"
+  # qwen3.5-4b at Q4_K_M is 2837 MB.
+  assert_eq "$(score_hw_fit qwen3.5-4b 20000 Q4_K_M)" "100" "plenty of headroom"
 }
 
 test_a_model_that_only_just_fits_scores_lower_than_one_with_headroom() {
   local roomy tight
-  roomy="$(score_hw_fit qwen3-4b 20000 Q4_K_M)"
-  tight="$(score_hw_fit qwen3-4b 2600 Q4_K_M)"
+  roomy="$(score_hw_fit qwen3.5-4b 20000 Q4_K_M)"
+  tight="$(score_hw_fit qwen3.5-4b 3000 Q4_K_M)"
   assert_gt "$roomy" "$tight" "a tight fit must not score the same as a comfortable one"
 }
 
@@ -71,7 +71,7 @@ test_an_oversized_moe_beats_an_oversized_dense_model() {
   # be resident, so overflowing VRAM costs it far less.
   local moe dense
   moe="$(score_hw_fit qwen3-coder-30b 8000 Q4_K_M)"    # 18000 MB, over budget
-  dense="$(score_hw_fit qwen2.5-coder-32b 8000 Q4_K_M)"  # 19800 MB, over budget
+  dense="$(score_hw_fit qwen3.8-27b 8000 Q4_K_M)"  # 16784 MB, over budget
   assert_gt "$moe" "$dense" "offloading a MoE is cheap; offloading a dense model is not"
 }
 
@@ -81,7 +81,7 @@ test_a_model_that_cannot_run_at_any_quant_scores_zero() {
 }
 
 test_a_zero_budget_scores_zero_rather_than_dividing_by_it() {
-  assert_eq "$(score_hw_fit qwen3-4b 0)" "0" "an unknown budget is not a passing grade"
+  assert_eq "$(score_hw_fit qwen3.5-4b 0)" "0" "an unknown budget is not a passing grade"
 }
 
 # --- coding, features, speed ------------------------------------------------
@@ -90,9 +90,9 @@ test_an_unrated_model_scores_neutral_not_zero() {
   # Zero would rank a model nobody has measured below one measured and found
   # bad. Neutral says what is actually true: this component cannot separate
   # them.
-  assert_eq "$(catalog_rating_get qwen3-4b rating_value)" "unknown" \
+  assert_eq "$(catalog_rating_get qwen3.5-4b rating_value)" "unknown" \
     "precondition: this model is currently unrated" || return 1
-  assert_eq "$(score_coding qwen3-4b)" "$SCORE_NEUTRAL_CODING" \
+  assert_eq "$(score_coding qwen3.5-4b)" "$SCORE_NEUTRAL_CODING" \
     "an unknown rating scores neutral"
 }
 
@@ -101,7 +101,7 @@ test_the_absence_of_a_rating_is_reported_not_just_absorbed() {
   # SCORE_CODING_KNOWN is what carries that, and it must survive score_model --
   # which computes its components in subshells, where a second return value is
   # exactly the sort of thing that gets lost.
-  score_model qwen3-4b 20000 || { _fail "scoring failed"; return 1; }
+  score_model qwen3.5-4b 20000 || { _fail "scoring failed"; return 1; }
   assert_eq "$SCORE_CODING_KNOWN" "0" "an unrated model must be flagged as unrated"
 }
 
@@ -110,8 +110,8 @@ test_a_rated_model_uses_its_recorded_value() {
   # actually reach the score rather than being neutralised along with the rest.
   local out
   out="$(
-    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'; }
-    score_coding qwen3-4b
+    catalog_ratings() { printf '%s\n' 'qwen3.5-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'; }
+    score_coding qwen3.5-4b
     printf ':%s' "$SCORE_CODING_KNOWN"
   )"
   assert_eq "$out" "77:1" "a recorded rating is used verbatim and flagged as known"
@@ -130,8 +130,8 @@ test_a_short_context_model_is_penalised_on_features() {
   # else it can do.
   local short long
   short="$(score_features phi-4)"
-  long="$(score_features qwen3-14b)"
-  assert_gt "$long" "$short" "16k context must score below 128k"
+  long="$(score_features qwen3.5-4b)"
+  assert_gt "$long" "$short" "16k context must score below 262k"
 }
 
 test_speed_is_driven_by_active_parameters_not_total() {
@@ -140,8 +140,8 @@ test_speed_is_driven_by_active_parameters_not_total() {
   # records the two separately.
   local moe dense
   moe="$(score_speed qwen3-coder-30b 40000 Q4_K_M)"
-  dense="$(score_speed qwen2.5-coder-32b 40000 Q4_K_M)"
-  assert_gt "$moe" "$dense" "3B active must beat 32B active"
+  dense="$(score_speed qwen3.8-27b 40000 Q4_K_M)"
+  assert_gt "$moe" "$dense" "3B active must beat 27.8B active"
 }
 
 test_a_model_that_must_offload_is_penalised_on_speed() {
@@ -154,7 +154,7 @@ test_a_model_that_must_offload_is_penalised_on_speed() {
 test_the_offload_penalty_is_harsher_for_dense_models() {
   local moe_ratio dense_ratio
   moe_ratio=$(( $(score_speed qwen3-coder-30b 4000 Q4_K_M) * 100 / $(score_speed qwen3-coder-30b 40000 Q4_K_M) ))
-  dense_ratio=$(( $(score_speed qwen2.5-coder-32b 4000 Q4_K_M) * 100 / $(score_speed qwen2.5-coder-32b 40000 Q4_K_M) ))
+  dense_ratio=$(( $(score_speed qwen3.8-27b 4000 Q4_K_M) * 100 / $(score_speed qwen3.8-27b 40000 Q4_K_M) ))
   assert_gt "$moe_ratio" "$dense_ratio" "a dense model loses proportionally more to offload"
 }
 
@@ -167,11 +167,11 @@ test_a_fractional_active_parameter_count_is_handled() {
 # --- freshness --------------------------------------------------------------
 
 test_freshness_decays_with_model_age() {
-  # qwen3 family released 2025-04-29, qwen2.5-coder 2024-11-12. At the pinned
-  # "now" of 2026-08-11 both are old, but not equally.
+  # qwen3-coder-30b released 2025-07-31, llama-3.3-70b 2024-12-06. At the
+  # pinned "now" of 2026-08-11 both are old, but not equally.
   local newer older
   newer="$(score_freshness qwen3-coder-30b)"   # 2025-07-31
-  older="$(score_freshness qwen2.5-coder-32b)" # 2024-11-12
+  older="$(score_freshness llama-3.3-70b)"     # 2024-12-06
   assert_gt "$newer" "$older" "a newer model must score fresher"
 }
 
@@ -179,11 +179,11 @@ test_freshness_is_computed_from_the_model_release_date() {
   # The trap: a GGUF repo touched last week does not make a 2024 model fresh.
   # Scoring must consult the catalog and never a repository timestamp.
   local before after
-  before="$(score_freshness qwen2.5-coder-32b)"
+  before="$(score_freshness llama-3.3-70b)"
   # Simulate a quantizer re-uploading today. Nothing about the score may move.
   # shellcheck disable=SC2034
   local HFMETA_JSON='{"id":"x/y","lastModified":"2026-08-11T00:00:00Z","siblings":[]}'
-  after="$(score_freshness qwen2.5-coder-32b)"
+  after="$(score_freshness llama-3.3-70b)"
   assert_eq "$after" "$before" "a repo re-upload must not change model freshness"
 }
 
@@ -241,9 +241,9 @@ test_the_total_stays_within_zero_and_one_hundred() {
 test_popularity_does_not_change_the_total() {
   # The property that makes popularity a tie-breaker rather than a weight.
   local low high
-  score_model qwen3-4b 20000 Q4_K_M unsloth 1 fresh || return 1
+  score_model qwen3.5-4b 20000 Q4_K_M unsloth 1 fresh || return 1
   low="$SCORE_TOTAL"
-  score_model qwen3-4b 20000 Q4_K_M unsloth 99999999 fresh || return 1
+  score_model qwen3.5-4b 20000 Q4_K_M unsloth 99999999 fresh || return 1
   high="$SCORE_TOTAL"
   assert_eq "$low" "$high" "eight orders of magnitude of downloads must move the total by nothing"
 }
@@ -253,12 +253,12 @@ test_popularity_does_not_change_the_total() {
 test_verified_facts_alone_do_not_reach_medium_confidence() {
   # One of three: the row is confirmed, but there is no rating and no live
   # data. Verified metadata is not the same as a well-evidenced recommendation.
-  assert_eq "$(score_confidence qwen3-4b missing)" "low" \
+  assert_eq "$(score_confidence qwen3.5-4b missing)" "low" \
     "confirmed facts alone cannot support a confident number"
 }
 
 test_verified_facts_plus_current_live_data_reach_medium() {
-  assert_eq "$(score_confidence qwen3-4b fresh)" "medium" "two of the three are evidenced"
+  assert_eq "$(score_confidence qwen3.5-4b fresh)" "medium" "two of the three are evidenced"
 }
 
 test_high_confidence_is_unreachable_while_ratings_are_unknown() {
@@ -267,7 +267,7 @@ test_high_confidence_is_unreachable_while_ratings_are_unknown() {
   # combination of live-data freshness can get such a model there.
   local src
   for src in fresh cached stale missing; do
-    local c; c="$(score_confidence qwen3-4b "$src")"
+    local c; c="$(score_confidence qwen3.5-4b "$src")"
     [[ "$c" == "high" ]] \
       && { _fail "live source '$src' reached high confidence with no rating evidence"; return 1; }
   done
@@ -279,19 +279,19 @@ test_all_three_kinds_of_evidence_reach_high_confidence() {
   # a cap nothing can ever lift.
   local out
   out="$(
-    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'; }
-    score_confidence qwen3-4b fresh
+    catalog_ratings() { printf '%s\n' 'qwen3.5-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'; }
+    score_confidence qwen3.5-4b fresh
   )"
   assert_eq "$out" "high" "verified facts + a sourced rating + current live data"
 }
 
 test_stale_live_data_does_not_count_as_current() {
-  assert_eq "$(score_confidence qwen3-4b stale)" "low" \
+  assert_eq "$(score_confidence qwen3.5-4b stale)" "low" \
     "an expired cache entry must not be treated as evidence"
 }
 
 test_confidence_is_reported_alongside_every_score() {
-  score_model qwen3-4b 20000 || return 1
+  score_model qwen3.5-4b 20000 || return 1
   assert_ne "$SCORE_CONFIDENCE" "" "a score without a confidence is an assertion"
 }
 
@@ -313,7 +313,7 @@ test_the_breakdown_contributions_add_up_to_the_total() {
   # An explanation that does not reconcile with the number it explains is worse
   # than no explanation.
   local out sum total
-  out="$(score_explain qwen3-4b 20000 Q5_K_M unsloth 100 fresh)"
+  out="$(score_explain qwen3.5-4b 20000 Q5_K_M unsloth 100 fresh)"
   sum="$(printf '%s\n' "$out" | awk -F'=' '/x +[0-9]+%/ { gsub(/ /,"",$2); s += $2 } END { print s+0 }')"
   total="$(printf '%s\n' "$out" | awk '/TOTAL/ { print $2 }')"
   assert_eq "$sum" "$total" "the printed contributions must sum to the printed total"
@@ -323,9 +323,9 @@ test_the_breakdown_states_the_provenance_behind_the_number() {
   # Two separate claims, printed separately: the facts are confirmed, the
   # rating is not. A single "provenance" line would let the second ride on the
   # credibility of the first.
-  local out; out="$(score_explain qwen3-4b 20000)"
+  local out; out="$(score_explain qwen3.5-4b 20000)"
   assert_contains "$out" "facts: hf-api" "where the metadata came from" || return 1
-  assert_contains "$out" "checked 2026-08-11" "and when it was last checked" || return 1
+  assert_contains "$out" "checked 2026-08-15" "and when it was last checked" || return 1
   assert_contains "$out" "rating basis" "the rating is accounted for separately" || return 1
   assert_contains "$out" "no comparable evidence" "and its absence is stated plainly" || return 1
   assert_contains "$out" "tie-breaker only" "and popularity carries no weight"
@@ -334,8 +334,8 @@ test_the_breakdown_states_the_provenance_behind_the_number() {
 test_the_breakdown_shows_a_real_rating_when_one_exists() {
   local out
   out="$(
-    catalog_ratings() { printf '%s\n' 'qwen3-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'; }
-    score_explain qwen3-4b 20000
+    catalog_ratings() { printf '%s\n' 'qwen3.5-4b;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'; }
+    score_explain qwen3.5-4b 20000
   )"
   assert_contains "$out" "local-benchmark" "the method behind the rating" || return 1
   assert_not_contains "$out" "no comparable evidence" "and no longer claims there is none"
@@ -522,8 +522,11 @@ test_the_best_per_class_is_the_head_of_each_group() {
 test_the_budget_changes_the_ranking() {
   # If hardware fit is worth 30%, a very different budget must produce a
   # different order -- otherwise the component is not actually being applied.
+  # 7000, not 6000: since the refresh the smallest rows sit exactly on the
+  # 40% band at 6000, so that budget has an EMPTY medium class and the
+  # comparison below would be against nothing.
   local tiny_budget big_budget
-  tiny_budget="$(score_rank 6000  | awk -F'\t' '$1=="medium" { print $3; exit }')"
+  tiny_budget="$(score_rank 7000  | awk -F'\t' '$1=="medium" { print $3; exit }')"
   big_budget="$(score_rank 60000 | awk -F'\t' '$1=="medium" { print $3; exit }')"
   assert_ne "$tiny_budget" "$big_budget" \
     "the top medium model on a 6 GB card should not also be the top on a 60 GB one"
@@ -616,15 +619,19 @@ test_the_devstral_measurement_moves_its_total_from_69_to_77() {
   assert_eq "$SCORE_TOTAL" "77" "the measured total it moved to"
 }
 
-test_the_medium_top_four_are_the_four_measured_rows_in_order() {
-  # 94, 85, 84, 77: for the first time the whole head of the class is
-  # measured, so this ordering is a quality-bearing comparison from top to
-  # bottom -- with one caveat the pin exists to protect. Laguna's nine-point
-  # lead over qwen3.8 is NOT a coding-quality lead: both scored the suite's
-  # ceiling of 100, and the distance between their totals comes entirely
-  # from the other components, chiefly speed (2.7B active parameters against
-  # a 27.8B dense forward pass). The ranking reports the totals as computed;
-  # what the totals mean is written here so an edit has to contradict it.
+test_the_medium_head_is_measured_and_the_unmeasured_79_splits_it() {
+  # 94, 85, 84 measured at the head, then the unmeasured qwen3.6-35b-a3b at
+  # 79 ABOVE the measured devstral-small-2 at 77. Until the 2026-08-15
+  # capability correction the whole head of the class was measured; the
+  # corrected card capabilities (agentic coding) lift qwen3.6's features
+  # component past devstral's total, on metadata alone. Both placements are
+  # pinned so the two caveats stay written down: laguna's nine-point lead
+  # over qwen3.8 is NOT a coding-quality lead (both scored the suite's
+  # ceiling of 100 -- the distance is speed, 2.7B active parameters against
+  # a 27.8B dense forward pass), and qwen3.6's two points over devstral are
+  # not a quality verdict at all, because qwen3.6 has never run the suite.
+  # The ranking reports the totals as computed; what the totals mean is
+  # written here so an edit has to contradict it.
   local medium
   medium="$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3 }')"
   assert_eq "$(sed -n 1p <<<"$medium")" "laguna-xs-2.1" \
@@ -633,14 +640,16 @@ test_the_medium_top_four_are_the_four_measured_rows_in_order() {
     "the measured 85 is second -- tied on coding, separated on speed" || return 1
   assert_eq "$(sed -n 3p <<<"$medium")" "qwen3-coder-30b" \
     "the measured 84 is third" || return 1
-  assert_eq "$(sed -n 4p <<<"$medium")" "devstral-small-2" \
-    "and the measured 77 is fourth"
+  assert_eq "$(sed -n 4p <<<"$medium")" "qwen3.6-35b-a3b" \
+    "the unmeasured 79 is fourth, on capabilities alone" || return 1
+  assert_eq "$(sed -n 5p <<<"$medium")" "devstral-small-2" \
+    "and the measured 77 is directly behind it"
 }
 
 test_laguna_ranks_first_in_medium_on_the_measuring_machine() {
   # The one placement this change makes, stated on its own: the measured
   # laguna-xs-2.1 heads the medium class here at 94. Held apart from the
-  # top-four pin above because this line is the headline claim of the
+  # class-order pin above because this line is the headline claim of the
   # measurement, and a reshuffle below it must not obscure whether the head
   # itself moved.
   assert_eq "$(score_rank "$SCORE_MEASURED_BUDGET" | awk -F'\t' '$1=="medium" { print $3; exit }')" \
@@ -648,7 +657,7 @@ test_laguna_ranks_first_in_medium_on_the_measuring_machine() {
 }
 
 test_it_is_the_measurements_that_put_them_in_front() {
-  # The counterfactual, because "the measured rows hold the top four" on its
+  # The counterfactual, because "the measured rows lead the class" on its
   # own does not say why. With all four rows back to `unknown` the head of
   # the class is still laguna-xs-2.1 -- at a placeholder-fed 81 rather than
   # its measured 94. That coincidence is worth keeping: the model that used
@@ -684,6 +693,41 @@ test_the_measured_rows_report_medium_confidence_on_their_own() {
     "and for the third" || return 1
   assert_eq "$(score_confidence laguna-xs-2.1 missing)" "medium" \
     "and for the fourth"
+}
+
+test_the_complete_ranking_after_the_qwen_refresh() {
+  # The whole board on the measuring machine (29671 MB, 109 GB of MoE
+  # offload), every row, in order -- pinned as one string so the 2026-08-15
+  # refresh's effect on the ranking is a fact in the repo rather than a
+  # claim in a PR description. What moved, relative to the retired table:
+  # qwen3-coder-next lands one point behind laguna-s-2.1 (58 vs 59, both
+  # unmeasured -- the composite cannot meaningfully separate them);
+  # qwen3.6-35b-a3b enters medium at 79, above the measured devstral-small-2
+  # (its card claims agentic coding, so the agentic capability lifts its
+  # features component to saturation); and the small class is now headed by
+  # qwen3.5-2b at 82 over the served qwen3-1.7b's 71 -- the approved
+  # small-default flip, asserted from the selector's side in
+  # selector_test.sh. The medium and large HEADS are all measured rows in
+  # their exact positions; every retired row was a non-pick.
+  local want='large 59 laguna-s-2.1
+large 58 qwen3-coder-next
+large 31 llama-3.3-70b
+medium 94 laguna-xs-2.1
+medium 85 qwen3.8-27b
+medium 84 qwen3-coder-30b
+medium 79 qwen3.6-35b-a3b
+medium 77 devstral-small-2
+medium 62 mistral-small-3.2
+medium 56 gemma-3-27b
+small 82 qwen3.5-2b
+small 79 qwen3.5-4b
+small 76 qwen3.5-9b
+small 71 qwen3-1.7b
+small 62 gemma-3-12b
+small 56 phi-4'
+  local got
+  got="$(score_rank "$SCORE_MEASURED_BUDGET" 111616 | cut -f1-3 | tr '\t' ' ')"
+  assert_eq "$got" "$want" "all sixteen rows, in order, scores included"
 }
 
 test_the_measured_rows_can_reach_high_confidence_with_live_data() {

@@ -21,7 +21,7 @@
 # Usage:
 #   ./61-rate-models.sh                    # every served model, one pass each
 #   ./61-rate-models.sh --repeats 3        # three passes; disagreement -> low
-#   ./61-rate-models.sh --model qwen3-4b   # one model: served name or catalog id
+#   ./61-rate-models.sh --model qwen3.5-4b # one model: served name or catalog id
 #   ./61-rate-models.sh --dry-run          # print the plan, call nothing
 #
 # Output -> ~/llm-rating-<date>.txt

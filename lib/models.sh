@@ -150,7 +150,7 @@ plan_for_budget() {
   if (( fit_total < 9000 )); then
     PLAN_TIER="tiny"
     PLAN_ID_1="qwen3-coder-30b"; PLAN_Q_1="IQ3_XXS|Q3_K_S"
-    PLAN_ID_2="qwen3-4b";        PLAN_Q_2="Q5_K_M"
+    PLAN_ID_2="qwen3.5-4b";      PLAN_Q_2="Q5_K_M"
     PLAN_ID_3="qwen3-1.7b";      PLAN_Q_3="Q8_0"
     PLAN_RUNTIME="llama.cpp + llama-swap."
     PLAN_NOTE="Claude Code needs 32k context minimum, and the KV cache at that length
@@ -162,7 +162,7 @@ plan_for_budget() {
     PLAN_TIER="16g"
     PLAN_ID_1="devstral-small-2"; PLAN_Q_1="IQ4_XS|Q4_K_S"
     PLAN_ID_2="qwen3-coder-30b"; PLAN_Q_2="IQ3_M|Q3_K_M"
-    PLAN_ID_3="qwen3-4b";        PLAN_Q_3="Q5_K_M"
+    PLAN_ID_3="qwen3.5-4b";      PLAN_Q_3="Q5_K_M"
     PLAN_RUNTIME="llama.cpp + llama-swap. Quantize the KV cache to q8_0 -- that is what makes a long context fit."
     PLAN_NOTE="A 24B dense model at IQ4 fits with room for a 32-64k KV cache."
 
