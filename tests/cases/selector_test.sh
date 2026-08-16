@@ -59,8 +59,8 @@ test_the_menu_is_capped_even_if_the_catalog_grows() {
   # first is ever raised, the second must still hold -- nobody reads fifty.
   local out
   out="$(
-    catalog_ids() { seq 1 40 | sed 's/^/qwen3-4b /' | awk '{print $1}'; }
-    score_rank() { local i; for i in $(seq 1 40); do printf 'small\t50\tqwen3-4b\tQ4_K_M\tlow\t0\n'; done; }
+    catalog_ids() { seq 1 40 | sed 's/^/qwen3.5-4b /' | awk '{print $1}'; }
+    score_rank() { local i; for i in $(seq 1 40); do printf 'small\t50\tqwen3.5-4b\tQ4_K_M\tlow\t0\n'; done; }
     selector_build 20000 0
     printf '%s' "${#SELECT_ROWS[@]}"
   )"
@@ -467,16 +467,40 @@ test_devstral_ranks_second_in_medium_on_the_fixture_budget() {
 test_the_laguna_measurement_moves_the_large_pick() {
   # The devstral version of this test pinned the picks so that "a rating
   # that silently reshuffles the recommendation has to come through here and
-  # say so". This rating reshuffles it, so here is the saying-so: on the
-  # fixture budget laguna-xs-2.1 classes as large, and its measured row
-  # lifts it past qwen3-coder-30b (88 against 78) into the large slot. The
-  # medium and small picks are untouched, and the medium pick is still the
-  # named default -- laguna displaced a fellow large, not the headline
-  # recommendation.
+  # say so". Two reshuffles have come through since. The laguna measurement:
+  # on the fixture budget laguna-xs-2.1 classes as large, and its measured
+  # row lifts it past qwen3-coder-30b (88 against 78) into the large slot.
+  # The 2026-08-15 Qwen refresh: the small slot flips from the served
+  # qwen3-1.7b (71) to qwen3.5-2b (77) -- the approved small-default change,
+  # scored on metadata because both rows are unmeasured. The medium pick is
+  # still the named default throughout.
   local picks
   picks="$(selector_default_picks | paste -sd' ')"
-  assert_eq "$picks" "qwen3.8-27b laguna-xs-2.1 qwen3-1.7b" \
-    "the large slot flips to laguna; medium and small hold"
+  assert_eq "$picks" "qwen3.8-27b laguna-xs-2.1 qwen3.5-2b" \
+    "large is laguna's, small is qwen3.5-2b's, medium holds"
+}
+
+test_the_refresh_flips_the_small_default_to_qwen35_2b() {
+  # The counterfactual behind the flip, so the pick is traceable to the rows
+  # that caused it rather than asserted as a coincidence of the fixture:
+  # qwen3.5-2b outscores the served qwen3-1.7b in the small class (77 vs 71
+  # -- fresher, 262k context against 40960, six times the parameters at the
+  # same class), and with the two new small rows shadowed back out of the
+  # table the old pick returns. The SERVED small model does not change here:
+  # that is a deployment decision, gated separately.
+  local head_small old_head
+  head_small="$(score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$1=="small" { print $3; exit }')"
+  assert_eq "$head_small" "qwen3.5-2b" "the refresh's small head" || return 1
+  old_head="$(
+    _rows_shipped() { :; }
+    eval "_rows_shipped() { $(declare -f catalog_rows | tail -n +2) }"
+    catalog_rows() { _rows_shipped | grep -Ev '^qwen3\.5-(2b|4b);'; }
+    catalog_ratings_orig() { :; }
+    eval "catalog_ratings_orig() { $(declare -f catalog_ratings | tail -n +2) }"
+    catalog_ratings() { catalog_ratings_orig | grep -Ev '^qwen3\.5-(2b|4b);'; }
+    score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$1=="small" { print $3; exit }'
+  )"
+  assert_eq "$old_head" "qwen3-1.7b" "without the new rows the served model still leads"
 }
 
 test_the_menu_states_the_confidence_rather_than_only_the_score() {
@@ -494,14 +518,13 @@ test_a_rating_landing_lifts_confidence_on_the_menu() {
       printf '%s\n' 'devstral-small-2;77;2026-01-01;local-benchmark;https://example.com/run;medium;v3'
       command sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'R'
 qwen3-coder-30b;unknown;-;none;-;none;-
-qwen3-30b-a3b;unknown;-;none;-;none;-
+qwen3-coder-next;unknown;-;none;-;none;-
+qwen3.6-35b-a3b;unknown;-;none;-;none;-
 qwen3.8-27b;unknown;-;none;-;none;-
-qwen3-14b;unknown;-;none;-;none;-
-qwen3-8b;unknown;-;none;-;none;-
-qwen3-4b;unknown;-;none;-;none;-
+qwen3.5-9b;unknown;-;none;-;none;-
+qwen3.5-4b;unknown;-;none;-;none;-
+qwen3.5-2b;unknown;-;none;-;none;-
 qwen3-1.7b;unknown;-;none;-;none;-
-qwen2.5-coder-32b;unknown;-;none;-;none;-
-qwen2.5-coder-7b;unknown;-;none;-;none;-
 gemma-3-27b;unknown;-;none;-;none;-
 gemma-3-12b;unknown;-;none;-;none;-
 llama-3.3-70b;unknown;-;none;-;none;-
@@ -525,9 +548,9 @@ test_stale_live_metadata_does_not_raise_confidence() {
   # low -> medium one this test is about.
   local fresh stale
   fresh="$( SCORE_LIVE_SOURCE=fresh score_rank "$BUDGET" "$OFFLOAD" \
-            | awk -F'\t' '$3=="qwen3-4b" { print $5 }' )"
+            | awk -F'\t' '$3=="qwen3.5-4b" { print $5 }' )"
   stale="$( SCORE_LIVE_SOURCE=stale score_rank "$BUDGET" "$OFFLOAD" \
-            | awk -F'\t' '$3=="qwen3-4b" { print $5 }' )"
+            | awk -F'\t' '$3=="qwen3.5-4b" { print $5 }' )"
   assert_eq "$fresh" "medium" "current live data is worth something" || return 1
   assert_eq "$stale" "low"    "an expired cache entry is not evidence"
 }

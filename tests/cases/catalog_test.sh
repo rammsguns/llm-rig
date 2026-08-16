@@ -470,9 +470,9 @@ test_a_url_in_a_field_does_not_break_the_record() {
   # a separator, or every column after it shifts -- the same class of failure
   # the pipe separator caused.
   local src
-  src="$(catalog_get qwen3-4b fact_source)"
+  src="$(catalog_get qwen3.5-4b fact_source)"
   assert_contains "$src" "https://" "fact_source survives field splitting intact" || return 1
-  assert_eq "$(catalog_get qwen3-4b verified_at)" "2026-08-11" \
+  assert_eq "$(catalog_get qwen3.5-4b verified_at)" "2026-08-15" \
     "and the field after it is still the field after it"
 }
 
@@ -493,12 +493,12 @@ test_a_catalog_quant_preference_actually_selects_a_file() {
   local files
   files=$(printf '%s\n' \
     'README.md' \
-    'Qwen3-4B-Q4_K_M.gguf' \
-    'Qwen3-4B-Q5_K_M.gguf' \
+    'Qwen3.5-4B-Q6_K.gguf' \
+    'Qwen3.5-4B-Q8_0.gguf' \
     'mmproj-model-f16.gguf')
   local picked
-  picked="$(printf '%s\n' "$files" | select_quant_file "$(catalog_get qwen3-4b quant_prefs)")"
-  assert_eq "$picked" "Qwen3-4B-Q5_K_M.gguf" "Q5_K_M preferred over Q4_K_M, mmproj excluded"
+  picked="$(printf '%s\n' "$files" | select_quant_file "$(catalog_get qwen3.5-4b quant_prefs)")"
+  assert_eq "$picked" "Qwen3.5-4B-Q8_0.gguf" "Q8_0 preferred over Q6_K, mmproj excluded"
 }
 
 # --- accessors --------------------------------------------------------------
@@ -510,7 +510,7 @@ test_an_unknown_id_is_an_error_not_an_empty_string() {
 }
 
 test_an_unknown_field_is_an_error() {
-  run catalog_get qwen3-4b favourite_colour
+  run catalog_get qwen3.5-4b favourite_colour
   assert_fails "an unknown field must fail"
 }
 
@@ -524,7 +524,7 @@ test_the_suite_field_reads_through_the_named_accessor() {
   # reordering cannot re-point it at confidence.
   assert_eq "$(catalog_rating_get qwen3-coder-30b rating_suite)" "v3" \
     "the measured row's suite" || return 1
-  assert_eq "$(catalog_rating_get qwen3-4b rating_suite)" "-" \
+  assert_eq "$(catalog_rating_get qwen3.5-4b rating_suite)" "-" \
     "an unmeasured row has none"
 }
 
@@ -533,7 +533,7 @@ test_field_lookup_is_by_name_not_position() {
   # must not silently re-point every accessor at the wrong column.
   local idx; idx="$(catalog_field_index verified_at)"
   assert_eq "$idx" "${#CATALOG_FIELDS[@]}" "verified_at is the last declared field" || return 1
-  assert_eq "$(catalog_get qwen3-4b fact_method)" "hf-api" "and fact_method reads back correctly"
+  assert_eq "$(catalog_get qwen3.5-4b fact_method)" "hf-api" "and fact_method reads back correctly"
 }
 
 test_the_two_schemas_have_independent_index_lookups() {
@@ -547,8 +547,8 @@ test_the_two_schemas_have_independent_index_lookups() {
 test_capability_matching_does_not_match_substrings() {
   # "tool" must not match "tools", or a filter on one capability silently
   # selects another.
-  catalog_has_capability qwen3-4b tools || { _fail "qwen3-4b should have 'tools'"; return 1; }
-  if catalog_has_capability qwen3-4b tool; then
+  catalog_has_capability qwen3.5-4b tools || { _fail "qwen3.5-4b should have 'tools'"; return 1; }
+  if catalog_has_capability qwen3.5-4b tool; then
     _fail "'tool' must not match the capability 'tools'"
     return 1
   fi
@@ -560,8 +560,8 @@ test_long_context_is_derived_not_stored() {
   # long-context while its own context column said 32768.
   catalog_is_long_context devstral-small-2 \
     || { _fail "devstral-small-2 is 393216 and must count as long context"; return 1; }
-  if catalog_is_long_context qwen2.5-coder-7b; then
-    _fail "qwen2.5-coder-7b is 32768 and must not"
+  if catalog_is_long_context qwen3-1.7b; then
+    _fail "qwen3-1.7b is 40960 and must not"
     return 1
   fi
   local c
@@ -588,8 +588,8 @@ test_verified_facts_are_distinguished_from_unverified_ones() {
 
 test_size_estimates_scale_with_bits_per_weight() {
   local q4 q8
-  q4="$(catalog_est_size_mb qwen3-4b Q4_K_M)"
-  q8="$(catalog_est_size_mb qwen3-4b Q8_0)"
+  q4="$(catalog_est_size_mb qwen3.5-4b Q4_K_M)"
+  q8="$(catalog_est_size_mb qwen3.5-4b Q8_0)"
   assert_gt "$q8" "$q4" "Q8_0 must estimate larger than Q4_K_M" || return 1
   # 8.50 / 4.83 = 1.76x, within rounding.
   local ratio=$(( q8 * 100 / q4 ))
@@ -600,11 +600,11 @@ test_size_estimates_scale_with_bits_per_weight() {
 
 test_the_size_estimate_is_derived_from_the_parameter_count() {
   # It used to be a hand-maintained column, so the table could assert a size
-  # that contradicted its own params_b and nothing would notice. 4.0B at Q4_K_M
-  # is 4.0e9 * 4.83 bits / 8 = 2.4 GB.
-  local est; est="$(catalog_est_size_mb qwen3-4b Q4_K_M)"
-  (( est >= 2350 && est <= 2500 )) \
-    || { _fail "4.0B at Q4_K_M estimated ${est} MB, expected ~2415"; return 1; }
+  # that contradicted its own params_b and nothing would notice. 4.7B at Q4_K_M
+  # is 4.7e9 * 4.83 bits / 8 = 2.8 GB.
+  local est; est="$(catalog_est_size_mb qwen3.5-4b Q4_K_M)"
+  (( est >= 2780 && est <= 2900 )) \
+    || { _fail "4.7B at Q4_K_M estimated ${est} MB, expected ~2837"; return 1; }
   return 0
 }
 
@@ -628,15 +628,15 @@ test_fractional_parameter_counts_survive_integer_arithmetic() {
 }
 
 test_an_unknown_quant_has_no_size_estimate() {
-  run catalog_est_size_mb qwen3-4b Q9_ULTRA
+  run catalog_est_size_mb qwen3.5-4b Q9_ULTRA
   assert_fails "an unknown quant must fail rather than guess"
 }
 
 test_the_best_quant_for_a_budget_is_the_largest_that_fits() {
-  # qwen3-4b is 4.0B: 2415 MB at Q4_K_M, 2835 at Q5_K_M, 3280 at Q6_K, 4250 at Q8_0.
-  assert_eq "$(catalog_best_quant_for_budget qwen3-4b 10000)" "Q8_0"   "plenty of room" || return 1
-  assert_eq "$(catalog_best_quant_for_budget qwen3-4b 3000)"  "Q5_K_M" "tight budget"   || return 1
-  assert_eq "$(catalog_best_quant_for_budget qwen3-4b 2500)"  "Q4_K_M" "tighter still"
+  # qwen3.5-4b is 4.7B: 2837 MB at Q4_K_M, 3331 at Q5_K_M, 3854 at Q6_K, 4993 at Q8_0.
+  assert_eq "$(catalog_best_quant_for_budget qwen3.5-4b 10000)" "Q8_0"   "plenty of room" || return 1
+  assert_eq "$(catalog_best_quant_for_budget qwen3.5-4b 3500)"  "Q5_K_M" "tight budget"   || return 1
+  assert_eq "$(catalog_best_quant_for_budget qwen3.5-4b 3000)"  "Q4_K_M" "tighter still"
 }
 
 test_a_budget_too_small_for_any_quant_fails() {
@@ -660,17 +660,17 @@ test_classes_are_relative_to_the_budget_not_the_parameter_count() {
 
 test_the_class_boundaries_are_forty_and_eighty_percent() {
   # Exact boundary behaviour, because a band that is ambiguous at its edge is a
-  # band nobody can reason about. qwen3-4b at Q4_K_M is 2415 MB.
-  local size; size="$(catalog_est_size_mb qwen3-4b Q4_K_M)"
+  # band nobody can reason about. qwen3.5-4b at Q4_K_M is 2837 MB.
+  local size; size="$(catalog_est_size_mb qwen3.5-4b Q4_K_M)"
   local at40=$(( size * 100 / 40 ))      # budget at which the model is exactly 40%
   local at80=$(( size * 100 / 80 ))      # ... and exactly 80%
-  assert_eq "$(catalog_hw_class qwen3-4b "$at40" Q4_K_M)" "small" \
+  assert_eq "$(catalog_hw_class qwen3.5-4b "$at40" Q4_K_M)" "small" \
     "exactly 40% is still small (the band is inclusive)" || return 1
-  assert_eq "$(catalog_hw_class qwen3-4b $(( at40 - 200 )) Q4_K_M)" "medium" \
+  assert_eq "$(catalog_hw_class qwen3.5-4b $(( at40 - 200 )) Q4_K_M)" "medium" \
     "just over 40% is medium" || return 1
-  assert_eq "$(catalog_hw_class qwen3-4b "$at80" Q4_K_M)" "medium" \
+  assert_eq "$(catalog_hw_class qwen3.5-4b "$at80" Q4_K_M)" "medium" \
     "exactly 80% is still medium" || return 1
-  assert_eq "$(catalog_hw_class qwen3-4b $(( at80 - 100 )) Q4_K_M)" "large" \
+  assert_eq "$(catalog_hw_class qwen3.5-4b $(( at80 - 100 )) Q4_K_M)" "large" \
     "just over 80% is large"
 }
 
@@ -696,14 +696,14 @@ test_a_machine_with_no_usable_budget_supports_nothing() {
 }
 
 test_hw_class_rejects_a_non_numeric_budget() {
-  run catalog_hw_class qwen3-4b "lots"
+  run catalog_hw_class qwen3.5-4b "lots"
   assert_fails "a malformed budget must fail rather than classify as unsupported"
 }
 
 test_hw_class_defaults_to_the_rows_preferred_quant() {
   local explicit implicit
-  explicit="$(catalog_hw_class qwen3-4b 20000 "$(catalog_preferred_quant qwen3-4b)")"
-  implicit="$(catalog_hw_class qwen3-4b 20000)"
+  explicit="$(catalog_hw_class qwen3.5-4b 20000 "$(catalog_preferred_quant qwen3.5-4b)")"
+  implicit="$(catalog_hw_class qwen3.5-4b 20000)"
   assert_eq "$implicit" "$explicit" "omitting the quant uses the row's own preference"
 }
 
@@ -792,7 +792,7 @@ test_context_lengths_match_the_published_configs() {
   # score for eight of the fifteen models.
   assert_eq "$(catalog_get qwen3-coder-30b context)" "262144" "Qwen3-Coder-30B" || return 1
   assert_eq "$(catalog_get qwen3.8-27b context)"     "262144" "Qwen3.8-27B"     || return 1
-  assert_eq "$(catalog_get qwen2.5-coder-32b context)" "32768" "Qwen2.5-Coder-32B" || return 1
+  assert_eq "$(catalog_get qwen3-1.7b context)"       "40960" "Qwen3-1.7B"      || return 1
   assert_eq "$(catalog_get phi-4 context)"            "16384" "phi-4"           || return 1
   # config.json and the GGUF both say 393216; the card advertises 256k. The
   # config value is recorded -- see the row comment.
@@ -829,8 +829,60 @@ test_qwen3_32b_is_retired_from_both_tables() {
   # Displaced, not appended: the cap is the point of the cap.
   run catalog_row qwen3-32b
   assert_fails "the catalog row is gone" || return 1
-  assert_eq "$(catalog_ratings | grep -c '^qwen3-32b;')" "0" "and so is its rating row" || return 1
-  assert_eq "$(catalog_rows | wc -l)" "$CATALOG_MAX_ROWS" "still exactly at the cap"
+  assert_eq "$(catalog_ratings | grep -c '^qwen3-32b;')" "0" "and so is its rating row"
+}
+
+# --- the 2026-08-15 Qwen refresh ---------------------------------------------
+# Six rows out, five in, and the table's own claims about itself re-pinned.
+
+test_the_catalog_has_exactly_sixteen_rows() {
+  # Sixteen, not "at most seventeen": the refresh left one slot open on
+  # purpose, and a drive-by seventeenth row should have to explain itself
+  # here rather than slide in under the cap.
+  assert_eq "$(catalog_rows | wc -l)" "16" "sixteen rows, one slot of headroom" || return 1
+  assert_eq "$(catalog_ratings | wc -l)" "16" "and the ratings table matches"
+}
+
+test_the_six_stale_qwen_rows_are_retired_from_both_tables() {
+  # The April-2025 Qwen3 quartet minus the served 1.7b, and both 2024
+  # Qwen2.5-Coder rows. Retired, not renamed: their ids must resolve to
+  # nothing, in either table, so a stale reference fails where it stands.
+  local id
+  for id in qwen3-30b-a3b qwen3-14b qwen3-8b qwen3-4b qwen2.5-coder-32b qwen2.5-coder-7b; do
+    if catalog_row "$id" >/dev/null 2>&1; then
+      _fail "retired row '$id' is still in the facts table"
+      return 1
+    fi
+    assert_eq "$(catalog_ratings | grep -c "^$id;")" "0" \
+      "retired row '$id' must have no rating row either" || return 1
+  done
+  return 0
+}
+
+test_the_replacement_rows_match_the_published_facts() {
+  # Verified against each model's own HF repo on 2026-08-15: createdAt,
+  # safetensors totals (2.27B, 4.66B, 9.65B, 35.95B, 79.67B), apache-2.0
+  # tags, 262144 context per config.json. The two MoE active counts are the
+  # publisher's card figure ("3B activated"), cross-checked against the
+  # expert geometry in config.json -- see the row comments for why the
+  # Laguna-style computed figure is not available for the hybrid rows.
+  assert_eq "$(catalog_get qwen3.5-2b params_b)"       "2.3"  "Qwen3.5-2B safetensors total" || return 1
+  assert_eq "$(catalog_get qwen3.5-4b params_b)"       "4.7"  "Qwen3.5-4B safetensors total" || return 1
+  assert_eq "$(catalog_get qwen3.5-9b params_b)"       "9.7"  "Qwen3.5-9B safetensors total" || return 1
+  assert_eq "$(catalog_get qwen3.6-35b-a3b params_b)"  "36.0" "Qwen3.6-35B-A3B safetensors total" || return 1
+  assert_eq "$(catalog_get qwen3-coder-next params_b)" "79.7" "Qwen3-Coder-Next safetensors total" || return 1
+  assert_eq "$(catalog_get qwen3.6-35b-a3b active_params_b)"  "3.0" "the card's activated count" || return 1
+  assert_eq "$(catalog_get qwen3-coder-next active_params_b)" "3.0" "same for coder-next" || return 1
+  local id
+  for id in qwen3.5-2b qwen3.5-4b qwen3.5-9b qwen3.6-35b-a3b qwen3-coder-next; do
+    assert_eq "$(catalog_get "$id" context)" "262144" "$id context per config.json" || return 1
+    assert_eq "$(catalog_get "$id" license)" "apache-2.0" "$id license tag" || return 1
+    assert_contains "$(catalog_get "$id" fact_source)" "https://huggingface.co/api/models/Qwen/" \
+      "$id cites Qwen's own repo, never a quantizer's mirror" || return 1
+    assert_eq "$(catalog_rating_get "$id" rating_value)" "unknown" \
+      "$id arrives unmeasured, honestly" || return 1
+  done
+  return 0
 }
 
 test_the_qwen38_rating_is_the_local_measurement_not_the_vendor_import() {
@@ -1030,7 +1082,7 @@ test_the_measured_rating_rows_are_the_ones_that_were_produced() {
 }
 
 test_exactly_four_rating_rows_are_measured() {
-  # The leaderboard caveat, as a test. Four measured rows against thirteen
+  # The leaderboard caveat, as a test. Four measured rows against twelve
   # placeholders means the 100-100-93-80 ordering is a real comparison --
   # with a real tie at the top that suite v3 cannot break -- and everything
   # else is still a statement about hardware fit; anything written about the
@@ -1041,8 +1093,8 @@ test_exactly_four_rating_rows_are_measured() {
   measured="$(catalog_ratings | awk -F';' '$4 != "none" { print $1 }' | paste -sd' ')"
   assert_eq "$measured" "qwen3-coder-30b devstral-small-2 qwen3.8-27b laguna-xs-2.1" \
     "the only rows backed by measurements" || return 1
-  assert_eq "$(catalog_ratings | awk -F';' '$4 == "none"' | wc -l)" "13" \
-    "and thirteen rows still honestly say unknown"
+  assert_eq "$(catalog_ratings | awk -F';' '$4 == "none"' | wc -l)" "12" \
+    "and twelve rows still honestly say unknown"
 }
 
 test_the_readme_qwen17_boundary_note_cannot_go_silently_stale() {

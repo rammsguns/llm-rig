@@ -321,7 +321,7 @@ RATE_NONE='none'
 # catalog_ratings().
 #
 # Twelve passing tasks say the suite ran. They do not say what it ran against:
-# without these four, `qwen3-4b;93;...` is a number attached to an alias, and
+# without these four, `qwen3.5-4b;93;...` is a number attached to an alias, and
 # the next person to re-run 30-models.sh or 20-build-llamacpp.sh cannot tell
 # whether they are reproducing the measurement or replacing it. Serving flags
 # are deliberately NOT here -- a model can legitimately have none, which is why

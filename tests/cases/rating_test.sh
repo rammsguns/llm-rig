@@ -560,7 +560,7 @@ test_a_non_default_budget_blocks_the_row_mechanically() {
   # recorded, and relied on nobody doing it. v3 makes it a gate, through the
   # same function every other recordability rule goes through.
   local out
-  out="$(RATE_MAX_TOKENS=4096 rate_row_blocked qwen3-4b 12 12 "")"
+  out="$(RATE_MAX_TOKENS=4096 rate_row_blocked qwen3.5-4b 12 12 "")"
   assert_contains "$out" "non-default sampling" "the class of problem is named" || return 1
   assert_contains "$out" "max_tokens=4096" "with the value that was used" || return 1
   assert_contains "$out" "1024" "and the default it should have been"
@@ -569,7 +569,7 @@ test_a_non_default_budget_blocks_the_row_mechanically() {
 test_the_default_budget_does_not_block_the_row() {
   # Each test runs in its own subshell, so the assignment cannot leak.
   RATE_MAX_TOKENS="$RATE_MAX_TOKENS_DEFAULT"
-  run rate_row_blocked qwen3-4b 12 12 ""
+  run rate_row_blocked qwen3.5-4b 12 12 ""
   assert_fails "the suite budget is not a deviation"
 }
 
@@ -684,7 +684,7 @@ test_the_served_devstral_resolves_uniquely_to_its_own_id() {
 test_the_alias_suffix_maps_too() {
   # 40-serve.sh registers "<name>-local" as an alias, and a request may arrive
   # under either.
-  assert_eq "$(rate_catalog_id qwen3-4b-local)" "qwen3-4b" "alias"
+  assert_eq "$(rate_catalog_id qwen3.5-4b-local)" "qwen3.5-4b" "alias"
 }
 
 test_an_unknown_served_model_is_refused_not_guessed() {
@@ -711,7 +711,7 @@ test_every_catalogued_model_is_reachable_from_its_served_name() {
 # other than exactly one is a refusal with the set named.
 
 test_the_model_argument_matches_an_exact_served_name() {
-  assert_eq "$(rate_model_candidates qwen3-4b $'qwen3-4b\nphi-4')" "qwen3-4b" \
+  assert_eq "$(rate_model_candidates qwen3.5-4b $'qwen3.5-4b\nphi-4')" "qwen3.5-4b" \
     "the served name itself"
 }
 
@@ -719,12 +719,12 @@ test_the_model_argument_matches_an_exact_catalog_id() {
   # The invocation #55 actually needed: the row says devstral-small-2, the
   # server says devstral-small-2-24b-instruct-2512, and the operator should be
   # able to speak the catalog's language.
-  assert_eq "$(rate_model_candidates devstral-small-2 $'devstral-small-2-24b-instruct-2512\nqwen3-4b')" \
+  assert_eq "$(rate_model_candidates devstral-small-2 $'devstral-small-2-24b-instruct-2512\nqwen3.5-4b')" \
     "devstral-small-2-24b-instruct-2512" "the catalog id reaches the served model it maps to"
 }
 
 test_the_model_argument_never_matches_a_prefix() {
-  local avail=$'devstral-small-2-24b-instruct-2512\nqwen3-4b'
+  local avail=$'devstral-small-2-24b-instruct-2512\nqwen3.5-4b'
   run rate_model_candidates devstral "$avail"
   assert_fails "a prefix of the id is not the id" || return 1
   run rate_model_candidates devstral-small-2-24b "$avail"
@@ -732,7 +732,7 @@ test_the_model_argument_never_matches_a_prefix() {
 }
 
 test_an_argument_matching_nothing_is_a_failure_with_no_candidates() {
-  run rate_model_candidates qwen2.5-coder-32b $'qwen3-4b\nphi-4'
+  run rate_model_candidates gemma-3-12b $'qwen3.5-4b\nphi-4'
   assert_fails "zero candidates is status 1, not an empty success" || return 1
   assert_eq "$RUN_OUTPUT" "" "and nothing is proposed"
 }
@@ -742,7 +742,7 @@ test_an_uncatalogued_served_model_is_still_selectable_by_its_name() {
   # But the driver measures uncatalogued models, with a warning and without a
   # row, and the served-name branch keeps that reachable.
   assert_eq "$(rate_model_candidates some-finetune-nobody-catalogued \
-      $'some-finetune-nobody-catalogued\nqwen3-4b')" \
+      $'some-finetune-nobody-catalogued\nqwen3.5-4b')" \
     "some-finetune-nobody-catalogued" "selectable, measured, still not recorded"
 }
 
@@ -753,21 +753,21 @@ test_a_name_and_its_alias_are_two_candidates_not_a_tiebreak() {
   # name match here would be a tiebreak, and the flag promises exactness, not
   # precedence.
   local out
-  out="$(rate_model_candidates qwen3-4b $'qwen3-4b\nqwen3-4b-local')"
+  out="$(rate_model_candidates qwen3.5-4b $'qwen3.5-4b\nqwen3.5-4b-local')"
   assert_eq "$(wc -l <<<"$out")" "2" "both candidates come back" || return 1
-  assert_contains "$out" "qwen3-4b-local" "including the alias"
+  assert_contains "$out" "qwen3.5-4b-local" "including the alias"
 }
 
 test_one_served_model_matching_both_ways_is_one_candidate() {
   # phi-4's served name IS its catalog id. Matching by name and again by id
   # must not print it twice and turn the one model it denotes into a refusal.
-  assert_eq "$(rate_model_candidates phi-4 $'phi-4\nqwen3-4b')" "phi-4" "once, not twice"
+  assert_eq "$(rate_model_candidates phi-4 $'phi-4\nqwen3.5-4b')" "phi-4" "once, not twice"
 }
 
 test_the_row_cites_the_artifact_and_not_a_url() {
   local row
-  row="$(rate_row qwen3-4b 67 2026-08-11 "$HOME/llm-rating-20260811-1930.txt" medium)"
-  assert_eq "$row" "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-20260811-1930.txt;medium;v3" \
+  row="$(rate_row qwen3.5-4b 67 2026-08-11 "$HOME/llm-rating-20260811-1930.txt" medium)"
+  assert_eq "$row" "qwen3.5-4b;67;2026-08-11;local-benchmark;file:llm-rating-20260811-1930.txt;medium;v3" \
     "the row pastes straight into catalog_ratings"
 }
 
@@ -775,14 +775,14 @@ test_the_row_carries_the_suite_that_actually_ran() {
   # The token is emitted by rate_row itself, not passed by the caller, so a
   # row can never claim a version other than the one this library defines.
   local row
-  row="$(rate_row qwen3-4b 67 2026-08-11 llm-rating-1.txt medium)"
+  row="$(rate_row qwen3.5-4b 67 2026-08-11 llm-rating-1.txt medium)"
   assert_eq "${row##*;}" "$RATE_SUITE_TOKEN" "the last field is the suite token"
 }
 
 test_the_row_drops_the_directory() {
   # An absolute path from someone else's $HOME would not resolve on yours.
   local row
-  row="$(rate_row qwen3-4b 67 2026-08-11 /home/someone/llm-rating-1.txt medium)"
+  row="$(rate_row qwen3.5-4b 67 2026-08-11 /home/someone/llm-rating-1.txt medium)"
   assert_not_contains "$row" "/home/someone" "no foreign path in the table"
 }
 
@@ -805,32 +805,32 @@ with_rating() {
 }
 
 test_a_local_benchmark_row_validates() {
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-20260811-1930.txt;medium;v3"
+  with_rating "qwen3.5-4b;67;2026-08-11;local-benchmark;file:llm-rating-20260811-1930.txt;medium;v3"
   run catalog_validate
   assert_ok "a well-formed local-benchmark rating: ${CATALOG_ERRORS:-}"
 }
 
 test_a_local_benchmark_row_citing_a_url_is_refused() {
   # The whole point of the method: there is no URL for a file on this machine.
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;https://example.com/run;medium;v3"
+  with_rating "qwen3.5-4b;67;2026-08-11;local-benchmark;https://example.com/run;medium;v3"
   catalog_validate
   assert_contains "${CATALOG_ERRORS:-}" "must be 'file:" "https is not evidence of a local run"
 }
 
 test_a_local_benchmark_row_citing_a_path_is_refused() {
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:/home/kiwi/llm-rating-1.txt;medium;v3"
+  with_rating "qwen3.5-4b;67;2026-08-11;local-benchmark;file:/home/someone/llm-rating-1.txt;medium;v3"
   catalog_validate
   assert_contains "${CATALOG_ERRORS:-}" "must be 'file:" "a path from another machine"
 }
 
 test_a_vendor_benchmark_still_requires_an_https_source() {
-  with_rating "qwen3-4b;67;2026-08-11;vendor-benchmark;file:llm-rating-1.txt;medium;-"
+  with_rating "qwen3.5-4b;67;2026-08-11;vendor-benchmark;file:llm-rating-1.txt;medium;-"
   catalog_validate
   assert_contains "${CATALOG_ERRORS:-}" "must be an https URL" "a published claim must be linkable"
 }
 
 test_a_rating_still_cannot_be_recorded_without_a_value() {
-  with_rating "qwen3-4b;unknown;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium;v3"
+  with_rating "qwen3.5-4b;unknown;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium;v3"
   catalog_validate
   assert_contains "${CATALOG_ERRORS:-}" "claims evidence but value is unknown" "method without a number"
 }
@@ -841,23 +841,23 @@ test_a_medium_rating_lifts_confidence_but_a_low_one_does_not() {
   # 61-rate-models.sh returns low for a single unrepeated pass. Counting that
   # the same as a repeated measurement would let a hurried run raise the
   # confidence of the ranking it feeds.
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;low;v3"
-  assert_eq "$(score_confidence qwen3-4b fresh)" "medium" "facts + live, rating too weak to count" || return 1
+  with_rating "qwen3.5-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;low;v3"
+  assert_eq "$(score_confidence qwen3.5-4b fresh)" "medium" "facts + live, rating too weak to count" || return 1
 
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium;v3"
-  assert_eq "$(score_confidence qwen3-4b fresh)" "high" "facts + live + a rating that counts"
+  with_rating "qwen3.5-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium;v3"
+  assert_eq "$(score_confidence qwen3.5-4b fresh)" "high" "facts + live + a rating that counts"
 }
 
 test_the_rating_feeds_the_coding_component() {
-  with_rating "qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium;v3"
+  with_rating "qwen3.5-4b;67;2026-08-11;local-benchmark;file:llm-rating-1.txt;medium;v3"
   SCORE_CODING_KNOWN=0
   local v
-  v="$(score_coding qwen3-4b)"
+  v="$(score_coding qwen3.5-4b)"
   assert_eq "$v" "67" "the measured value, not the neutral 50"
 }
 
 test_an_unrated_model_still_scores_at_the_neutral_50() {
-  assert_eq "$(score_coding qwen3-4b)" "50" "unknown means neutral, not zero"
+  assert_eq "$(score_coding qwen3.5-4b)" "50" "unknown means neutral, not zero"
 }
 
 # --- runtime identity -------------------------------------------------------
@@ -873,13 +873,13 @@ write_cfg() {
   cat >"$RIG_DIR/etc/llama-swap.yaml" <<'CFG'
 startPort: 9100
 models:
-  "qwen3-4b":
-    # Qwen3-4B-Q5_K_M.gguf  (~2835 MB) -- pinned to GPU0
+  "qwen3.5-4b":
+    # Qwen3.5-4B-Q5_K_M.gguf  (~2835 MB) -- pinned to GPU0
     cmd: |
       CUDA_VISIBLE_DEVICES=0 llama-server ${base}
-      -m /models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf
+      -m /models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q5_K_M.gguf
     ttl: 900
-    aliases: ["qwen3-4b-local"]
+    aliases: ["qwen3.5-4b-local"]
 
   "qwen3-coder-30b-a3b-instruct":
     cmd: |
@@ -904,8 +904,8 @@ CFG
 
 test_the_weights_come_from_the_config_not_the_catalog() {
   local cfg; cfg="$(write_cfg)"
-  assert_eq "$(rate_swap_gguf "$cfg" qwen3-4b)" \
-    "/models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf" "the -m path"
+  assert_eq "$(rate_swap_gguf "$cfg" qwen3.5-4b)" \
+    "/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q5_K_M.gguf" "the -m path"
 }
 
 test_one_model_cannot_borrow_another_models_weights() {
@@ -920,13 +920,13 @@ test_one_model_cannot_borrow_another_models_weights() {
 test_an_unknown_model_or_missing_config_is_unavailable_not_a_guess() {
   local cfg; cfg="$(write_cfg)"
   assert_eq "$(rate_swap_gguf "$cfg" not-served)" "unavailable" "unknown model" || return 1
-  assert_eq "$(rate_swap_gguf "$SANDBOX/nope.yaml" qwen3-4b)" "unavailable" "no config"
+  assert_eq "$(rate_swap_gguf "$SANDBOX/nope.yaml" qwen3.5-4b)" "unavailable" "no config"
 }
 
 test_the_quant_is_read_off_the_file_on_disk() {
   # Not from the catalog's preference: that is what was ASKED for, and the
   # reason to record it at all is that the two can differ.
-  assert_eq "$(rate_quant_of /models/x/Qwen3-4B-Q5_K_M.gguf)" "Q5_K_M" "K quant" || return 1
+  assert_eq "$(rate_quant_of /models/x/Qwen3.5-4B-Q5_K_M.gguf)" "Q5_K_M" "K quant" || return 1
   assert_eq "$(rate_quant_of Devstral-Small-2507-IQ4_XS.gguf)" "IQ4_XS" "I quant" || return 1
   assert_eq "$(rate_quant_of model-Q8_0.gguf)" "Q8_0" "legacy quant" || return 1
   assert_eq "$(rate_quant_of some-model-BF16.gguf)" "BF16" "unquantised"
@@ -949,7 +949,7 @@ test_a_pinned_gpu_counts_as_a_serving_flag() {
   # CUDA_VISIBLE_DEVICES changes what the measurement measures as surely as
   # any --flag does.
   local cfg; cfg="$(write_cfg)"
-  assert_contains "$(rate_swap_flags "$cfg" qwen3-4b)" "CUDA_VISIBLE_DEVICES=0" "pinning"
+  assert_contains "$(rate_swap_flags "$cfg" qwen3.5-4b)" "CUDA_VISIBLE_DEVICES=0" "pinning"
 }
 
 test_the_llamacpp_revision_is_read_from_the_build_record() {
@@ -965,23 +965,23 @@ test_the_live_context_is_matched_to_the_model_being_rated() {
   local cfg; cfg="$(write_cfg)"
   {
     printf '*\t127.0.0.1:9100/props\t200\t{"model_path":"/models/other/Other-Q4_K_M.gguf","default_generation_settings":{"n_ctx":8192}}\n'
-    printf '*\t127.0.0.1:9101/props\t200\t{"model_path":"/models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf","default_generation_settings":{"n_ctx":65536}}\n'
+    printf '*\t127.0.0.1:9101/props\t200\t{"model_path":"/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q5_K_M.gguf","default_generation_settings":{"n_ctx":65536}}\n'
   } >"$MOCK_ROUTES"
-  assert_eq "$(rate_live_ctx "$cfg" /models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf)" "65536" \
+  assert_eq "$(rate_live_ctx "$cfg" /models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q5_K_M.gguf)" "65536" \
     "the context of the server serving these weights"
 }
 
 test_no_matching_upstream_means_unavailable() {
   local cfg; cfg="$(write_cfg)"
   printf '*\t/props\t200\t{"model_path":"/models/other/Other-Q4_K_M.gguf","default_generation_settings":{"n_ctx":8192}}\n' >"$MOCK_ROUTES"
-  assert_eq "$(rate_live_ctx "$cfg" /models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf)" "unavailable" \
+  assert_eq "$(rate_live_ctx "$cfg" /models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q5_K_M.gguf)" "unavailable" \
     "another model's 8192 must not be recorded as this one's"
 }
 
 test_no_props_at_all_means_unavailable() {
   local cfg; cfg="$(write_cfg)"
   : >"$MOCK_ROUTES"
-  assert_eq "$(rate_live_ctx "$cfg" /models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf)" "unavailable" \
+  assert_eq "$(rate_live_ctx "$cfg" /models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q5_K_M.gguf)" "unavailable" \
     "nothing answered"
 }
 
@@ -997,7 +997,7 @@ test_a_model_with_no_per_model_flags_reports_none_not_unavailable() {
 test_an_unreadable_config_or_key_still_reports_unavailable() {
   local cfg; cfg="$(write_cfg)"
   assert_eq "$(rate_swap_flags "$cfg" not-served)" "unavailable" "no such model" || return 1
-  assert_eq "$(rate_swap_flags "$SANDBOX/nope.yaml" qwen3-4b)" "unavailable" "no config"
+  assert_eq "$(rate_swap_flags "$SANDBOX/nope.yaml" qwen3.5-4b)" "unavailable" "no config"
 }
 
 test_a_model_key_with_no_flags_is_found_not_failed() {
@@ -1015,7 +1015,7 @@ test_a_model_key_with_no_flags_is_found_not_failed() {
 # Twelve passing tasks say the suite ran. They do not say what it ran against.
 
 test_complete_provenance_reports_nothing_missing() {
-  run rate_provenance_missing /models/x/Qwen3-4B-Q5_K_M.gguf Q5_K_M abc1234 65536
+  run rate_provenance_missing /models/x/Qwen3.5-4B-Q5_K_M.gguf Q5_K_M abc1234 65536
   assert_ok "all four fields established" || return 1
   assert_eq "$RUN_OUTPUT" "" "and nothing is named as missing"
 }
@@ -1023,7 +1023,7 @@ test_complete_provenance_reports_nothing_missing() {
 test_every_required_field_is_named_when_it_alone_is_missing() {
   # Field by field, so a future reordering of the arguments cannot silently
   # start reporting the wrong name.
-  local -a good=(/models/x/Qwen3-4B-Q5_K_M.gguf Q5_K_M abc1234 65536)
+  local -a good=(/models/x/Qwen3.5-4B-Q5_K_M.gguf Q5_K_M abc1234 65536)
   local -a args
   local i out
   for i in "${!RATE_REQUIRED_PROVENANCE[@]}"; do
@@ -1058,7 +1058,7 @@ test_an_empty_field_counts_as_missing() {
 }
 
 test_a_recordable_run_is_not_blocked() {
-  run rate_row_blocked qwen3-4b 12 12 ""
+  run rate_row_blocked qwen3.5-4b 12 12 ""
   assert_fails "catalogued, complete, and identified" || return 1
   assert_eq "$RUN_OUTPUT" "" "no reason to print"
 }
@@ -1067,16 +1067,16 @@ test_each_reason_a_row_is_blocked_is_named() {
   local out
   out="$(rate_row_blocked "" 12 12 "")"
   assert_contains "$out" "not in the catalog" "no id to write against" || return 1
-  out="$(rate_row_blocked qwen3-4b 11 12 "")"
+  out="$(rate_row_blocked qwen3.5-4b 11 12 "")"
   assert_contains "$out" "11 of 12" "a partial run is a report, not evidence" || return 1
-  out="$(rate_row_blocked qwen3-4b 12 12 "weights,quant")"
+  out="$(rate_row_blocked qwen3.5-4b 12 12 "weights,quant")"
   assert_contains "$out" "weights,quant" "and an unidentified runtime names its gaps"
 }
 
 test_a_complete_run_alone_does_not_earn_a_row() {
   # The whole point of the gate: 12/12 with nothing known about the runtime is
   # a diagnostic, not evidence.
-  run rate_row_blocked qwen3-4b 12 12 "weights,quant,llamacpp-revision,live-n_ctx"
+  run rate_row_blocked qwen3.5-4b 12 12 "weights,quant,llamacpp-revision,live-n_ctx"
   assert_ok "blocked despite a clean sweep" || return 1
   assert_contains "$RUN_OUTPUT" "runtime provenance" "with the reason stated"
 }
@@ -1094,9 +1094,9 @@ write_artifact() {
 llm-rig local coding rating  20260811-1930
 suite: v1 (12 tasks, total weight 15)
 
-model: qwen3-4b
+model: qwen3.5-4b
   task comprehension-loop   kind=answer weight=1  pass (2/2)
-RESULT qwen3-4b value=67 weight=10/15 answered=12/12 flips=0 confidence=medium
+RESULT qwen3.5-4b value=67 weight=10/15 answered=12/12 flips=0 confidence=medium
 
 model: phi-4
 RESULT phi-4 value=40 weight=6/15 answered=12/12 flips=0 confidence=medium
@@ -1106,14 +1106,14 @@ ART
 
 test_a_result_line_is_machine_readable() {
   local f; f="$(write_artifact)"
-  assert_eq "$(rate_artifact_result "$f" qwen3-4b value)" "67" "value" || return 1
-  assert_eq "$(rate_artifact_result "$f" qwen3-4b confidence)" "medium" "confidence" || return 1
+  assert_eq "$(rate_artifact_result "$f" qwen3.5-4b value)" "67" "value" || return 1
+  assert_eq "$(rate_artifact_result "$f" qwen3.5-4b confidence)" "medium" "confidence" || return 1
   assert_eq "$(rate_artifact_result "$f" phi-4 value)" "40" "the second model"
 }
 
 test_a_missing_model_in_the_artifact_is_an_error() {
   local f; f="$(write_artifact)"
-  run rate_artifact_result "$f" qwen2.5-coder-32b value
+  run rate_artifact_result "$f" gemma-3-12b value
   assert_fails "a model that was not rated"
 }
 
@@ -1124,9 +1124,9 @@ test_the_suite_key_on_a_result_line_is_machine_readable() {
 llm-rig local coding rating  20260815-0900
 suite: v3 (12 tasks, total weight 15)
 
-RESULT qwen3-4b suite=v3 value=67 weight=10/15 answered=12/12 flips=0 confidence=medium
+RESULT qwen3.5-4b suite=v3 value=67 weight=10/15 answered=12/12 flips=0 confidence=medium
 ART
-  assert_eq "$(rate_artifact_result "$SANDBOX/llm-rating-20260815-0900.txt" qwen3-4b suite)" \
+  assert_eq "$(rate_artifact_result "$SANDBOX/llm-rating-20260815-0900.txt" qwen3.5-4b suite)" \
     "v3" "the suite key reads like value or confidence"
 }
 
@@ -1136,12 +1136,12 @@ test_a_pre_v3_artifact_has_no_suite_key_and_says_so() {
   # does not say its suite version is by definition pre-v3, and that is the
   # caller's conclusion to draw, from the failure.
   local f; f="$(write_artifact)"
-  run rate_artifact_result "$f" qwen3-4b suite
+  run rate_artifact_result "$f" qwen3.5-4b suite
   assert_fails "no suite key on an old RESULT line"
 }
 
 test_a_missing_artifact_is_an_error_not_an_empty_value() {
-  run rate_artifact_result "$SANDBOX/nope.txt" qwen3-4b value
+  run rate_artifact_result "$SANDBOX/nope.txt" qwen3.5-4b value
   assert_fails "no artifact"
 }
 
@@ -1176,22 +1176,22 @@ test_curl_appears_in_exactly_one_function() {
 test_a_call_posts_to_v1_messages_and_returns_the_body() {
   printf 'POST\t/v1/messages\t200\t{"content":[{"type":"text","text":"6"}]}\n' >"$MOCK_ROUTES"
   local resp
-  resp="$(rate_call http://127.0.0.1:8081 qwen3-4b comprehension-loop)"
+  resp="$(rate_call http://127.0.0.1:8081 qwen3.5-4b comprehension-loop)"
   assert_eq "$(rate_response_text "$resp")" "6" "the body comes back intact" || return 1
   assert_contains "$(cat "$MOCK_CALLS")" "/v1/messages" "posted to the Messages endpoint"
 }
 
 test_a_non_200_is_a_failure_with_the_reason_kept() {
   printf 'POST\t/v1/messages\t500\tmodel failed to load\n' >"$MOCK_ROUTES"
-  run rate_call http://127.0.0.1:8081 qwen3-4b comprehension-loop
+  run rate_call http://127.0.0.1:8081 qwen3.5-4b comprehension-loop
   assert_fails "http 500" || return 1
-  rate_call http://127.0.0.1:8081 qwen3-4b comprehension-loop >/dev/null 2>&1
+  rate_call http://127.0.0.1:8081 qwen3.5-4b comprehension-loop >/dev/null 2>&1
   assert_contains "$RATE_LAST_ERROR" "500" "the status is reported, not swallowed"
 }
 
 test_a_trailing_slash_on_the_endpoint_does_not_double_up() {
   printf 'POST\t/v1/messages\t200\t{"content":[]}\n' >"$MOCK_ROUTES"
-  rate_call http://127.0.0.1:8081/ qwen3-4b comprehension-loop >/dev/null 2>&1
+  rate_call http://127.0.0.1:8081/ qwen3.5-4b comprehension-loop >/dev/null 2>&1
   assert_not_contains "$(cat "$MOCK_CALLS")" "//v1/messages" "no doubled slash"
 }
 
@@ -1200,11 +1200,11 @@ test_a_trailing_slash_on_the_endpoint_does_not_double_up() {
 # no network -- the routes table answers /v1/models and /v1/messages, so the
 # whole path from endpoint resolution to the pasteable row is exercised.
 
-# Serve `qwen3-4b` and answer every task with the given text.
+# Serve `qwen3.5-4b` and answer every task with the given text.
 serve_model() {
   local answer="${1:-6}"
   {
-    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3-4b"}]}\n'
+    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3.5-4b"}]}\n'
     printf 'POST\t/v1/messages\t200\t{"content":[{"type":"text","text":"%s"}]}\n' "$answer"
   } >"$MOCK_ROUTES"
 }
@@ -1217,7 +1217,7 @@ drive() { run bash -c "cd '$REPO_ROOT' && HOME='$HOME' PATH='$PATH' bash ./61-ra
 with_full_provenance() {
   write_cfg >/dev/null
   printf 'abc1234def\n' >"$RIG_DIR/.llamacpp-rev"
-  printf '*\t127.0.0.1:9100/props\t200\t{"model_path":"/models/Qwen3-4B-GGUF/Qwen3-4B-Q5_K_M.gguf","default_generation_settings":{"n_ctx":65536}}\n' \
+  printf '*\t127.0.0.1:9100/props\t200\t{"model_path":"/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q5_K_M.gguf","default_generation_settings":{"n_ctx":65536}}\n' \
     >>"$MOCK_ROUTES"
 }
 
@@ -1230,13 +1230,13 @@ test_the_script_writes_an_artifact_and_a_pasteable_row() {
   local artifact
   artifact="$(rate_latest_artifact "$HOME")"
   assert_ne "$artifact" "" "an artifact must be written" || return 1
-  assert_contains "$(cat "$artifact")" "RESULT qwen3-4b" "with a machine-readable result" || return 1
+  assert_contains "$(cat "$artifact")" "RESULT qwen3.5-4b" "with a machine-readable result" || return 1
   assert_contains "$(cat "$artifact")" "No model output is executed" \
     "and a standing statement of what the grading does" || return 1
 
   # The row it prints must be one catalog_validate will accept.
   local row
-  row="$(printf '%s\n' "$RUN_OUTPUT" | grep '^qwen3-4b;')"
+  row="$(printf '%s\n' "$RUN_OUTPUT" | grep '^qwen3.5-4b;')"
   with_rating "$row"
   run catalog_validate
   assert_ok "the printed row must validate: ${CATALOG_ERRORS:-}"
@@ -1254,7 +1254,7 @@ test_the_artifact_names_its_suite_in_header_and_result_line() {
   local artifact
   artifact="$(rate_latest_artifact "$HOME")"
   assert_contains "$(cat "$artifact")" "suite: v3 " "the header" || return 1
-  assert_eq "$(rate_artifact_result "$artifact" qwen3-4b suite)" "v3" \
+  assert_eq "$(rate_artifact_result "$artifact" qwen3.5-4b suite)" "v3" \
     "and the RESULT line, through the parser"
 }
 
@@ -1271,7 +1271,7 @@ test_a_run_at_a_non_default_budget_is_measured_but_not_recorded() {
   art="$(cat "$(rate_latest_artifact "$HOME")")"
   assert_contains "$art" "max_tokens=4096" "the artifact records what was used" || return 1
   assert_contains "$art" "no catalog row: non-default sampling" "and why there is no row" || return 1
-  assert_not_contains "$RUN_OUTPUT" $'\nqwen3-4b;' "no row may be offered" || return 1
+  assert_not_contains "$RUN_OUTPUT" $'\nqwen3.5-4b;' "no row may be offered" || return 1
   assert_contains "$RUN_OUTPUT" "nothing to record" "and the run says so"
 }
 
@@ -1286,7 +1286,7 @@ test_the_artifact_records_what_was_actually_running() {
   local art
   art="$(cat "$(rate_latest_artifact "$HOME")")"
   assert_contains "$art" "llama.cpp revision: abc1234def" "the build" || return 1
-  assert_contains "$art" "weights: Qwen3-4B-Q5_K_M.gguf" "the file on disk" || return 1
+  assert_contains "$art" "weights: Qwen3.5-4B-Q5_K_M.gguf" "the file on disk" || return 1
   assert_contains "$art" "quant: Q5_K_M" "the quant it was served at" || return 1
   assert_contains "$art" "CUDA_VISIBLE_DEVICES=0" "the serving flags" || return 1
   assert_contains "$art" "live n_ctx: 65536" "what the server reported" || return 1
@@ -1300,7 +1300,7 @@ test_a_starved_model_produces_no_rating_and_no_row() {
   # runtime provenance is complete -- so nothing except the truncation rule is
   # standing between this model and a catalog row.
   {
-    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3-4b"}]}\n'
+    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3.5-4b"}]}\n'
     printf 'POST\t/v1/messages\t200\t{"content":[{"type":"thinking","thinking":"Let me work through this"}],"stop_reason":"max_tokens"}\n'
   } >"$MOCK_ROUTES"
   with_full_provenance
@@ -1316,14 +1316,14 @@ test_a_starved_model_produces_no_rating_and_no_row() {
     "provenance is not what is wrong here -- the evidence is" || return 1
   assert_contains "$art" "no catalog row:" "so the row is blocked" || return 1
 
-  assert_not_contains "$RUN_OUTPUT" "qwen3-4b;" "and no row is printed to paste"
+  assert_not_contains "$RUN_OUTPUT" "qwen3.5-4b;" "and no row is printed to paste"
 }
 
 test_the_result_line_counts_the_incomplete_tasks() {
   # Machine-readable, like every other RESULT field: a reader must be able to
   # tell a starved run from a merely bad one without parsing prose.
   {
-    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3-4b"}]}\n'
+    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3.5-4b"}]}\n'
     printf 'POST\t/v1/messages\t200\t{"content":[],"stop_reason":"max_tokens"}\n'
   } >"$MOCK_ROUTES"
   with_full_provenance
@@ -1332,7 +1332,7 @@ test_the_result_line_counts_the_incomplete_tasks() {
 
   local artifact n
   artifact="$(rate_latest_artifact "$HOME")"
-  n="$(rate_artifact_result "$artifact" qwen3-4b incomplete)"
+  n="$(rate_artifact_result "$artifact" qwen3.5-4b incomplete)"
   assert_eq "$n" "$(rate_task_count)" "every task is counted as incomplete"
 }
 
@@ -1346,9 +1346,9 @@ test_a_clean_wrong_answer_still_produces_a_rating() {
 
   local artifact
   artifact="$(rate_latest_artifact "$HOME")"
-  assert_eq "$(rate_artifact_result "$artifact" qwen3-4b incomplete)" "0" \
+  assert_eq "$(rate_artifact_result "$artifact" qwen3.5-4b incomplete)" "0" \
     "nothing was truncated" || return 1
-  assert_eq "$(rate_artifact_result "$artifact" qwen3-4b answered)" \
+  assert_eq "$(rate_artifact_result "$artifact" qwen3.5-4b answered)" \
     "$(rate_task_count)/$(rate_task_count)" "every task was answered"
 }
 
@@ -1391,12 +1391,12 @@ test_a_complete_run_with_no_runtime_identity_produces_no_row() {
 
   local art
   art="$(cat "$(rate_latest_artifact "$HOME")")"
-  assert_contains "$art" "RESULT qwen3-4b" "the measurement is still written down" || return 1
+  assert_contains "$art" "RESULT qwen3.5-4b" "the measurement is still written down" || return 1
   assert_contains "$art" "answered=12/12" "and it answered everything" || return 1
   assert_contains "$art" "provenance=missing:" "but the RESULT line says it is unidentified" || return 1
   assert_contains "$art" "no catalog row:" "with the reason in the file" || return 1
 
-  assert_not_contains "$RUN_OUTPUT" $'\nqwen3-4b;' "no row may be offered" || return 1
+  assert_not_contains "$RUN_OUTPUT" $'\nqwen3.5-4b;' "no row may be offered" || return 1
   assert_contains "$RUN_OUTPUT" "nothing to record" "and the run says so" || return 1
   assert_contains "$RUN_OUTPUT" "incomplete runtime provenance" "naming the class of problem" || return 1
   assert_contains "$RUN_OUTPUT" "weights" "and the fields themselves"
@@ -1411,7 +1411,7 @@ test_partial_runtime_identity_is_still_no_row() {
   drive ""
   assert_ok "the run must complete" || return 1
 
-  assert_not_contains "$RUN_OUTPUT" $'\nqwen3-4b;' "no row" || return 1
+  assert_not_contains "$RUN_OUTPUT" $'\nqwen3.5-4b;' "no row" || return 1
   # Exactly the one field, with nothing listed before it: the three that were
   # read must not be reported as gaps.
   assert_contains "$RUN_OUTPUT" "runtime provenance: live-n_ctx" "only the field that is missing"
@@ -1426,10 +1426,10 @@ test_full_runtime_identity_produces_the_row_unchanged() {
   assert_ok "the run must complete: $RUN_OUTPUT" || return 1
 
   local row
-  row="$(printf '%s\n' "$RUN_OUTPUT" | grep '^qwen3-4b;')"
+  row="$(printf '%s\n' "$RUN_OUTPUT" | grep '^qwen3.5-4b;')"
   # 6, not 100: answering "6" to everything passes comprehension-loop and
   # nothing else, which is 1 of 15 weight.
-  assert_eq "$row" "qwen3-4b;6;$(date +%F);local-benchmark;file:$(basename "$(rate_latest_artifact "$HOME")");medium;v3" \
+  assert_eq "$row" "qwen3.5-4b;6;$(date +%F);local-benchmark;file:$(basename "$(rate_latest_artifact "$HOME")");medium;v3" \
     "the row, now carrying the suite that produced it" || return 1
   with_rating "$row"
   run catalog_validate
@@ -1465,7 +1465,7 @@ test_a_model_that_answers_everything_wrong_still_produces_a_row() {
   drive ""
   assert_ok "the run must complete" || return 1
   assert_contains "$RUN_OUTPUT" "value=0" "zero is a legitimate rating" || return 1
-  assert_contains "$RUN_OUTPUT" "qwen3-4b;0;" "and it is offered as a row"
+  assert_contains "$RUN_OUTPUT" "qwen3.5-4b;0;" "and it is offered as a row"
 }
 
 test_a_single_pass_is_recorded_as_low_confidence() {
@@ -1474,7 +1474,7 @@ test_a_single_pass_is_recorded_as_low_confidence() {
   drive ""
   assert_contains "$RUN_OUTPUT" "confidence=low" "one repeat cannot support more" || return 1
   local row
-  row="$(printf '%s\n' "$RUN_OUTPUT" | grep '^qwen3-4b;')"
+  row="$(printf '%s\n' "$RUN_OUTPUT" | grep '^qwen3.5-4b;')"
   assert_contains "$row" ";low" "and the row says so"
 }
 
@@ -1501,26 +1501,26 @@ test_dry_run_maps_names_and_calls_nothing() {
   serve_model 6
   drive "--dry-run"
   assert_ok "dry run" || return 1
-  assert_contains "$RUN_OUTPUT" "qwen3-4b" "the served model is listed" || return 1
+  assert_contains "$RUN_OUTPUT" "qwen3.5-4b" "the served model is listed" || return 1
   assert_not_contains "$(cat "$MOCK_CALLS")" "/v1/messages" "no task may be sent" || return 1
   assert_eq "$(rate_latest_artifact "$HOME")" "" "and nothing is written"
 }
 
 test_an_unserved_model_is_refused_by_name() {
   serve_model 6
-  drive "--model qwen2.5-coder-32b"
+  drive "--model phi-4"
   assert_fails "a model the endpoint does not serve" || return 1
   assert_contains "$RUN_OUTPUT" "does not serve" "named, not 'invalid input'" || return 1
-  assert_contains "$RUN_OUTPUT" "qwen3-4b" "and what it does serve is listed"
+  assert_contains "$RUN_OUTPUT" "qwen3.5-4b" "and what it does serve is listed"
 }
 
 # Two served models whose names differ from their catalog ids differently:
 # devstral maps devstral-small-2-24b-instruct-2512 -> devstral-small-2, and
-# qwen3-4b is its own id. Every task is answered, so a selection bug shows up
+# qwen3.5-4b is its own id. Every task is answered, so a selection bug shows up
 # as the wrong model being measured rather than as a failed run.
 serve_two_models() {
   {
-    printf 'GET\t/v1/models\t200\t{"data":[{"id":"devstral-small-2-24b-instruct-2512"},{"id":"qwen3-4b"}]}\n'
+    printf 'GET\t/v1/models\t200\t{"data":[{"id":"devstral-small-2-24b-instruct-2512"},{"id":"qwen3.5-4b"}]}\n'
     printf 'POST\t/v1/messages\t200\t{"content":[{"type":"text","text":"6"}]}\n'
   } >"$MOCK_ROUTES"
 }
@@ -1545,9 +1545,9 @@ test_selecting_by_catalog_id_contacts_no_other_model() {
   assert_ok "the run must complete" || return 1
   assert_contains "$(cat "$MOCK_CALLS")" '"model":"devstral-small-2-24b-instruct-2512"' \
     "every task goes to the selected model" || return 1
-  assert_not_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3-4b"' \
+  assert_not_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3.5-4b"' \
     "and none to the one that was not asked for" || return 1
-  assert_not_contains "$(cat "$(rate_latest_artifact "$HOME")")" "model: qwen3-4b" \
+  assert_not_contains "$(cat "$(rate_latest_artifact "$HOME")")" "model: qwen3.5-4b" \
     "which therefore has no artifact entry either"
 }
 
@@ -1560,30 +1560,30 @@ test_the_model_flag_still_accepts_the_exact_served_name() {
 }
 
 test_a_catalog_id_nothing_serves_is_refused_with_both_readings_named() {
-  serve_model 6   # qwen3-4b only
+  serve_model 6   # qwen3.5-4b only
   drive "--model devstral-small-2"
   assert_fails "a catalog id whose model is not being served" || return 1
   assert_contains "$RUN_OUTPUT" "does not serve" "refused" || return 1
   assert_contains "$RUN_OUTPUT" "catalog id" "saying both readings were tried" || return 1
-  assert_contains "$RUN_OUTPUT" "qwen3-4b" "and listing what is served"
+  assert_contains "$RUN_OUTPUT" "qwen3.5-4b" "and listing what is served"
 }
 
-# qwen3-4b served beside its -local alias: the bare name answers twice (as a
+# qwen3.5-4b served beside its -local alias: the bare name answers twice (as a
 # served name, and as the catalog id the alias maps to), the alias only once.
 serve_a_name_and_its_alias() {
   {
-    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3-4b"},{"id":"qwen3-4b-local"}]}\n'
+    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3.5-4b"},{"id":"qwen3.5-4b-local"}]}\n'
     printf 'POST\t/v1/messages\t200\t{"content":[{"type":"text","text":"6"}]}\n'
   } >"$MOCK_ROUTES"
 }
 
 test_an_ambiguous_model_argument_is_refused_with_the_candidates_named() {
   serve_a_name_and_its_alias
-  drive "--model qwen3-4b"
+  drive "--model qwen3.5-4b"
   assert_fails "two served models answer to the argument" || return 1
   assert_contains "$RUN_OUTPUT" "more than one" "the refusal names the class" || return 1
-  assert_contains "$RUN_OUTPUT" "qwen3-4b-local" "and the candidates themselves" || return 1
-  # 'qwen3-4b' IS an exact served name here, so the remediation must not send
+  assert_contains "$RUN_OUTPUT" "qwen3.5-4b-local" "and the candidates themselves" || return 1
+  # 'qwen3.5-4b' IS an exact served name here, so the remediation must not send
   # the operator back to it -- it has to point at a spelling with one reading.
   assert_contains "$RUN_OUTPUT" "unambiguous served name" \
     "the remediation asks for a one-reading spelling" || return 1
@@ -1594,19 +1594,19 @@ test_an_ambiguous_model_argument_is_refused_with_the_candidates_named() {
 
 test_the_listed_alias_succeeds_where_the_bare_name_is_ambiguous() {
   serve_a_name_and_its_alias
-  drive "--model qwen3-4b-local"
+  drive "--model qwen3.5-4b-local"
   assert_ok "the alias answers only as a served name: $RUN_OUTPUT" || return 1
-  assert_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3-4b-local"' \
+  assert_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3.5-4b-local"' \
     "every task goes to the alias" || return 1
-  assert_not_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3-4b"' \
+  assert_not_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3.5-4b"' \
     "and none to the bare-name model" || return 1
 
   local art
   art="$(cat "$(rate_latest_artifact "$HOME")")"
-  assert_contains "$art" "model: qwen3-4b-local" "measured under the alias" || return 1
-  assert_contains "$art" "catalog-id: qwen3-4b" \
+  assert_contains "$art" "model: qwen3.5-4b-local" "measured under the alias" || return 1
+  assert_contains "$art" "catalog-id: qwen3.5-4b" \
     "recorded against the id the alias maps to" || return 1
-  assert_contains "$art" "RESULT qwen3-4b " "and the RESULT line keys on the id"
+  assert_contains "$art" "RESULT qwen3.5-4b " "and the RESULT line keys on the id"
 }
 
 test_dry_run_with_a_catalog_id_maps_and_calls_nothing() {
@@ -1617,7 +1617,7 @@ test_dry_run_with_a_catalog_id_maps_and_calls_nothing() {
   assert_ok "dry run" || return 1
   assert_contains "$RUN_OUTPUT" "devstral-small-2-24b-instruct-2512" \
     "the served model it resolved to" || return 1
-  assert_not_contains "$RUN_OUTPUT" "qwen3-4b" "and only that one" || return 1
+  assert_not_contains "$RUN_OUTPUT" "qwen3.5-4b" "and only that one" || return 1
   assert_not_contains "$(cat "$MOCK_CALLS")" "/v1/messages" "no task may be sent" || return 1
   assert_eq "$(rate_latest_artifact "$HOME")" "" "and nothing is written"
 }
@@ -1641,7 +1641,7 @@ test_two_clean_repeats_reach_medium_confidence() {
 test_a_task_erroring_blocks_the_row_but_not_the_report() {
   # A partial run is a report, not evidence. It must still be written down.
   {
-    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3-4b"}]}\n'
+    printf 'GET\t/v1/models\t200\t{"data":[{"id":"qwen3.5-4b"}]}\n'
     printf 'POST\t/v1/messages\t500\tmodel failed to load\n'
   } >"$MOCK_ROUTES"
   drive ""

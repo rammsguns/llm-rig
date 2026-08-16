@@ -174,7 +174,33 @@ catalog_rows() {
   # Comments and blank lines are stripped so the table can be annotated.
   sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'CATALOG'
 qwen3-coder-30b;Qwen/Qwen3-Coder-30B-A3B-Instruct;2025-07-31;30.5;3.3;moe;262144;apache-2.0;coding,agentic,tools;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-Coder-30B-A3B-Instruct;2026-08-11
-qwen3-30b-a3b;Qwen/Qwen3-30B-A3B;2025-04-27;30.5;3.3;moe;40960;apache-2.0;tools,reasoning;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-30B-A3B;2026-08-11
+# The 2026-08-15 Qwen refresh retired six rows whose lineups had moved on --
+# qwen3-30b-a3b, qwen3-14b, qwen3-8b, qwen3-4b (April-2025 Qwen3, superseded
+# by Qwen3.5/3.6), qwen2.5-coder-32b and qwen2.5-coder-7b (2024, superseded by
+# the measured qwen3-coder-30b and the small Qwen3.5 rows). Their facts live
+# in Git history under those ids. Five rows replaced them; the table sits at
+# 16 of 17 on purpose -- one slot of headroom for the next mid-size release.
+# Every fact below cites Qwen's OWN repositories (hf-api), never a quantizer's
+# mirror: Qwen publishes no first-party GGUFs for Qwen3.5/3.6, and whichever
+# community conversion eventually serves one is a deployment decision recorded
+# at deployment time, pinned to an exact file -- not a fact about the model.
+#
+# Qwen3-Coder-Next is qwen3-coder-30b's successor as Qwen's agentic-coder MoE
+# but a different hardware class (79.7B total), so it joins rather than
+# retires that measured row. Active params 3.0: the card states "80B total and
+# 3B activated", and config.json carries the geometry behind it (512 experts,
+# top-10, moe_intermediate 512) -- checked 2026-08-15. Not the computed-from-
+# config figure the Laguna rows carry: the hybrid rows interleave linear
+# attention whose per-layer parameters the formula above does not model, so
+# the publisher's own number is the honest one here.
+qwen3-coder-next;Qwen/Qwen3-Coder-Next;2026-01-30;79.7;3.0;moe;262144;apache-2.0;coding,agentic,tools;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-Coder-Next;2026-08-15
+# Qwen3.6-35B-A3B replaced qwen3-30b-a3b (same slot: Qwen's general mid-size
+# MoE), twice superseded in the interim -- Qwen3.5-35B-A3B came and went while
+# this table still carried the April-2025 row. Hybrid linear/full attention
+# (qwen35moe arch), supported by the pinned llama.cpp build. Active params
+# 3.0 per the card ("35B in total and 3B activated"; config: 256 experts,
+# top-8 + 1 shared), same basis as the coder-next row above.
+qwen3.6-35b-a3b;Qwen/Qwen3.6-35B-A3B;2026-04-15;36.0;3.0;moe;262144;apache-2.0;tools,reasoning;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.6-35B-A3B;2026-08-15
 # Devstral Small 2 replaced Devstral Small 2507 (2026-08-14, same slot:
 # Mistral's agentic-coding dense mid-size). The 2507 row was retired unmeasured
 # -- this machine serves the 2512 release, and keeping a row for weights the
@@ -201,12 +227,20 @@ devstral-small-2;mistralai/Devstral-Small-2-24B-Instruct-2512;2025-11-28;24.0;24
 # change rides on this row. Publisher ships no GGUF; unsloth mirrors Q4_K_M
 # and IQ4_XS, which is exactly the preference list below.
 qwen3.8-27b;Qwen/Qwen3.8-27B;2026-08-05;27.8;27.8;dense;262144;apache-2.0;coding,agentic,tools,reasoning,vision;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.8-27B;2026-08-14
-qwen3-14b;Qwen/Qwen3-14B;2025-04-27;14.8;14.8;dense;40960;apache-2.0;tools,reasoning;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-14B;2026-08-11
-qwen3-8b;Qwen/Qwen3-8B;2025-04-27;8.2;8.2;dense;40960;apache-2.0;tools,reasoning;Q5_K_M|Q4_K_M;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-8B;2026-08-11
-qwen3-4b;Qwen/Qwen3-4B;2025-04-27;4.0;4.0;dense;40960;apache-2.0;tools,reasoning;Q5_K_M|Q4_K_M;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-4B;2026-08-11
+# The Qwen3.5 dense smalls (2026-02), replacing qwen3-8b and qwen3-4b in
+# their slots and covering the small-coder role the retired qwen2.5-coder-7b
+# held; qwen3-14b was dropped without a successor (Qwen ships nothing current
+# between 9B and 27B). All three: 262144 context per config.json, apache-2.0,
+# tool template + documented thinking mode, hybrid linear/full attention
+# (qwen35 arch, same family as the served qwen3.8-27b). params_b from each
+# repo's safetensors index, per the rule above: 2.27B, 4.66B, 9.65B.
+qwen3.5-9b;Qwen/Qwen3.5-9B;2026-02-27;9.7;9.7;dense;262144;apache-2.0;tools,reasoning;Q6_K|Q5_K_M;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-9B;2026-08-15
+qwen3.5-4b;Qwen/Qwen3.5-4B;2026-02-27;4.7;4.7;dense;262144;apache-2.0;tools,reasoning;Q8_0|Q6_K;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-4B;2026-08-15
+qwen3.5-2b;Qwen/Qwen3.5-2B;2026-02-28;2.3;2.3;dense;262144;apache-2.0;tools,reasoning;Q8_0|Q6_K;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-2B;2026-08-15
+# qwen3-1.7b outlived its April-2025 siblings because this rig SERVES it --
+# it is the #63 rating-boundary row, and retiring it would orphan the served
+# model, the README paragraph and the tripwire that keeps them honest.
 qwen3-1.7b;Qwen/Qwen3-1.7B;2025-04-27;2.0;2.0;dense;40960;apache-2.0;tools,reasoning;Q8_0|Q6_K;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-1.7B;2026-08-11
-qwen2.5-coder-32b;Qwen/Qwen2.5-Coder-32B-Instruct;2024-11-06;32.8;32.8;dense;32768;apache-2.0;coding,tools,fim;Q4_K_M|IQ4_XS;hf-api;https://huggingface.co/api/models/Qwen/Qwen2.5-Coder-32B-Instruct;2026-08-11
-qwen2.5-coder-7b;Qwen/Qwen2.5-Coder-7B-Instruct;2024-09-17;7.6;7.6;dense;32768;apache-2.0;coding,tools,fim;Q5_K_M|Q4_K_M;hf-api;https://huggingface.co/api/models/Qwen/Qwen2.5-Coder-7B-Instruct;2026-08-11
 gemma-3-27b;google/gemma-3-27b-it;2025-03-01;27.4;27.4;dense;131072;gemma;vision;Q4_K_M|IQ4_XS;card-stated;https://huggingface.co/google/gemma-3-27b-it;2026-08-11
 gemma-3-12b;google/gemma-3-12b-it;2025-03-01;12.2;12.2;dense;131072;gemma;vision;Q4_K_M|IQ4_XS;card-stated;https://huggingface.co/google/gemma-3-12b-it;2026-08-11
 llama-3.3-70b;meta-llama/Llama-3.3-70B-Instruct;2024-12-06;70.6;70.6;dense;131072;llama3.3;tools;IQ3_M|IQ3_XXS;card-stated;https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct;2026-08-11
@@ -258,8 +292,8 @@ CATALOG
 # both scored a perfect 100, so on measured coding quality they are tied --
 # suite v3 cannot separate them. Any distance between them in the ranking
 # comes from the other components (fit, speed, freshness), not from this
-# table. Against the other thirteen rows the measured four are not
-# comparable: four measurements against thirteen neutral 50s says these are
+# table. Against the other twelve rows the measured four are not
+# comparable: four measurements against twelve neutral 50s says these are
 # the models somebody measured, and the rest of the ordering only becomes a
 # quality judgement once the rows being compared are measured too.
 #
@@ -269,15 +303,14 @@ CATALOG
 catalog_ratings() {
   sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'RATINGS'
 qwen3-coder-30b;93;2026-08-14;local-benchmark;file:llm-rating-20260814-2122.txt;medium;v3
-qwen3-30b-a3b;unknown;-;none;-;none;-
+qwen3-coder-next;unknown;-;none;-;none;-
+qwen3.6-35b-a3b;unknown;-;none;-;none;-
 devstral-small-2;80;2026-08-14;local-benchmark;file:llm-rating-20260814-2307.txt;medium;v3
 qwen3.8-27b;100;2026-08-14;local-benchmark;file:llm-rating-20260814-2123.txt;medium;v3
-qwen3-14b;unknown;-;none;-;none;-
-qwen3-8b;unknown;-;none;-;none;-
-qwen3-4b;unknown;-;none;-;none;-
+qwen3.5-9b;unknown;-;none;-;none;-
+qwen3.5-4b;unknown;-;none;-;none;-
+qwen3.5-2b;unknown;-;none;-;none;-
 qwen3-1.7b;unknown;-;none;-;none;-
-qwen2.5-coder-32b;unknown;-;none;-;none;-
-qwen2.5-coder-7b;unknown;-;none;-;none;-
 gemma-3-27b;unknown;-;none;-;none;-
 gemma-3-12b;unknown;-;none;-;none;-
 llama-3.3-70b;unknown;-;none;-;none;-

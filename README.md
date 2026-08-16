@@ -100,7 +100,7 @@ every change, and past roughly twenty the answer is to retire rows instead.
 of the suite that produced the number. These are a different kind of claim,
 cannot be confirmed the same way, and so are kept somewhere else entirely.
 
-**Four ratings are measured; the other thirteen read `unknown`, and that is
+**Four ratings are measured; the other twelve read `unknown`, and that is
 the honest answer.** Publishers report different benchmarks, public leaderboards
 disagree and are not reproducible here, and sorting one vendor's SWE-bench
 figure against another's HumanEval figure produces an ordering that means
@@ -205,7 +205,7 @@ measuring disclosure practice. XS 2.1's rating row was instead filled the
 same way as every other measured row — by the local suite — and S 2.1 stays
 `unknown` until the same suite runs it.
 
-One consequence to be aware of: with thirteen of seventeen coding ratings
+One consequence to be aware of: with twelve of sixteen coding ratings
 still `unknown`, the quality term barely discriminates among the unmeasured,
 so their ordering runs mostly on freshness, hardware fit, speed and features.
 On a 31 GB machine that once made Laguna XS 2.1 the top `medium` pick ahead
@@ -220,7 +220,7 @@ share one suite and one machine, and the top two are **tied at 100 on
 measured coding quality**: Laguna's nine-point composite lead over Qwen3.8 is
 speed and fit (2.7B active parameters against a 27.8B dense forward pass),
 not a coding-quality verdict. Running the benchmark is what fixes the
-remaining thirteen rows too.
+remaining twelve rows too.
 
 Running them here: XS 2.1 at `Q4_K_M` is 18.9 GiB and needs both cards
 (`-sm layer`); S 2.1 at `UD-Q4_K_XL` is 68.4 GiB and runs with the experts in
@@ -339,7 +339,7 @@ qualifier is load-bearing: a single unrepeated benchmark pass is recorded as
 ranking it feeds.
 
 Note what the neutral rating does to the ranking: with the quality term equal
-across thirteen of the seventeen rows, the total is driven mostly by fit and
+across twelve of the sixteen rows, the total is driven mostly by fit and
 speed, so the smallest model that fits tends to win outright. That is why the
 default recommendation leads with a **Medium** model rather than the top of the
 list — scoring alone would point a 48 GB workstation at a 4B.
@@ -400,7 +400,7 @@ serves**, at the quant they are actually served at, and writes the evidence to
 ```bash
 ./61-rate-models.sh                    # every served model, one pass each
 ./61-rate-models.sh --repeats 3        # three passes; any disagreement -> low
-./61-rate-models.sh --model qwen3-4b   # one model
+./61-rate-models.sh --model qwen3.5-4b # one model
 ./61-rate-models.sh --dry-run          # show the plan, call nothing
 ```
 
@@ -547,7 +547,7 @@ catalog row.
 
 #### The artifact records what was running
 
-A served alias does not identify a runtime. `qwen3-4b` fronts whatever GGUF
+A served alias does not identify a runtime. `qwen3.5-4b` fronts whatever GGUF
 `30-models.sh` last downloaded, built by whatever `20-build-llamacpp.sh` last
 compiled, at whatever context `40-serve.sh` last configured — so two runs that
 disagree could otherwise produce the same catalog row. Each run therefore
@@ -578,7 +578,7 @@ a deliberately plain one.
 #### Completing the suite is not the same as earning a row
 
 Twelve passing tasks say the suite ran. They do not say what it ran against —
-and `qwen3-4b;93;…` with an unidentified runtime is a number attached to an
+and `qwen3.5-4b;93;…` with an unidentified runtime is a number attached to an
 alias, which the next re-run of `30-models.sh` silently invalidates. So a run
 is offered as a catalog row only when **all four required fields above** were
 established. Otherwise the artifact is written in full, the `RESULT` line
@@ -586,7 +586,7 @@ carries `provenance=missing:<fields>`, and the script names the gaps instead of
 printing a row:
 
 ```
-!! qwen3-4b: no catalog row -- incomplete runtime provenance: weights,quant,live-n_ctx
+!! qwen3.5-4b: no catalog row -- incomplete runtime provenance: weights,quant,live-n_ctx
 ```
 
 The requirement is written into the artifact's own header, so a file read a
@@ -598,7 +598,7 @@ runtime identity reads `unavailable`.
 The script **does not edit the catalog**. It prints rows to paste:
 
 ```
-qwen3-4b;67;2026-08-11;local-benchmark;file:llm-rating-20260811-1930.txt;medium
+qwen3.5-4b;67;2026-08-11;local-benchmark;file:llm-rating-20260811-1930.txt;medium
 ```
 
 The source is the artifact's **basename**, not a URL. There is no https address
