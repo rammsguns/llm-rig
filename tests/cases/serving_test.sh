@@ -1117,5 +1117,102 @@ test_an_uncatalogued_key_is_silently_unadvised() {
   assert_contains "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "-c 65536" "and it emits"
 }
 
+# --- privilege sanity: root refusal and the sudo forecast ---------------------
+
+test_the_privilege_check_runs_before_model_resolution() {
+  # Structural, like the collision-ordering test above: the refusal must come
+  # before anything reads the models directory, let alone frees a GPU.
+  local body priv_line resolve_line
+  body="$(cat "$REPO_ROOT/40-serve.sh")"
+  priv_line="$(grep -n 'SERVE_EUID' <<<"$body" | head -1 | cut -d: -f1)"
+  resolve_line="$(grep -n 'serving_resolve' <<<"$body" | head -1 | cut -d: -f1)"
+  assert_ne "$priv_line" "" "the root check must exist in 40-serve.sh" || return 1
+  assert_lt "$priv_line" "$resolve_line" "root check before model resolution"
+}
+
+test_a_root_invocation_is_refused_with_nothing_changed() {
+  # Observed live (2026-08-16): `sudo ./40-serve.sh` made $HOME root's home,
+  # the scan found nothing, and every --select refused. The refusal now comes
+  # first and says what to do instead.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  mkdir -p "$RIG_DIR/etc"
+  printf 'previous\n' >"$RIG_DIR/etc/llama-swap.yaml"
+  SERVE_EUID=0 run bash "$REPO_ROOT/40-serve.sh"
+  assert_fails "root is refused" || return 1
+  assert_contains "$RUN_OUTPUT" "running as root" "names the problem" || return 1
+  assert_contains "$RUN_OUTPUT" "Nothing has been changed" "and says so" || return 1
+  assert_eq "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "previous" "config untouched" || return 1
+  assert_not_called systemctl
+}
+
+test_the_root_refusal_hands_back_the_original_command() {
+  # The remediation must be pasteable into a normal-user shell as-is, so the
+  # arguments the operator typed have to survive into it.
+  synth_gpu 20000 1
+  stage_the_collision
+  SERVE_EUID=0 run bash "$REPO_ROOT/40-serve.sh" --select "$KEY=$(q4)" --ctx "$KEY=4096"
+  assert_fails "refused" || return 1
+  assert_contains "$RUN_OUTPUT" "--select" "keeps the selection" || return 1
+  assert_contains "$RUN_OUTPUT" "Q4_K_M.gguf" "with its exact file" || return 1
+  assert_contains "$RUN_OUTPUT" "--ctx" "and the context override"
+}
+
+test_help_still_prints_as_root() {
+  # Reading the usage text changes nothing and refuses nobody.
+  SERVE_EUID=0 run bash "$REPO_ROOT/40-serve.sh" --help
+  assert_ok "help works everywhere" || return 1
+  assert_contains "$RUN_OUTPUT" "Usage:" "and is the help text"
+}
+
+test_a_noninteractive_run_with_no_credential_fails_before_the_service() {
+  # The hang this forecasts was also observed live: the credential cache
+  # expired mid-run and a redirected sudo prompt waited invisibly for 34
+  # minutes -- after the service was already stopped. Fail up front instead.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  mkdir -p "$RIG_DIR/etc"
+  printf 'previous\n' >"$RIG_DIR/etc/llama-swap.yaml"
+  MOCK_SUDO_NEEDS_PASSWORD=1 SERVE_TTY="$SANDBOX/no-such-tty" \
+    run bash "$REPO_ROOT/40-serve.sh"
+  assert_fails "must fail while everything still runs" || return 1
+  assert_contains "$RUN_OUTPUT" "no sudo credential is cached" "says why" || return 1
+  assert_contains "$RUN_OUTPUT" "sudo -v" "with a remediation" || return 1
+  assert_eq "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "previous" "config untouched" || return 1
+  assert_not_called systemctl
+}
+
+test_a_cached_credential_lets_a_noninteractive_full_run_proceed() {
+  # cron and CI with a NOPASSWD rule or a warm cache are legitimate callers;
+  # the forecast must not demand a terminal they cannot have.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  SERVE_TTY="$SANDBOX/no-such-tty" run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "a cached credential passes: $RUN_OUTPUT" || return 1
+  assert_contains "$(cat "$RIG_DIR/etc/llama-swap.yaml")" '"phi-4":' "and it serves"
+}
+
+test_a_terminal_lets_an_uncredentialed_run_proceed() {
+  # sudo prompting on the operator's terminal is the normal path and must
+  # keep working; a readable SERVE_TTY stands in for the open terminal.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  : >"$SANDBOX/fake-tty"
+  MOCK_SUDO_NEEDS_PASSWORD=1 SERVE_TTY="$SANDBOX/fake-tty" \
+    run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "an open terminal passes: $RUN_OUTPUT"
+}
+
+test_config_only_needs_no_privilege_at_all() {
+  # The one mode that never calls sudo must not acquire a sudo requirement.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  MOCK_SUDO_NEEDS_PASSWORD=1 SERVE_TTY="$SANDBOX/no-such-tty" \
+    run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "config-only runs unprivileged: $RUN_OUTPUT" || return 1
+  assert_contains "$(cat "$RIG_DIR/etc/llama-swap.yaml")" '"phi-4":' "writes the config" || return 1
+  assert_not_called systemctl
+}
+
 run_suite
 suite_exit

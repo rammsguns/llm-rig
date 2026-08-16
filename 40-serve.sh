@@ -42,6 +42,18 @@
 # changes, because "serve the models" must not silently imply "replace the
 # runtime". The flag states the second decision; a matching version never needs
 # it, and a machine with no binary at all bootstraps without it.
+#
+# Run this as your normal user, never as root or through `sudo ./40-serve.sh`.
+# The script invokes sudo itself for the few steps that need it (stopping and
+# starting the service, installing the binary and the unit). Invoked as root,
+# $HOME is root's home: model discovery scans the wrong directory, every
+# --select refuses against it, and anything that did get written would be
+# owned by root. A root invocation is therefore refused outright, before
+# anything is read or changed. A full run also forecasts its sudo needs
+# before touching anything: with no cached credential and no terminal to
+# prompt on, it fails immediately instead of stopping the service and then
+# hanging on a prompt nobody can see. --config-only needs no privilege and
+# keeps working everywhere.
 set -uo pipefail
 source "$(dirname "$0")/lib/detect.sh"
 # Pinned + verified llama-swap install; see the header of lib/swap.sh.
@@ -65,7 +77,7 @@ while (( $# )); do
     --ctx=*)           CTX_OVERRIDE_ARGS+=("${1#--ctx=}") ;;
     --config-only)     CONFIG_ONLY=1 ;;
     --reconcile-swap)  RECONCILE_SWAP=1 ;;
-    -h|--help)         sed -n '2,45p' "$0"; exit 0 ;;
+    -h|--help)         sed -n '2,56p' "$0"; exit 0 ;;
     *)                 die "unknown argument: $1" ;;
   esac
   shift
@@ -89,6 +101,49 @@ pin_env_quoted() {
   [[ -n "${LLAMA_SWAP_VERSION:-}" ]] && printf 'LLAMA_SWAP_VERSION=%q ' "$LLAMA_SWAP_VERSION"
   return 0
 }
+
+# --- privilege sanity --------------------------------------------------------
+# Both checks run before anything at all is read or changed -- before the
+# drift preflight, before model resolution, before the GPUs are freed.
+#
+# SERVE_EUID is a testing seam, like UNIT_FILE below: bash's EUID is readonly,
+# so the refusal path could not otherwise be driven by a test that is not
+# actually root.
+SERVE_EUID="${SERVE_EUID:-$EUID}"
+if (( SERVE_EUID == 0 )); then
+  die "running as root${SUDO_USER:+ (invoked through sudo)} -- refused.
+     This script runs as your normal user and invokes sudo itself for the few
+     steps that need it (stopping and starting the service, installing the
+     binary and the unit). As root, \$HOME is root's home: model discovery
+     scans the wrong directory, every --select refuses against it, and
+     anything written would be owned by root. Nothing has been changed.
+
+     Re-run without privilege, as your normal user:
+
+         $(pin_env_quoted)$0 $(orig_args_quoted)"
+fi
+
+# A full run WILL call sudo eventually -- to stop the service for sizing, to
+# install the unit, to restart. If no credential is cached and there is no
+# terminal to prompt on, the first of those calls fails or hangs midway,
+# after the service is already down. Forecast that here and fail while
+# everything is still running instead. Three states pass: a cached credential
+# (sudo -n succeeds), an open terminal (sudo will prompt on it normally), or
+# --config-only (which never calls sudo at all and is handled by the guard
+# condition). SERVE_TTY is a testing seam: the suite must drive both branches
+# regardless of whether the runner itself has a controlling terminal.
+if (( ! CONFIG_ONLY )); then
+  if ! sudo -n true 2>/dev/null && ! { : <"${SERVE_TTY:-/dev/tty}"; } 2>/dev/null; then
+    die "a full run needs sudo (stop and restart the service, install the
+     unit), but no sudo credential is cached and there is no terminal to
+     prompt on. Continuing would stop the service and then hang on an
+     invisible prompt. Nothing has been changed.
+
+     From a terminal, cache a credential and re-run:
+
+         sudo -v && $(pin_env_quoted)$0 $(orig_args_quoted)"
+  fi
+fi
 
 if (( CONFIG_ONLY && RECONCILE_SWAP )); then
   die "--config-only and --reconcile-swap contradict each other: one promises

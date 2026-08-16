@@ -5,7 +5,19 @@
 set -uo pipefail
 printf 'sudo %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
 while [[ "${1:-}" == -* ]]; do
-  case "$1" in -u|-g|-p) shift 2 ;; *) shift ;; esac
+  case "$1" in
+    # Real `sudo -n` fails when no credential is cached. The default here is a
+    # cached credential (succeed), because that is the state every pre-existing
+    # test was written under; MOCK_SUDO_NEEDS_PASSWORD=1 models the expired
+    # cache so the privilege-preflight refusal paths can be driven.
+    -n) if [[ "${MOCK_SUDO_NEEDS_PASSWORD:-0}" == 1 ]]; then
+          printf 'sudo: a password is required\n' >&2
+          exit 1
+        fi
+        shift ;;
+    -u|-g|-p) shift 2 ;;
+    *) shift ;;
+  esac
 done
 [[ -n "${1:-}" ]] || exit 0
 if [[ -x "${MOCK_BIN:-}/$1" ]]; then exec "${MOCK_BIN}/$1" "${@:2}"; fi
