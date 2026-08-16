@@ -34,6 +34,13 @@ mock_init() {
   # Mocks win over anything real.
   export PATH="$MOCK_BIN:$PATH"
 
+  # The suite itself may be running as root: isolated.sh maps root to create
+  # its network namespace, and CI containers often simply are root. The
+  # privilege seam therefore pins every test to an ordinary user, so the
+  # root-refusal path in 40-serve.sh is entered only by the tests that ask
+  # for it with SERVE_EUID=0.
+  export SERVE_EUID=1000
+
   # The llama-swap binary is read by ABSOLUTE path (lib/swap.sh, SWAP_BIN), so
   # the PATH shim above cannot shadow it. 40-serve.sh now consults it on every
   # full run -- the #46 runtime gate -- which means a suite that leaves this at
