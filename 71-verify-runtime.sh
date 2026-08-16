@@ -13,6 +13,9 @@
 #   [runtime]    which llama-swap and llama-server binaries are installed, and
 #                whether each is the one this llm-rig revision pins. Read
 #                directly off the binaries.
+#   [pool]       the declared compute pool, the allowlist the generated unit
+#                carries, and where live llama-server processes actually hold
+#                VRAM -- checked against each other, not trusted one by one.
 #
 # Usage:
 #   ./71-verify-runtime.sh
@@ -20,6 +23,7 @@
 #   ./71-verify-runtime.sh --require props         # non-zero unless established
 #   ./71-verify-runtime.sh --require swap-pin      # llama-swap matches its pin
 #   ./71-verify-runtime.sh --require llamacpp-pin  # llama-server matches llamacpp.ref
+#   ./71-verify-runtime.sh --require gpu-pool      # pool, unit and placement conform
 #   ./71-verify-runtime.sh --require flash-attn --require props
 #
 # --require pin is the older name for swap-pin and stays as an alias.
@@ -45,7 +49,7 @@ while (( $# )); do
     --measure)   MEASURE=1 ;;
     --require)   shift; REQUIRE+=("${1:-}") ;;
     --require=*) REQUIRE+=("${1#--require=}") ;;
-    -h|--help)   sed -n '2,31p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)   sed -n '2,35p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *)           die "unknown argument: $1" ;;
   esac
   shift
@@ -57,6 +61,7 @@ EV_FLASH_ATTN=""
 EV_BENCH=""
 EV_SWAP_PIN=""
 EV_LLAMACPP_PIN=""
+EV_GPU_POOL=""
 
 # --- 0. which router binary is installed ------------------------------------
 # Before any question about flags, the question of which llama-swap is
@@ -225,6 +230,152 @@ done
      The model may have unloaded (ttl expired), or llama-swap may use other ports.
      Config says startPort=$(swap_start_port "$CFG") with $(swap_model_count "$CFG") model(s)."
 
+# --- 3b. the compute pool, conformant end to end -----------------------------
+# Three artifacts deploy the pool -- the declaration (etc/inference-gpus), the
+# allowlist the generated unit carries, and the per-model pins -- and they can
+# drift apart silently: an edited declaration with a stale unit confines
+# nothing. So this checks them against each OTHER, plus the only ground truth
+# there is: where live llama-server processes actually hold VRAM. A loaded
+# model's context is compared configured-vs-live in the same pass, because a
+# -c override deploys through the same regeneration and drifts the same way.
+#
+# Everything here reads; nothing restarts, regenerates or reloads.
+#
+# UNIT_FILE is the same testing seam 40-serve.sh uses.
+UNIT_FILE="${UNIT_FILE:-/etc/systemd/system/llama-swap.service}"
+POOL_OK=1
+
+echo
+c_info "[pool] declared compute pool ($POOL_FILE)"
+if [[ ! -f "$POOL_FILE" ]]; then
+  c_warn "no declared pool: the file does not exist.
+     Nothing constrains which GPUs inference lands on, so conformance cannot
+     be established. Declare the pool (one GPU UUID per line; see the README
+     section \"The compute pool\") and regenerate with ./40-serve.sh."
+  POOL_OK=0
+elif ! DETECT_SOFT_FAIL=1 load_gpu_pool || [[ -z "${GPU_POOL:-}" ]]; then
+  # load_gpu_pool has already said exactly what is wrong -- empty file,
+  # unknown UUID, duplicate -- through pool_fail.
+  POOL_OK=0
+else
+  tr ',' '\n' <<<"$GPU_POOL" | sed 's/^/    /' >&2
+fi
+
+pool_has() { [[ ",$GPU_POOL," == *",$1,"* ]]; }
+
+if (( POOL_OK )); then
+  c_info "[pool] unit allowlist in $UNIT_FILE"
+  unit_pool=""
+  if [[ ! -f "$UNIT_FILE" ]]; then
+    c_warn "the unit file does not exist -- the service was never installed here,
+     or UNIT_FILE points somewhere else. Conformance cannot be established."
+    POOL_OK=0
+  else
+    unit_pool="$(grep -m1 -E '^Environment=CUDA_VISIBLE_DEVICES=' "$UNIT_FILE" | cut -d= -f3-)"
+    if [[ -z "$unit_pool" ]]; then
+      c_warn "the unit carries no CUDA_VISIBLE_DEVICES allowlist -- it was generated
+     before the pool was declared, or edited since. The declaration is not
+     deployed. Regenerate with ./40-serve.sh."
+      POOL_OK=0
+    elif [[ "$(tr ',' '\n' <<<"$unit_pool" | sort)" != "$(tr ',' '\n' <<<"$GPU_POOL" | sort)" ]]; then
+      c_warn "unit drift: the unit allowlists
+         $unit_pool
+     but the declaration says
+         $GPU_POOL
+     The unit was generated against a different pool. Regenerate with
+     ./40-serve.sh; until then the service is confined to the OLD set."
+      POOL_OK=0
+    else
+      c_ok "[pool] the unit allowlist matches the declared pool"
+    fi
+  fi
+fi
+
+LIVE_SERVERS=0
+if (( POOL_OK )); then
+  c_info "[pool] live llama-server GPU allocations"
+  pool_leak=""
+  while IFS= read -r alloc; do
+    [[ -n "$alloc" ]] || continue
+    case "$alloc" in
+      *llama-server*|*llama-swap*) ;;
+      *) continue ;;  # desktop compositors and browsers are not our processes
+    esac
+    LIVE_SERVERS=$(( LIVE_SERVERS + 1 ))
+    alloc_uuid="${alloc%%,*}"; alloc_uuid="${alloc_uuid// /}"
+    if pool_has "$alloc_uuid"; then
+      printf '    in-pool   %s\n' "$alloc" >&2
+    else
+      pool_leak+="$alloc"$'\n'
+    fi
+  done < <(nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory \
+             --format=csv,noheader 2>/dev/null)
+  if [[ -n "$pool_leak" ]]; then
+    c_warn "OUT-OF-POOL server allocation:
+$(printf '%s' "$pool_leak" | sed 's/^/         /')
+     A llama-server holds VRAM on a GPU the pool does not include. The
+     allowlist did not confine it: a stale unit, a per-model pin outside the
+     pool, or a server started by hand. Conformance is NOT established."
+    POOL_OK=0
+  elif (( LIVE_SERVERS == 0 )); then
+    printf '    none -- no llama-server holds VRAM right now (unloaded); nothing to check live\n' >&2
+  else
+    c_ok "[pool] every live server allocation is inside the declared pool"
+  fi
+fi
+
+# Configured context vs live context, reported separately and then compared.
+# "Configured" is the entry's own -c when it has one (an operator --ctx
+# override; the later flag wins over the macro) and the macro's -c otherwise.
+CTX_CHECKED=0
+if (( POOL_OK )); then
+  c_info "[pool] loaded-model context: configured vs live"
+  macro_ctx="$(awk '/^macros:/,/^models:/' "$CFG" | grep -oE -- '-c [0-9]+' | head -1 | awk '{print $2}')"
+  for p in $PORTS; do
+    props=$(curl -sf --max-time 5 "http://127.0.0.1:$p/props" 2>/dev/null) || continue
+    [[ -n "$props" ]] || continue
+    live_model="$(jq -r '.model_path // .default_generation_settings.model // empty' <<<"$props" 2>/dev/null)"
+    live_ctx="$(jq -r '.default_generation_settings.n_ctx // .n_ctx // empty' <<<"$props" 2>/dev/null)"
+    [[ -n "$live_model" && -n "$live_ctx" ]] || continue
+    CTX_CHECKED=$(( CTX_CHECKED + 1 ))
+    # The config entry serving this exact file: header lines reset the block,
+    # and the block containing "-m <path>" is the one that launched it.
+    entry_block="$(awk -v m="-m $live_model" '
+      /^  "[^"]+":/ { if (found) exit; block = "" }
+      { block = block $0 "\n" }
+      index($0, m) { found = 1 }
+      END { if (found) printf "%s", block }' "$CFG")"
+    entry_ctx="$(grep -oE -- '-c [0-9]+' <<<"$entry_block" | tail -1 | awk '{print $2}')"
+    if [[ -n "$entry_ctx" ]]; then
+      cfg_ctx="$entry_ctx"; cfg_src="entry override"
+    else
+      cfg_ctx="$macro_ctx"; cfg_src="macro"
+    fi
+    printf '    %-40s configured -c %s (%s)\n' "$(basename "$live_model")" "${cfg_ctx:-?}" "$cfg_src" >&2
+    printf '    %-40s live n_ctx    %s\n' "" "$live_ctx" >&2
+    if [[ -z "$cfg_ctx" ]]; then
+      c_warn "no -c could be read from the config for $(basename "$live_model") --
+     the entry is not in $CFG, or the config changed under the running server.
+     Conformance is NOT established."
+      POOL_OK=0
+    elif [[ "$cfg_ctx" != "$live_ctx" ]]; then
+      c_warn "context mismatch on $(basename "$live_model"): configured -c $cfg_ctx,
+     live n_ctx $live_ctx. The runtime re-derived the context (a value above
+     the model's native limit does that silently -- see --ctx in 40-serve.sh)
+     or the config changed after the server started. Conformance is NOT
+     established."
+      POOL_OK=0
+    fi
+  done
+  (( CTX_CHECKED )) || printf '    no loaded model answered /props -- nothing to compare\n' >&2
+fi
+
+if (( POOL_OK )); then
+  EV_GPU_POOL="declaration, unit and live state agree\
+ ($(( $(tr -cd , <<<"$GPU_POOL" | wc -c) + 1 )) GPU(s); $LIVE_SERVERS live allocation(s); $CTX_CHECKED context(s) compared)"
+  c_ok "[pool] conformant: $EV_GPU_POOL"
+fi
+
 # --- 4. benchmark evidence, from THIS machine ------------------------------
 echo
 ARTIFACT="$(bench_latest_artifact)"
@@ -290,6 +441,7 @@ printf '    %-14s %s\n' "llamacpp-pin" "${EV_LLAMACPP_PIN:-not established}" >&2
 printf '    %-14s %s\n' "props"        "${EV_PROPS:-not established}" >&2
 printf '    %-14s %s\n' "flash-attn"   "${EV_FLASH_ATTN:-not established}" >&2
 printf '    %-14s %s\n' "benchmark"    "${EV_BENCH:-not established}" >&2
+printf '    %-14s %s\n' "gpu-pool"     "${EV_GPU_POOL:-not established}" >&2
 
 # --- requested assertions ---------------------------------------------------
 STATUS=0
@@ -308,7 +460,8 @@ for want in "${REQUIRE[@]}"; do
     # meaning would flip gates without anyone changing a call.
     swap-pin|pin) ev="$EV_SWAP_PIN" ;;
     llamacpp-pin) ev="$EV_LLAMACPP_PIN" ;;
-    *)           die "unknown assertion: $want (known: props, flash-attn, bench, swap-pin, llamacpp-pin; pin = swap-pin)" ;;
+    gpu-pool)    ev="$EV_GPU_POOL" ;;
+    *)           die "unknown assertion: $want (known: props, flash-attn, bench, swap-pin, llamacpp-pin, gpu-pool; pin = swap-pin)" ;;
   esac
   if [[ -n "$ev" ]]; then
     c_ok "required '$want' established -- $ev"

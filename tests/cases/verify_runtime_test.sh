@@ -289,6 +289,154 @@ test_missing_config_fails_with_guidance() {
   assert_contains "$RUN_OUTPUT" "40-serve.sh" "remediation"
 }
 
+# --- the gpu-pool conformance gate -------------------------------------------
+# Declaration, generated unit, live allocations and loaded-model context must
+# agree with each other; any drift, leak or mismatch fails --require gpu-pool.
+# Strictly read-only: these tests also pin that nothing restarts or reloads.
+
+UUID_A="GPU-aaaaaaaa-1111-1111-1111-111111111111"
+UUID_B="GPU-bbbbbbbb-2222-2222-2222-222222222222"
+UUID_T="GPU-cccccccc-3333-3333-3333-333333333333"
+
+pool_conformant() {
+  # The clean baseline each scenario then breaks one piece of: three-card
+  # machine, two-card declared pool, matching unit, one in-pool server.
+  use_gpu dual_a4000_plus_t1000
+  write_config
+  printf '%s\n%s\n' "$UUID_A" "$UUID_B" >"$RIG_DIR/etc/inference-gpus"
+  printf '[Service]\nEnvironment=CUDA_VISIBLE_DEVICES=%s,%s\n' "$UUID_A" "$UUID_B" >"$SANDBOX/unit"
+  export UNIT_FILE="$SANDBOX/unit"
+  export MOCK_GPU_HOLDERS="$UUID_A, 4242, /usr/local/bin/llama-server, 3000 MiB"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  mock_route "*" "/props" 200 "$(props_json true)"
+}
+
+test_gpu_pool_conformant_is_established() {
+  pool_conformant
+  run_verify --require gpu-pool
+  assert_ok "the clean state must establish the gate: $RUN_OUTPUT" || return 1
+  assert_contains "$RUN_OUTPUT" "unit allowlist matches the declared pool" "unit checked" || return 1
+  assert_contains "$RUN_OUTPUT" "inside the declared pool" "placement checked" || return 1
+  assert_contains "$RUN_OUTPUT" "configured -c 131072" "configured context reported" || return 1
+  assert_contains "$RUN_OUTPUT" "live n_ctx    131072" "live context reported separately"
+}
+
+test_gpu_pool_fails_without_a_declaration() {
+  pool_conformant
+  rm "$RIG_DIR/etc/inference-gpus"
+  run_verify --require gpu-pool
+  assert_fails "a missing declaration cannot conform" || return 1
+  assert_contains "$RUN_OUTPUT" "no declared pool" "says what is missing" || return 1
+  assert_contains "$RUN_OUTPUT" "could NOT be established" "and gates"
+}
+
+test_gpu_pool_fails_on_an_invalid_declaration() {
+  # A UUID the machine does not have is load_gpu_pool's refusal, surfaced
+  # through the gate rather than dying: the report must still complete.
+  pool_conformant
+  printf 'GPU-dddddddd-4444-4444-4444-444444444444\n' >"$RIG_DIR/etc/inference-gpus"
+  run_verify --require gpu-pool
+  assert_fails "an invalid declaration cannot conform" || return 1
+  assert_contains "$RUN_OUTPUT" "does not have" "names the unknown UUID" || return 1
+  assert_contains "$RUN_OUTPUT" "Evidence summary" "the report still completes"
+}
+
+test_gpu_pool_fails_on_unit_drift() {
+  pool_conformant
+  printf '[Service]\nEnvironment=CUDA_VISIBLE_DEVICES=%s\n' "$UUID_A" >"$SANDBOX/unit"
+  run_verify --require gpu-pool
+  assert_fails "a unit generated against another pool cannot conform" || return 1
+  assert_contains "$RUN_OUTPUT" "unit drift" "names the problem" || return 1
+  assert_contains "$RUN_OUTPUT" "confined to the OLD set" "and what is running meanwhile"
+}
+
+test_gpu_pool_fails_on_a_missing_unit_allowlist() {
+  pool_conformant
+  printf '[Service]\nExecStart=/usr/local/bin/llama-swap\n' >"$SANDBOX/unit"
+  run_verify --require gpu-pool
+  assert_fails "an unconfined unit cannot conform" || return 1
+  assert_contains "$RUN_OUTPUT" "no CUDA_VISIBLE_DEVICES allowlist" "says so"
+}
+
+test_gpu_pool_fails_when_a_server_sits_on_the_display_card() {
+  # The T1000-leak scenario: the declaration and unit look right, but a live
+  # llama-server holds VRAM on the excluded card. Ground truth wins.
+  pool_conformant
+  export MOCK_GPU_HOLDERS="$UUID_T, 4243, /usr/local/bin/llama-server, 2000 MiB"
+  run_verify --require gpu-pool
+  assert_fails "an out-of-pool server is the exact failure this gate exists for" || return 1
+  assert_contains "$RUN_OUTPUT" "OUT-OF-POOL" "loudly" || return 1
+  assert_contains "$RUN_OUTPUT" "$UUID_T" "naming the allocation"
+}
+
+test_gpu_pool_ignores_desktop_holders_on_any_card() {
+  # A compositor on the display card is not our process and not a leak.
+  pool_conformant
+  export MOCK_GPU_HOLDERS="$UUID_T, 3764, /usr/bin/cosmic-comp, 500 MiB"
+  run_verify --require gpu-pool
+  assert_ok "desktop processes are not inference placements: $RUN_OUTPUT"
+}
+
+test_gpu_pool_passes_with_no_model_loaded() {
+  # Unloaded is a legal steady state (ttl expiry): nothing is out-of-pool and
+  # there is no live context to compare, so the gate holds vacuously -- and
+  # says so rather than pretending it checked something.
+  pool_conformant
+  export MOCK_GPU_HOLDERS=""
+  # Remove the props route: nothing is resident, nothing answers.
+  : >"$MOCK_ROUTES"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require gpu-pool
+  assert_ok "unloaded must not fail the gate: $RUN_OUTPUT" || return 1
+  assert_contains "$RUN_OUTPUT" "nothing to check live" "and is explicit about it" || return 1
+  assert_contains "$RUN_OUTPUT" "nothing to compare" "for the context too"
+}
+
+test_gpu_pool_fails_on_a_configured_live_context_mismatch() {
+  # The silent re-derivation #65 documented: config says one number, the
+  # runtime runs another. The gate reports both and refuses to conform.
+  pool_conformant
+  {
+    echo "healthCheckTimeout: 900"
+    echo "startPort: 9100"
+    echo "macros:"
+    echo "  base: >"
+    echo "    --flash-attn on -c 131072"
+    echo "models:"
+    echo "  \"model-1\":"
+    echo "    cmd: |"
+    echo "      llama-server \${base}"
+    echo "      -m /models/m1.gguf"
+    echo "      -c 40960"
+    echo "    ttl: 900"
+  } >"$RIG_DIR/etc/llama-swap.yaml"
+  run_verify --require gpu-pool
+  assert_fails "configured 40960 vs live 131072 must not conform" || return 1
+  assert_contains "$RUN_OUTPUT" "configured -c 40960 (entry override)" "configured, sourced" || return 1
+  assert_contains "$RUN_OUTPUT" "live n_ctx    131072" "live, separately" || return 1
+  assert_contains "$RUN_OUTPUT" "context mismatch" "and the comparison"
+}
+
+test_gpu_pool_is_strictly_read_only() {
+  # Whatever it finds, the gate reads: no restart, no reload, no regeneration.
+  pool_conformant
+  export MOCK_GPU_HOLDERS="$UUID_T, 4243, /usr/local/bin/llama-server, 2000 MiB"
+  run_verify --require gpu-pool
+  assert_fails "the leak still fails" || return 1
+  assert_not_called 'systemctl (restart|stop|start|daemon-reload)' "no service mutation" || return 1
+  assert_not_called '40-serve' "no regeneration"
+}
+
+test_gpu_pool_does_not_disturb_the_other_gates() {
+  # Evidence classes stay independent: a broken pool must not block props,
+  # and the pin alias must keep gating exactly what it always gated.
+  pool_conformant
+  rm "$RIG_DIR/etc/inference-gpus"
+  install_fake_swap "$(grep -oE 'v[0-9]+' "$REPO_ROOT/lib/swap.sh" | head -1)"
+  run_verify --require props
+  assert_ok "props is established regardless of the pool: $RUN_OUTPUT"
+}
+
 # --- runtime drift against the pin (#40) ------------------------------------
 
 test_the_sandbox_binary_is_never_the_real_one() {
