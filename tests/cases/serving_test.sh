@@ -955,5 +955,167 @@ test_the_generated_config_still_passes_the_readback_verifier() {
   assert_ok "an env: line must not confuse the verifier"
 }
 
+# --- per-model context overrides (--ctx, #65) ---------------------------------
+# serving_ctx_overrides validates; 40-serve.sh emits. The refusal contract is
+# serving_resolve's: everything wrong reported in one run, nothing written on
+# any failure, and with no --ctx at all the generated config is byte-for-byte
+# what it was before the flag existed.
+
+PLAN_TWO=$'phi-4\t/m/Phi-4-GGUF/Phi-4-Q4_K_M.gguf\nqwen3-1.7b\t/m/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q8_0.gguf'
+
+test_a_valid_override_resolves_to_key_and_tokens() {
+  run serving_ctx_overrides "$PLAN_TWO" "qwen3-1.7b=40960"
+  assert_ok "a well-formed override for a served key" || return 1
+  assert_eq "$RUN_OUTPUT" "qwen3-1.7b	40960" "exactly one line, key TAB tokens"
+}
+
+test_two_overrides_for_two_keys_both_land() {
+  run serving_ctx_overrides "$PLAN_TWO" "qwen3-1.7b=40960" "phi-4=16384"
+  assert_ok "both overrides valid" || return 1
+  assert_eq "$(wc -l <<<"$RUN_OUTPUT")" "2" "two lines" || return 1
+  assert_contains "$RUN_OUTPUT" "phi-4	16384" "the second override"
+}
+
+test_a_malformed_override_is_rejected() {
+  run serving_ctx_overrides "$PLAN_TWO" "qwen3-1.7b"
+  assert_fails "no = at all" || return 1
+  assert_contains "$RUN_OUTPUT" "not KEY=N" "diagnostic names the shape"
+}
+
+test_a_non_integer_context_is_rejected() {
+  run serving_ctx_overrides "$PLAN_TWO" "qwen3-1.7b=40k"
+  assert_fails "40k is not a number the server accepts" || return 1
+  assert_contains "$RUN_OUTPUT" "positive integer" "diagnostic"
+}
+
+test_a_zero_or_negative_context_is_rejected() {
+  # -c 0 means "load from the model" at the runtime -- a real behavior, but a
+  # DIFFERENT one, and smuggling it through an override flag would make
+  # "--ctx k=0" a guess dressed as a statement.
+  run serving_ctx_overrides "$PLAN_TWO" "qwen3-1.7b=0"
+  assert_fails "zero must not pass" || return 1
+  run serving_ctx_overrides "$PLAN_TWO" "qwen3-1.7b=-5"
+  assert_fails "negative must not pass"
+}
+
+test_an_override_for_an_unserved_key_is_rejected() {
+  run serving_ctx_overrides "$PLAN_TWO" "no-such-model=40960"
+  assert_fails "unknown key" || return 1
+  assert_contains "$RUN_OUTPUT" "not in the serving plan" "diagnostic"
+}
+
+test_a_key_overridden_twice_is_rejected() {
+  run serving_ctx_overrides "$PLAN_TWO" "qwen3-1.7b=40960" "qwen3-1.7b=32768"
+  assert_fails "one key, one context" || return 1
+  assert_contains "$RUN_OUTPUT" "more than once" "diagnostic"
+}
+
+test_every_bad_override_is_reported_in_one_run() {
+  run serving_ctx_overrides "$PLAN_TWO" \
+    "junk" "phi-4=abc" "ghost=1024" "qwen3-1.7b=40960" "qwen3-1.7b=2048"
+  assert_fails "four problems" || return 1
+  assert_contains "$RUN_OUTPUT" "not KEY=N: junk" "the malformed one" || return 1
+  assert_contains "$RUN_OUTPUT" "phi-4: context must be a positive integer" "the non-number" || return 1
+  assert_contains "$RUN_OUTPUT" "ghost: not in the serving plan" "the unknown key" || return 1
+  assert_contains "$RUN_OUTPUT" "qwen3-1.7b: context set more than once" "the duplicate"
+}
+
+# --- --ctx driven through 40-serve.sh -----------------------------------------
+
+test_the_override_lands_in_that_entry_and_only_there() {
+  synth_gpu 20000 1
+  stage_gguf Qwen3-1.7B-GGUF Qwen3-1.7B-Q8_0.gguf >/dev/null
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --ctx qwen3-1.7b=40960
+  assert_ok "a valid override must generate: $RUN_OUTPUT" || return 1
+  local cfg entry_q entry_p
+  cfg="$(cat "$RIG_DIR/etc/llama-swap.yaml")"
+  entry_q="$(awk '/^  "qwen3-1.7b":/,/^$/' <<<"$cfg")"
+  entry_p="$(awk '/^  "phi-4":/,/^$/' <<<"$cfg")"
+  assert_contains "$entry_q" "-c 40960" "the override is in the entry's command" || return 1
+  assert_contains "$entry_q" "ctx 40960 (operator --ctx" "and stated in its comment" || return 1
+  assert_not_contains "$entry_p" "-c 40960" "the other entry is untouched" || return 1
+  # The macro's shared -c survives; the override comes later, so it wins.
+  # 20000 MB free auto-tiers CTX to 65536 (lib/detect.sh resolve_context).
+  assert_contains "$cfg" "-c 65536" "the base macro still carries the shared cap"
+}
+
+test_without_the_flag_the_config_is_unchanged_and_stable() {
+  # Byte-for-byte: two no-flag runs over the same staging must produce
+  # identical configs with no per-entry -c anywhere. Existing generation
+  # tests pin the exact entry shapes; this pins that --ctx's existence
+  # changed nothing when unused.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "first run: $RUN_OUTPUT" || return 1
+  cp "$RIG_DIR/etc/llama-swap.yaml" "$SANDBOX/first.yaml"
+  run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "second run: $RUN_OUTPUT" || return 1
+  if ! diff -q "$SANDBOX/first.yaml" "$RIG_DIR/etc/llama-swap.yaml" >/dev/null; then
+    _fail "two no-flag runs disagree:
+$(diff "$SANDBOX/first.yaml" "$RIG_DIR/etc/llama-swap.yaml")"
+    return 1
+  fi
+  local entries
+  entries="$(sed -n '/^models:/,$p' "$SANDBOX/first.yaml")"
+  assert_not_contains "$entries" '-c ' "no entry carries a -c of its own"
+}
+
+test_a_bad_override_aborts_with_the_existing_config_untouched() {
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  printf 'previous\n' >"$RIG_DIR/etc/llama-swap.yaml"
+  run bash "$REPO_ROOT/40-serve.sh" --ctx ghost=1024
+  assert_fails "an override for an unserved key must abort" || return 1
+  assert_contains "$RUN_OUTPUT" "Nothing has been changed" "and say so" || return 1
+  assert_eq "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "previous" "config preserved" || return 1
+  assert_not_called 'systemctl restart' "service untouched"
+}
+
+test_ctx_and_select_compose() {
+  synth_gpu 20000 1
+  stage_the_collision
+  run bash "$REPO_ROOT/40-serve.sh" --select "$KEY=$(q4)" --ctx "$KEY=65536"
+  assert_ok "a selection and an override on the same key: $RUN_OUTPUT" || return 1
+  local entry
+  entry="$(awk -v k="$KEY" '$0 ~ "^  \"" k "\":",/^$/' "$RIG_DIR/etc/llama-swap.yaml")"
+  assert_contains "$entry" "Q4_K_M.gguf" "the selected file" || return 1
+  assert_contains "$entry" "-c 65536" "and the stated context"
+}
+
+test_exceeding_the_catalog_native_context_warns_but_generates() {
+  # qwen3-1.7b's catalog row records native 40960 (hf-api verified). Stating
+  # more draws the advisory warning; the run still succeeds, because the
+  # catalog is not ground truth for the GGUF on disk.
+  synth_gpu 20000 1
+  stage_gguf Qwen3-1.7B-GGUF Qwen3-1.7B-Q8_0.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --ctx qwen3-1.7b=131072
+  assert_ok "advisory means advisory: $RUN_OUTPUT" || return 1
+  assert_contains "$RUN_OUTPUT" "exceeds the catalog's verified native context" "the warning" || return 1
+  assert_contains "$RUN_OUTPUT" "40960" "naming the catalog figure" || return 1
+  assert_contains "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "-c 131072" "and the entry still emits"
+}
+
+test_a_context_below_native_draws_no_warning() {
+  # Capping below budget is the deliberate use of the flag, not a mistake.
+  synth_gpu 20000 1
+  stage_gguf Qwen3-1.7B-GGUF Qwen3-1.7B-Q8_0.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --ctx qwen3-1.7b=32768
+  assert_ok "runs: $RUN_OUTPUT" || return 1
+  assert_not_contains "$RUN_OUTPUT" "exceeds the catalog" "no warning below native"
+}
+
+test_an_uncatalogued_key_is_silently_unadvised() {
+  # No row, no claim: the advisory speaks only when the catalog actually
+  # knows the model.
+  synth_gpu 20000 1
+  stage_gguf Mystery-GGUF Mystery-Q4_K_M.gguf >/dev/null
+  run bash "$REPO_ROOT/40-serve.sh" --ctx mystery=65536
+  assert_ok "an unmapped model takes the override without comment: $RUN_OUTPUT" || return 1
+  assert_not_contains "$RUN_OUTPUT" "exceeds the catalog" "no warning" || return 1
+  assert_contains "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "-c 65536" "and it emits"
+}
+
 run_suite
 suite_exit
