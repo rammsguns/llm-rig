@@ -26,10 +26,107 @@ c_err()   { printf '\033[1;31m  XX\033[0m %s\n' "$*" >&2; }
 die()     { c_err "$*"; exit 1; }
 need()    { command -v "$1" >/dev/null 2>&1; }
 
-# Anything holding VRAM right now, including our own servers.
+# --- the compute pool --------------------------------------------------------
+# Which GPUs are eligible for inference. On most machines: all of them, and
+# nothing below changes. On a machine that also carries a display-only card,
+# the operator declares the pool in etc/inference-gpus -- one GPU UUID per
+# line, `#` comments allowed. The file is machine-local and gitignored, like
+# etc/llama-swap.yaml: it names THIS machine's silicon, so it is configuration
+# that must never be committed.
+#
+# The declaration is by UUID, not index, because indexes follow PCI
+# enumeration and a BIOS update can renumber the display card into the pool.
+#
+# nvidia-smi does NOT honour CUDA_VISIBLE_DEVICES (it speaks NVML, not CUDA),
+# so the pool cannot be applied by exporting an environment variable here:
+# every hardware read goes through gpu_query below, which filters rows by
+# UUID. The generated systemd unit is what confines the actual servers, via
+# CUDA_VISIBLE_DEVICES set to these same UUIDs -- this filter exists so the
+# sizing arithmetic agrees with that confinement.
+POOL_FILE="${POOL_FILE:-$RIG_DIR/etc/inference-gpus}"
+GPU_POOL=""   # comma-joined UUIDs after load_gpu_pool; empty = no declaration
+
+# Read and validate the declaration. Refuses an unknown UUID, a duplicate,
+# and a declaration matching zero present GPUs: any of those silently
+# widening the pool back to "all cards" would put weights on the display
+# card, which is the exact failure the file exists to prevent. Honours
+# DETECT_SOFT_FAIL the same way detect_hw does, so 00-specs.sh can still
+# describe a machine whose declaration is wrong.
+load_gpu_pool() {
+  GPU_POOL=""
+  [[ -f "$POOL_FILE" ]] || return 0
+  local present declared uuid seen=""
+  present="$(nvidia-smi --query-gpu=uuid --format=csv,noheader | tr -d ' ')"
+  declared="$(grep -vE '^\s*(#|$)' "$POOL_FILE" | tr -d ' ')" || true
+  if [[ -z "$declared" ]]; then
+    pool_fail "compute pool $POOL_FILE exists but declares no GPUs.
+     List one GPU UUID per line (nvidia-smi --query-gpu=uuid --format=csv), or
+     delete the file to make every GPU eligible."
+    return $?
+  fi
+  while IFS= read -r uuid; do
+    if ! grep -qxF "$uuid" <<<"$present"; then
+      pool_fail "compute pool $POOL_FILE names a GPU this machine does not have: $uuid
+     Present GPUs:
+$(nvidia-smi --query-gpu=uuid,name --format=csv,noheader | sed 's/^/       /')"
+      return $?
+    fi
+    if grep -qxF "$uuid" <<<"$seen"; then
+      pool_fail "compute pool $POOL_FILE lists $uuid twice."
+      return $?
+    fi
+    seen+="$uuid"$'\n'
+    GPU_POOL+="${GPU_POOL:+,}$uuid"
+  done <<<"$declared"
+  export GPU_POOL
+  return 0
+}
+
+pool_fail() {
+  c_err "$*"
+  if [[ "${DETECT_SOFT_FAIL:-0}" == 1 ]]; then
+    c_warn "Continuing in report-only mode; no plan can be recommended."
+    return 1
+  fi
+  exit 1
+}
+
+# nvidia-smi --query-gpu, restricted to the compute pool. Every hardware fact
+# detect_hw derives -- names, counts, free and total VRAM, the best-GPU
+# choice, compute caps, tensor splits -- reads through here, so a card
+# outside the pool cannot influence any figure. With no declaration this is
+# exactly the underlying query.
+gpu_query() {
+  local fields="$1" nounits="${2:-}" fmt="csv,noheader"
+  [[ -n "$nounits" ]] && fmt="csv,noheader,nounits"
+  if [[ -z "$GPU_POOL" ]]; then
+    nvidia-smi --query-gpu="$fields" --format="$fmt"
+  else
+    nvidia-smi --query-gpu="uuid,$fields" --format="$fmt" \
+      | awk -v pool="$GPU_POOL" '
+          BEGIN { n = split(pool, p, ","); for (i = 1; i <= n; i++) keep[p[i]] = 1 }
+          { u = $1; sub(/,$/, "", u) }
+          u in keep { sub(/^[^,]*, */, ""); print }'
+  fi
+}
+
+# Anything holding VRAM right now, including our own servers. Restricted to
+# the pool: the display card's compositor and desktop apps hold small compute
+# contexts permanently, and counting them would make ensure_gpus_idle wait
+# forever for an idle state that cannot happen.
 gpu_holders() {
-  nvidia-smi --query-compute-apps=pid,process_name,used_memory \
-    --format=csv,noheader 2>/dev/null | grep -v '^\s*$' || true
+  if [[ -z "$GPU_POOL" ]]; then
+    nvidia-smi --query-compute-apps=pid,process_name,used_memory \
+      --format=csv,noheader 2>/dev/null | grep -v '^\s*$' || true
+  else
+    nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory \
+      --format=csv,noheader 2>/dev/null \
+      | awk -v pool="$GPU_POOL" '
+          BEGIN { n = split(pool, p, ","); for (i = 1; i <= n; i++) keep[p[i]] = 1 }
+          { u = $1; sub(/,$/, "", u) }
+          u in keep { sub(/^[^,]*, */, ""); print }' \
+      | grep -v '^\s*$' || true
+  fi
 }
 
 # Free VRAM is only a meaningful budget if the GPUs are actually idle. If
@@ -122,26 +219,54 @@ detect_hw() {
   need nvidia-smi || die "nvidia-smi not found. Install the driver:
        sudo apt install system76-driver-nvidia && reboot"
 
-  GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | xargs)
-  GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+  # The pool declaration gates every read below; a bad declaration must stop
+  # us before a single figure is derived from the wrong cards.
+  load_gpu_pool || return 1
+
+  GPU_NAME=$(gpu_query name | head -1 | xargs)
+  GPU_COUNT=$(gpu_query name | wc -l)
+
+  # Fail closed on a mixed pool. One binary is compiled for one compute
+  # capability, so eligible cards must agree on it; a machine whose cards
+  # differ (say, compute-8.6 inference cards beside a compute-7.5 display
+  # card) must say which cards count rather than have this script guess.
+  # A declared pool with mixed caps is refused for the same reason.
+  local caps
+  caps="$(gpu_query compute_cap | xargs -n1 | sort -u)"
+  if (( $(wc -l <<<"$caps") > 1 )); then
+    if [[ -z "$GPU_POOL" ]]; then
+      pool_fail "This machine's GPUs differ in compute capability:
+$(nvidia-smi --query-gpu=uuid,name,compute_cap --format=csv,noheader | sed 's/^/       /')
+     One binary serves one capability, so the compute pool must be declared:
+     list the UUIDs of the inference GPUs, one per line, in $POOL_FILE." \
+        || return 1
+    else
+      pool_fail "compute pool $POOL_FILE mixes compute capabilities ($(xargs <<<"$caps")).
+     One binary serves one capability; declare cards that match." \
+        || return 1
+    fi
+  fi
 
   # Budget from FREE memory, not total. Whichever GPU drives the desktop loses
   # ~1-1.5GB to the compositor, and sizing off memory.total silently overcommits
   # that card. On this box GPU0 shows ~1.2GB already consumed.
-  VRAM_FREE_MB=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits \
-                   | awk '{print $1}' | paste -sd, -)
-  VRAM_TOTAL_MB=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits \
-                   | awk '{s+=$1} END {print s}')
+  VRAM_FREE_MB=$(gpu_query memory.free nounits | awk '{print $1}' | paste -sd, -)
+  VRAM_TOTAL_MB=$(gpu_query memory.free nounits | awk '{s+=$1} END {print s}')
   # Smallest free pool: the binding constraint when splitting evenly.
-  VRAM_MB=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits \
-                   | sort -n | head -1 | xargs)
+  VRAM_MB=$(gpu_query memory.free nounits | sort -n | head -1 | xargs)
   # Pin single-card models to whichever GPU has the most headroom, NOT
   # unconditionally to GPU0 -- GPU0 is usually the one running your display.
-  BEST_GPU=$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits \
+  # The index is for humans; when a pool is declared the pin itself is the
+  # UUID, so a per-model env can never name a card outside the allowlist.
+  BEST_GPU=$(gpu_query index,memory.free nounits \
              | sort -t, -k2 -n -r | head -1 | cut -d, -f1 | xargs)
-  VRAM_INSTALLED_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits \
-                   | awk '{s+=$1} END {print s}')
-  GPU_CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | xargs)
+  BEST_GPU_UUID=""
+  if [[ -n "$GPU_POOL" ]]; then
+    BEST_GPU_UUID=$(gpu_query uuid,memory.free nounits \
+                    | sort -t, -k2 -n -r | head -1 | cut -d, -f1 | xargs)
+  fi
+  VRAM_INSTALLED_MB=$(gpu_query memory.total nounits | awk '{s+=$1} END {print s}')
+  GPU_CC=$(gpu_query compute_cap | head -1 | xargs)
   CUDA_ARCH=${GPU_CC/./}
 
   # MEMINFO is a testing seam: /proc/meminfo cannot be shimmed onto PATH the way
@@ -185,7 +310,7 @@ detect_hw() {
   (( MOE_OFFLOAD_MB < 0 )) && MOE_OFFLOAD_MB=0
 
   export GPU_NAME GPU_COUNT VRAM_MB VRAM_TOTAL_MB VRAM_FREE_MB VRAM_INSTALLED_MB \
-         BEST_GPU GPU_CC CUDA_ARCH \
+         BEST_GPU BEST_GPU_UUID GPU_POOL GPU_CC CUDA_ARCH \
          RAM_GB PHYS_CORES THREADS MULTI_GPU NVLINK \
          FIT_TOTAL_MB FIT_SINGLE_MB MOE_OFFLOAD_MB \
          KV_RESERVE_MB KV_RESERVE_SOURCE KV_PER_TOKEN_B CTX CTX_SOURCE
@@ -227,6 +352,9 @@ print_hw() {
   cat >&2 <<EOF
 
   GPU              : $GPU_NAME  (x$GPU_COUNT)$( ((MULTI_GPU)) && echo "  NVLink=$( ((NVLINK)) && echo yes || echo no )" )
+  Compute pool     : $( [[ -n "$GPU_POOL" ]] \
+      && echo "$GPU_COUNT GPU(s) declared eligible in etc/inference-gpus" \
+      || echo "no declaration -- every GPU is eligible" )
   VRAM free/GPU    : ${VRAM_FREE_MB} MB   (installed total ${VRAM_INSTALLED_MB} MB)
   VRAM usable      : ${VRAM_TOTAL_MB} MB total  |  ${VRAM_MB} MB on the tightest card
   Preferred GPU    : CUDA${BEST_GPU} (most free memory)

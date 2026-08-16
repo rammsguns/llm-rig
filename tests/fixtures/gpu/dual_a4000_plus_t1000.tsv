@@ -1,0 +1,4 @@
+index	name	uuid	memory.total	memory.free	compute_cap	power.max_limit	power.min_limit	power.limit	temperature.gpu	clocks.max.sm	persistence_mode
+0	NVIDIA RTX A4000	GPU-aaaaaaaa-1111-1111-1111-111111111111	16376	15971	8.6	140	100	140	43	2100	Enabled
+1	NVIDIA RTX A4000	GPU-bbbbbbbb-2222-2222-2222-222222222222	16376	14953	8.6	140	100	140	43	2100	Enabled
+2	NVIDIA T1000 8GB	GPU-cccccccc-3333-3333-3333-333333333333	8192	7490	7.5	50	30	50	45	1395	Enabled
