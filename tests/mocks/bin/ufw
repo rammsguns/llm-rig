@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 printf 'ufw %s\n' "$*" >>"${MOCK_CALLS:-/dev/null}"
-[[ "${1:-}" == status ]] && echo "Status: inactive"
+# MOCK_UFW_STATUS=active lets a test exercise the rule-adding branch.
+[[ "${1:-}" == status ]] && echo "Status: ${MOCK_UFW_STATUS:-inactive}"
 exit 0

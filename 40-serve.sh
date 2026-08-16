@@ -777,13 +777,22 @@ else
 fi
 
 # --- firewall ---------------------------------------------------------------
-if need ufw && sudo ufw status | grep -q "Status: active"; then
-  SUBNET=$(ip -o -f inet addr show | awk '/scope global/ {print $4}' | head -1 \
-           | sed 's|\(.*\)\..*/|\1.0/|')
-  c_info "Opening $LLAMA_PORT and $PROXY_PORT to $SUBNET only"
-  sudo ufw allow from "$SUBNET" to any port "$LLAMA_PORT" proto tcp >/dev/null
-  sudo ufw allow from "$SUBNET" to any port "$PROXY_PORT" proto tcp >/dev/null
-  c_ok "ufw rules added (LAN only, not the open internet)"
+# The privileged read must not sit on the left side of a pipeline: there its
+# failure (the noninteractive guard's exit included) collapses into a false
+# condition and the run carries on with the firewall state unknown. Capture
+# the output alone and let the parent shell judge the exit status.
+if need ufw; then
+  FIREWALL_STATE=$(sudo ufw status) \
+    || die "could not read the firewall state (sudo ufw status failed);
+     stopping rather than finishing with the firewall state unknown."
+  if grep -q "Status: active" <<<"$FIREWALL_STATE"; then
+    SUBNET=$(ip -o -f inet addr show | awk '/scope global/ {print $4}' | head -1 \
+             | sed 's|\(.*\)\..*/|\1.0/|')
+    c_info "Opening $LLAMA_PORT and $PROXY_PORT to $SUBNET only"
+    sudo ufw allow from "$SUBNET" to any port "$LLAMA_PORT" proto tcp >/dev/null
+    sudo ufw allow from "$SUBNET" to any port "$PROXY_PORT" proto tcp >/dev/null
+    c_ok "ufw rules added (LAN only, not the open internet)"
+  fi
 fi
 
 echo
