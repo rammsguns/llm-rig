@@ -151,7 +151,7 @@ plan_for_budget() {
     PLAN_TIER="tiny"
     PLAN_ID_1="qwen3-coder-30b"; PLAN_Q_1="IQ3_XXS|Q3_K_S"
     PLAN_ID_2="qwen3.5-4b";      PLAN_Q_2="Q5_K_M"
-    PLAN_ID_3="qwen3-1.7b";      PLAN_Q_3="Q8_0"
+    PLAN_ID_3="qwen3.5-2b";      PLAN_Q_3="Q8_0"
     PLAN_RUNTIME="llama.cpp + llama-swap."
     PLAN_NOTE="Claude Code needs 32k context minimum, and the KV cache at that length
   will take a large share of this card. The primary pick is a MoE precisely

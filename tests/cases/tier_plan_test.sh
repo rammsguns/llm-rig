@@ -97,6 +97,18 @@ test_every_planned_quant_is_a_valid_expression() {
   return 0
 }
 
+test_the_tiny_tier_small_pick_is_the_current_small_head() {
+  # Consistency behind the qwen3.5-2b deployment: the tiny tier's third pick
+  # tracked qwen3-1.7b, which stays in the catalog as the #63 evidence row but
+  # must not be what a plan hands a new machine -- its successor replaced it
+  # as the small-class head. Pin all three picks so silent drift is caught.
+  plan_for_budget 8000 0
+  assert_eq "$PLAN_ID_1" "qwen3-coder-30b" "primary holds"            || return 1
+  assert_eq "$PLAN_ID_2" "qwen3.5-4b"      "mid pick holds"           || return 1
+  assert_eq "$PLAN_ID_3" "qwen3.5-2b"      "small pick is the successor" || return 1
+  assert_eq "$PLAN_Q_3"  "Q8_0"            "at the catalog's first-preference quant"
+}
+
 test_moe_note_appears_only_with_ample_ram() {
   plan_for_budget 20000 111616
   assert_contains "$PLAN_MOE_NOTE" "expert offload" "MoE note with 125GB RAM" || return 1
