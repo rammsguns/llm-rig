@@ -100,7 +100,7 @@ every change, and past roughly twenty the answer is to retire rows instead.
 of the suite that produced the number. These are a different kind of claim,
 cannot be confirmed the same way, and so are kept somewhere else entirely.
 
-**Four ratings are measured; the other twelve read `unknown`, and that is
+**Five ratings are measured; the other eleven read `unknown`, and that is
 the honest answer.** Publishers report different benchmarks, public leaderboards
 disagree and are not reproducible here, and sorting one vendor's SWE-bench
 figure against another's HumanEval figure produces an ordering that means
@@ -211,7 +211,7 @@ measuring disclosure practice. XS 2.1's rating row was instead filled the
 same way as every other measured row — by the local suite — and S 2.1 stays
 `unknown` until the same suite runs it.
 
-One consequence to be aware of: with twelve of sixteen coding ratings
+One consequence to be aware of: with eleven of sixteen coding ratings
 still `unknown`, the quality term barely discriminates among the unmeasured,
 so their ordering runs mostly on freshness, hardware fit, speed and features.
 On a 31 GB machine that once made Laguna XS 2.1 the top `medium` pick ahead
@@ -220,13 +220,14 @@ reversed (84 against its placeholder-fed 81) precisely because it was
 metadata, not evidence. The suite-v3 measurement of Laguna itself closed that
 loop on 2026-08-15: a perfect 100, twelve tasks over three repeats without a
 flip. Its composite lands at 94, back on top of the class it once led by
-default — but this time the comparison is like for like. The measured four —
-94, `qwen3.8-27b`'s 85, `qwen3-coder-30b`'s 84 and `devstral-small-2`'s 77 —
-share one suite and one machine, and the top two are **tied at 100 on
-measured coding quality**: Laguna's nine-point composite lead over Qwen3.8 is
-speed and fit (2.7B active parameters against a 27.8B dense forward pass),
-not a coding-quality verdict. Running the benchmark is what fixes the
-remaining twelve rows too.
+default — but this time the comparison is like for like. The measured five —
+94, `qwen3.8-27b`'s 85, `qwen3-coder-30b`'s 84, `devstral-small-2`'s 77 and
+`qwen3-coder-next`'s 71 — share one suite and one machine, and three of them
+are **tied at 100 on measured coding quality**: Laguna's composite lead over
+Qwen3.8 and Coder-Next is speed and fit (2.7B active parameters against a
+27.8B dense forward pass, and against experts that partly run from system
+RAM), not a coding-quality verdict. Running the benchmark is what fixes the
+remaining eleven rows too.
 
 Running them here: XS 2.1 at `Q4_K_M` is 18.9 GiB and needs both cards
 (`-sm layer`); S 2.1 at `UD-Q4_K_XL` is 68.4 GiB and runs with the experts in
@@ -334,7 +335,7 @@ every other row, is not.
 
 Confidence counts three independent kinds of evidence — verified facts, a
 sourced rating, and current live data. Three of three is `high`, two is
-`medium`, fewer is `low`. **Only the four measured rows can reach `high`**,
+`medium`, fewer is `low`. **Only the five measured rows can reach `high`**,
 because they are the only ones with ratings; every other row is capped at
 `medium` until you record one with
 [`./61-rate-models.sh`](61-rate-models.sh).
@@ -345,7 +346,7 @@ qualifier is load-bearing: a single unrepeated benchmark pass is recorded as
 ranking it feeds.
 
 Note what the neutral rating does to the ranking: with the quality term equal
-across twelve of the sixteen rows, the total is driven mostly by fit and
+across eleven of the sixteen rows, the total is driven mostly by fit and
 speed, so the smallest model that fits tends to win outright. That is why the
 default recommendation leads with a **Medium** model rather than the top of the
 list — scoring alone would point a 48 GB workstation at a 4B.
@@ -357,11 +358,11 @@ the same suite, on the same machine. Directly behind them the table shows the
 trap this section exists for: the unmeasured `qwen3.6-35b-a3b` at 79 sits
 above the measured `devstral-small-2` at 77, entirely on card-claimed
 capabilities and fit — that gap is not a quality verdict, because one side of
-it has never run the suite. Another reading trap sits at the top: Laguna and Qwen3.8 are **tied at 100 on
-measured coding quality** — suite v3 cannot separate them — so the nine
-composite points between them are speed and fit, not a verdict on who writes
-better code. The rest of the ordering only becomes a quality judgement when
-the rows being compared are measured too.
+it has never run the suite. Another reading trap sits at the top: Laguna, Qwen3.8 and Coder-Next are
+**tied at 100 on measured coding quality** — suite v3 cannot separate them —
+so the composite points between them are speed and fit, not a verdict on who
+writes better code. The rest of the ordering only becomes a quality judgement
+when the rows being compared are measured too.
 
 ```bash
 # The whole shortlist for a 20 GB usable budget

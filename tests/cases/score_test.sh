@@ -697,20 +697,22 @@ test_the_measured_rows_report_medium_confidence_on_their_own() {
 
 test_the_complete_ranking_after_the_qwen_refresh() {
   # The whole board on the measuring machine (29671 MB, 109 GB of MoE
-  # offload), every row, in order -- pinned as one string so the 2026-08-15
-  # refresh's effect on the ranking is a fact in the repo rather than a
-  # claim in a PR description. What moved, relative to the retired table:
-  # qwen3-coder-next lands one point behind laguna-s-2.1 (58 vs 59, both
-  # unmeasured -- the composite cannot meaningfully separate them);
-  # qwen3.6-35b-a3b enters medium at 79, above the measured devstral-small-2
+  # offload), every row, in order -- pinned as one string so each rating's
+  # effect on the ranking is a fact in the repo rather than a claim in a PR
+  # description. What moved with the 2026-08-17 coder-next measurement: its
+  # suite-v3 100 lifts it from 58 (one point behind the unmeasured
+  # laguna-s-2.1, where the composite could not separate them) to 71 at
+  # medium confidence, which on this budget makes it the measured head of
+  # the large class. Still standing from the 2026-08-15 refresh:
+  # qwen3.6-35b-a3b in medium at 79, above the measured devstral-small-2
   # (its card claims agentic coding, so the agentic capability lifts its
-  # features component to saturation); and the small class is now headed by
+  # features component to saturation); and the small class headed by
   # qwen3.5-2b at 82 over the served qwen3-1.7b's 71 -- the approved
   # small-default flip, asserted from the selector's side in
-  # selector_test.sh. The medium and large HEADS are all measured rows in
-  # their exact positions; every retired row was a non-pick.
-  local want='large 59 laguna-s-2.1
-large 58 qwen3-coder-next
+  # selector_test.sh. The class HEADS are now all measured rows in their
+  # exact positions; every retired row was a non-pick.
+  local want='large 71 qwen3-coder-next
+large 59 laguna-s-2.1
 large 31 llama-3.3-70b
 medium 94 laguna-xs-2.1
 medium 85 qwen3.8-27b
@@ -738,7 +740,28 @@ test_the_measured_rows_can_reach_high_confidence_with_live_data() {
   assert_eq "$(score_confidence qwen3.8-27b fresh)" "high" \
     "the measured rows clear the same bar" || return 1
   assert_eq "$(score_confidence laguna-xs-2.1 fresh)" "high" \
+    "the fourth measured row included" || return 1
+  assert_eq "$(score_confidence qwen3-coder-next fresh)" "high" \
     "the newest measured row included"
+}
+
+test_the_codernext_rating_on_the_serving_budget() {
+  # The deployed machine's actual weight budget: 15970+14952 MB free minus
+  # the 7065 KV reserve at ctx 131072 and 1800 overhead. On it, the
+  # 2026-08-17 suite-v3 100 moves qwen3-coder-next from 58/low (a
+  # placeholder-fed composite one point behind the equally unmeasured
+  # laguna-s-2.1) to 71 at medium confidence -- past laguna-s-2.1 into
+  # fourth of six in the large class, and no further: the three rows above
+  # it hold their places, so the rating reshuffles nothing a default pick
+  # depends on. Pinned so the exact delta the measurement caused is a fact
+  # in the repo.
+  local large
+  large="$(score_rank 22057 111616 | awk -F'\t' '$1=="large" { print $2, $3 }' | paste -sd'|')"
+  assert_eq "$large" \
+    "88 laguna-xs-2.1|78 qwen3-coder-30b|73 qwen3.6-35b-a3b|71 qwen3-coder-next|59 laguna-s-2.1|31 llama-3.3-70b" \
+    "the large class, in order: coder-next fourth at 71" || return 1
+  assert_eq "$(score_rank 22057 111616 | awk -F'\t' '$3=="qwen3-coder-next" { print $5 }')" \
+    "medium" "its ranking confidence is medium without live data"
 }
 
 run_suite

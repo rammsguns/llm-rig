@@ -270,14 +270,14 @@ CATALOG
 # --- the ratings table ------------------------------------------------------
 # id;rating_value;rating_date;rating_method;rating_source;rating_confidence;rating_suite
 #
-# FOUR ROWS ARE MEASURED. THE REST ARE `unknown`, AND THAT IS THE HONEST ANSWER.
+# FIVE ROWS ARE MEASURED. THE REST ARE `unknown`, AND THAT IS THE HONEST ANSWER.
 #
 # What a rating has to be to appear here: a number, from a named source,
 # produced by a stated method, comparable across every row it is ranked
-# against. Four rows clear that bar today -- qwen3-coder-30b, qwen3.8-27b,
-# devstral-small-2 and laguna-xs-2.1, all measured on this machine by
-# 61-rate-models.sh under suite v3 on one serving stack. Every other row is
-# a placeholder.
+# against. Five rows clear that bar today -- qwen3-coder-30b, qwen3.8-27b,
+# devstral-small-2, laguna-xs-2.1 and qwen3-coder-next, all measured on this
+# machine by 61-rate-models.sh under suite v3 on one serving stack. Every
+# other row is a placeholder.
 #
 #   - Publishers report benchmarks selectively and on different suites. Taking
 #     one vendor's SWE-bench figure and another's HumanEval figure and sorting
@@ -293,17 +293,17 @@ CATALOG
 # A ranking that admits it cannot separate two models on quality is more useful
 # than one that separates them on a number somebody made up.
 #
-# Which means the measured rows must be read for what they are. The two
+# Which means the measured rows must be read for what they are. The three
 # 100s, the 93 and the 80 ARE comparable with each other: same suite, same
 # machine, same llama.cpp build -- that ordering is the real quality ranking
-# this table carries. And it has a ceiling: laguna-xs-2.1 and qwen3.8-27b
-# both scored a perfect 100, so on measured coding quality they are tied --
-# suite v3 cannot separate them. Any distance between them in the ranking
-# comes from the other components (fit, speed, freshness), not from this
-# table. Against the other twelve rows the measured four are not
-# comparable: four measurements against twelve neutral 50s says these are
-# the models somebody measured, and the rest of the ordering only becomes a
-# quality judgement once the rows being compared are measured too.
+# this table carries. And it has a ceiling: laguna-xs-2.1, qwen3.8-27b and
+# qwen3-coder-next all scored a perfect 100, so on measured coding quality
+# they are tied -- suite v3 cannot separate them. Any distance between them
+# in the ranking comes from the other components (fit, speed, freshness),
+# not from this table. Against the other eleven rows the measured five are
+# not comparable: five measurements against eleven neutral 50s says these
+# are the models somebody measured, and the rest of the ordering only
+# becomes a quality judgement once the rows being compared are measured too.
 #
 # The route to filling in the rest is the same one: measure on this machine
 # with 61-rate-models.sh, and record the value, date, source and confidence it
@@ -311,7 +311,7 @@ CATALOG
 catalog_ratings() {
   sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' <<'RATINGS'
 qwen3-coder-30b;93;2026-08-14;local-benchmark;file:llm-rating-20260814-2122.txt;medium;v3
-qwen3-coder-next;unknown;-;none;-;none;-
+qwen3-coder-next;100;2026-08-17;local-benchmark;file:llm-rating-20260817-0945.txt;medium;v3
 qwen3.6-35b-a3b;unknown;-;none;-;none;-
 devstral-small-2;80;2026-08-14;local-benchmark;file:llm-rating-20260814-2307.txt;medium;v3
 qwen3.8-27b;100;2026-08-14;local-benchmark;file:llm-rating-20260814-2123.txt;medium;v3
