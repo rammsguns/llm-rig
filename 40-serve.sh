@@ -63,6 +63,8 @@ source "$(dirname "$0")/lib/detect.sh"
 source "$(dirname "$0")/lib/swap.sh"
 # Which GGUF is served under which name, and what to do when that is ambiguous.
 source "$(dirname "$0")/lib/serving.sh"
+# MoE-vs-dense classification reads the catalog's parameter columns (#83).
+source "$(dirname "$0")/lib/catalog.sh"
 
 SELECTIONS=()
 CTX_OVERRIDE_ARGS=()
@@ -312,6 +314,20 @@ if (( ${#CTX_OVERRIDE_ARGS[@]} )); then
     [[ -n "$_k" ]] && printf '    %-40s -c %s\n' "$_k" "$_n"
   done <<<"$CTX_PLAN"
 fi
+
+# Classify every planned model as MoE or dense before anything changes (#83).
+# The classification decides whether an over-budget model gets expert offload
+# or only a warning, so a row the catalog cannot vouch for -- malformed
+# figures, or an arch column contradicting the parameter columns -- aborts
+# here, while the running stack is untouched and no config exists to be wrong.
+MOE_PLAN=""
+while IFS=$'\t' read -r _k _p; do
+  [[ -n "$_k" && -n "$_p" ]] || continue
+  _cls="$(serving_moe_class "$_k" "${_p##*/}")" \
+    || die "cannot classify $_k as MoE or dense; see above. Refusing to guess
+     -- a config sized on a guess is worse than no config. Nothing has been changed."
+  MOE_PLAN+="$_k"$'\t'"$_cls"$'\n'
+done <<<"$SERVING_PLAN"
 
 # Re-running this while llama-swap holds a model resident would measure ~3GB free
 # and compute a NEGATIVE weight budget, producing a config full of bogus
@@ -607,7 +623,6 @@ EOF
 found=0
 while IFS=$'\t' read -r name gguf; do
   [[ -n "$name" && -n "$gguf" ]] || continue
-  base=$(basename "$gguf")
 
   # Total size of all shards, not just the first one.
   stem="${gguf%%-0000*}"
@@ -618,8 +633,11 @@ while IFS=$'\t' read -r name gguf; do
   fi
 
   extra=""; envline=""; note=""
+  # Settled per-key in MOE_PLAN before this block opened (#83): the catalog's
+  # parameter columns for catalogued models, the filename convention only for
+  # uncatalogued ones. Nothing here re-derives it from the name.
   is_moe=0
-  [[ "$base" =~ [Aa][0-9]+[Bb]|[Mm]o[Ee] ]] && is_moe=1
+  [[ "$(awk -F'\t' -v k="$name" '$1 == k { print $2 }' <<<"$MOE_PLAN")" == "moe" ]] && is_moe=1
 
   if (( MULTI_GPU )); then
     if (( size_mb <= FIT_SINGLE_MB )); then
