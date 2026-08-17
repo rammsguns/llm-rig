@@ -707,7 +707,7 @@ test_the_complete_ranking_after_the_qwen_refresh() {
   # qwen3.6-35b-a3b in medium at 79, above the measured devstral-small-2
   # (its card claims agentic coding, so the agentic capability lifts its
   # features component to saturation); and the small class headed by
-  # qwen3.5-2b at 82 over the served qwen3-1.7b's 71 -- the approved
+  # qwen3.5-2b at 82 over the now-retired qwen3-1.7b's 71 -- the approved
   # small-default flip, asserted from the selector's side in
   # selector_test.sh. The class HEADS are now all measured rows in their
   # exact positions; every retired row was a non-pick.

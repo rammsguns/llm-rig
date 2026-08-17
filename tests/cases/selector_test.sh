@@ -470,7 +470,7 @@ test_the_laguna_measurement_moves_the_large_pick() {
   # say so". Two reshuffles have come through since. The laguna measurement:
   # on the fixture budget laguna-xs-2.1 classes as large, and its measured
   # row lifts it past qwen3-coder-30b (88 against 78) into the large slot.
-  # The 2026-08-15 Qwen refresh: the small slot flips from the served
+  # The 2026-08-15 Qwen refresh: the small slot flips from the then-served
   # qwen3-1.7b (71) to qwen3.5-2b (82) -- the approved small-default change,
   # scored on metadata because both rows are unmeasured. The medium pick is
   # still the named default throughout.
@@ -498,13 +498,15 @@ test_the_codernext_rating_does_not_move_the_default_picks() {
 test_the_refresh_flips_the_small_default_to_qwen35_2b() {
   # The counterfactual behind the flip, so the pick is traceable to the rows
   # that caused it rather than asserted as a coincidence of the fixture:
-  # qwen3.5-2b outscores the served qwen3-1.7b in the small class (82 vs 71
-  # -- fresher, 262k context against 40960, six times the parameters at the
-  # same class, and card-claimed agentic capability), and with all three new
-  # small rows shadowed back out of the table the old pick returns. All
-  # three must go: since the capability correction, qwen3.5-9b (76) beats
-  # the served row on its own. The SERVED small model does not change here:
-  # that is a deployment decision, gated separately.
+  # qwen3.5-2b outscores the then-served qwen3-1.7b in the small class (82
+  # vs 71 -- fresher, 262k context against 40960, six times the parameters
+  # at the same class, and card-claimed agentic capability), and with all
+  # three new small rows shadowed back out of the table the old pick
+  # returns. All three must go: since the capability correction, qwen3.5-9b
+  # (76) beats the 1.7b row on its own. The served small model did not
+  # change in this refresh -- that was a separately gated deployment
+  # decision, since executed: qwen3.5-2b replaced qwen3-1.7b in service on
+  # 2026-08-16, and the 1.7b row stays as the #63 evidence row.
   local head_small old_head
   head_small="$(score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$1=="small" { print $3; exit }')"
   assert_eq "$head_small" "qwen3.5-2b" "the refresh's small head" || return 1
@@ -517,7 +519,7 @@ test_the_refresh_flips_the_small_default_to_qwen35_2b() {
     catalog_ratings() { catalog_ratings_orig | grep -Ev '^qwen3\.5-(2b|4b|9b);'; }
     score_rank "$BUDGET" "$OFFLOAD" | awk -F'\t' '$1=="small" { print $3; exit }'
   )"
-  assert_eq "$old_head" "qwen3-1.7b" "without the new rows the served model still leads"
+  assert_eq "$old_head" "qwen3-1.7b" "without the new rows the retired qwen3-1.7b still leads"
 }
 
 test_the_menu_states_the_confidence_rather_than_only_the_score() {

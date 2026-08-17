@@ -245,9 +245,11 @@ qwen3.8-27b;Qwen/Qwen3.8-27B;2026-08-05;27.8;27.8;dense;262144;apache-2.0;coding
 qwen3.5-9b;Qwen/Qwen3.5-9B;2026-02-27;9.7;9.7;dense;262144;apache-2.0;coding,agentic,tools,reasoning,vision;Q6_K|Q5_K_M;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-9B;2026-08-15
 qwen3.5-4b;Qwen/Qwen3.5-4B;2026-02-27;4.7;4.7;dense;262144;apache-2.0;coding,agentic,tools,reasoning,vision;Q8_0|Q6_K;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-4B;2026-08-15
 qwen3.5-2b;Qwen/Qwen3.5-2B;2026-02-28;2.3;2.3;dense;262144;apache-2.0;coding,agentic,tools,reasoning,vision;Q8_0|Q6_K;hf-api;https://huggingface.co/api/models/Qwen/Qwen3.5-2B;2026-08-15
-# qwen3-1.7b outlived its April-2025 siblings because this rig SERVES it --
-# it is the #63 rating-boundary row, and retiring it would orphan the served
-# model, the README paragraph and the tripwire that keeps them honest.
+# qwen3-1.7b outlived its April-2025 siblings as the #63 rating-boundary
+# row. It is no longer served -- qwen3.5-2b replaced it as the served small
+# default on 2026-08-16, and its weights are preserved outside the scanned
+# tree -- but dropping the row would orphan the README boundary paragraph
+# and the tripwire that keep that evidence honest.
 qwen3-1.7b;Qwen/Qwen3-1.7B;2025-04-27;2.0;2.0;dense;40960;apache-2.0;tools,reasoning;Q8_0|Q6_K;hf-api;https://huggingface.co/api/models/Qwen/Qwen3-1.7B;2026-08-11
 gemma-3-27b;google/gemma-3-27b-it;2025-03-01;27.4;27.4;dense;131072;gemma;vision;Q4_K_M|IQ4_XS;card-stated;https://huggingface.co/google/gemma-3-27b-it;2026-08-11
 gemma-3-12b;google/gemma-3-12b-it;2025-03-01;12.2;12.2;dense;131072;gemma;vision;Q4_K_M|IQ4_XS;card-stated;https://huggingface.co/google/gemma-3-12b-it;2026-08-11
