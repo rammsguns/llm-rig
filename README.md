@@ -839,11 +839,12 @@ LLAMA_DIR=~/src/my-llama.cpp ./20-build-llamacpp.sh
 CTX=65536 ./40-serve.sh       # override context length (see the caveat below)
 POWER_PCT=85 ./10-os-tune.sh  # cap power, if your chassis has thermal headroom
 
-# Per-model context override (issue #65): this entry alone gets `-c 40960`
-# after the shared macro, so its config stops claiming a context the runtime
-# silently re-derives. Validated against the serving plan; advisory-checked
+# Per-model context override (issue #65): the entry named by KEY alone gets
+# `-c N` after the shared macro, so its config stops claiming a context the
+# runtime silently re-derives. Useful when a model's native maximum sits below
+# the shared default. Validated against the serving plan; advisory-checked
 # against the catalog; with no --ctx the config is byte-for-byte unchanged.
-./40-serve.sh --ctx qwen3-1.7b=40960
+./40-serve.sh --ctx KEY=N
 ```
 
 A quant preference is an **ordered alternation**, not a regular expression:
