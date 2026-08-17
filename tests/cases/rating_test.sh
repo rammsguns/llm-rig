@@ -764,6 +764,40 @@ test_one_served_model_matching_both_ways_is_one_candidate() {
   assert_eq "$(rate_model_candidates phi-4 $'phi-4\nqwen3.5-4b')" "phi-4" "once, not twice"
 }
 
+# --- unique selectors --------------------------------------------------------
+# What the ambiguity refusal is allowed to recommend (#81): only identifiers
+# this very resolver would take back to exactly one model. Computed from the
+# advertised list and the catalog -- the config's aliases are invisible here,
+# which is the point.
+
+test_unique_selectors_offer_the_advertised_alias_by_its_own_name() {
+  assert_eq "$(rate_unique_selectors qwen3.5-4b-local $'qwen3.5-4b\nqwen3.5-4b-local')" \
+    "qwen3.5-4b-local" "its served name reads one way; its catalog id reads two"
+}
+
+test_unique_selectors_for_the_bare_name_beside_its_alias_are_none() {
+  # Both of the bare entry's identifiers -- its name and its catalog id, the
+  # same string -- also reach the -local entry through the alias mapping. There
+  # is nothing to suggest, and the function must say so rather than guess.
+  run rate_unique_selectors qwen3.5-4b $'qwen3.5-4b\nqwen3.5-4b-local'
+  assert_fails "no identifier has a single reading" || return 1
+  assert_eq "$RUN_OUTPUT" "" "and none is invented"
+}
+
+test_unique_selectors_dedup_a_name_that_is_its_own_id() {
+  assert_eq "$(rate_unique_selectors phi-4 $'phi-4\nqwen3.5-4b')" "phi-4" \
+    "one identifier, printed once"
+}
+
+test_unique_selectors_offer_both_spellings_when_both_are_unique() {
+  local out
+  out="$(rate_unique_selectors devstral-small-2-24b-instruct-2512 \
+    $'devstral-small-2-24b-instruct-2512\nqwen3.5-4b')"
+  assert_contains "$out" "devstral-small-2-24b-instruct-2512" "the served name" || return 1
+  assert_contains "$out" "devstral-small-2" "and the catalog id" || return 1
+  assert_eq "$(wc -l <<<"$out")" "2" "exactly the two of them"
+}
+
 test_the_row_cites_the_artifact_and_not_a_url() {
   local row
   row="$(rate_row qwen3.5-4b 67 2026-08-11 "$HOME/llm-rating-20260811-1930.txt" medium)"
@@ -1510,7 +1544,7 @@ test_an_unserved_model_is_refused_by_name() {
   serve_model 6
   drive "--model phi-4"
   assert_fails "a model the endpoint does not serve" || return 1
-  assert_contains "$RUN_OUTPUT" "does not serve" "named, not 'invalid input'" || return 1
+  assert_contains "$RUN_OUTPUT" "does not advertise" "named, not 'invalid input'" || return 1
   assert_contains "$RUN_OUTPUT" "qwen3.5-4b" "and what it does serve is listed"
 }
 
@@ -1563,7 +1597,7 @@ test_a_catalog_id_nothing_serves_is_refused_with_both_readings_named() {
   serve_model 6   # qwen3.5-4b only
   drive "--model devstral-small-2"
   assert_fails "a catalog id whose model is not being served" || return 1
-  assert_contains "$RUN_OUTPUT" "does not serve" "refused" || return 1
+  assert_contains "$RUN_OUTPUT" "does not advertise" "refused" || return 1
   assert_contains "$RUN_OUTPUT" "catalog id" "saying both readings were tried" || return 1
   assert_contains "$RUN_OUTPUT" "qwen3.5-4b" "and listing what is served"
 }
@@ -1582,17 +1616,21 @@ test_an_ambiguous_model_argument_is_refused_with_the_candidates_named() {
   drive "--model qwen3.5-4b"
   assert_fails "two served models answer to the argument" || return 1
   assert_contains "$RUN_OUTPUT" "more than one" "the refusal names the class" || return 1
-  assert_contains "$RUN_OUTPUT" "qwen3.5-4b-local" "and the candidates themselves" || return 1
-  # 'qwen3.5-4b' IS an exact served name here, so the remediation must not send
-  # the operator back to it -- it has to point at a spelling with one reading.
-  assert_contains "$RUN_OUTPUT" "unambiguous served name" \
-    "the remediation asks for a one-reading spelling" || return 1
-  assert_contains "$RUN_OUTPUT" "alias" "and points at the listed alias" || return 1
+  # The remediation may only name identifiers the resolver itself would accept
+  # (#81): here the -local spelling is genuinely advertised and has one
+  # reading, so it is offered -- as an advertised name, not as "the alias".
+  assert_contains "$RUN_OUTPUT" "select it with: qwen3.5-4b-local" \
+    "the advertised one-reading spelling is offered concretely" || return 1
+  # The bare entry has no advertised identifier of its own -- its name and its
+  # catalog id both read two ways -- and the refusal must say that instead of
+  # inventing a selector.
+  assert_contains "$RUN_OUTPUT" "serving identity must change" \
+    "the unselectable candidate is named as unselectable" || return 1
   assert_not_contains "$(cat "$MOCK_CALLS")" "/v1/messages" "nothing was measured" || return 1
   assert_eq "$(rate_latest_artifact "$HOME")" "" "and no artifact is left behind"
 }
 
-test_the_listed_alias_succeeds_where_the_bare_name_is_ambiguous() {
+test_an_advertised_alias_succeeds_where_the_bare_name_is_ambiguous() {
   serve_a_name_and_its_alias
   drive "--model qwen3.5-4b-local"
   assert_ok "the alias answers only as a served name: $RUN_OUTPUT" || return 1
@@ -1607,6 +1645,41 @@ test_the_listed_alias_succeeds_where_the_bare_name_is_ambiguous() {
   assert_contains "$art" "catalog-id: qwen3.5-4b" \
     "recorded against the id the alias maps to" || return 1
   assert_contains "$art" "RESULT qwen3.5-4b " "and the RESULT line keys on the id"
+}
+
+# --- aliases in the config, absent from /v1/models ---------------------------
+# The shape production actually serves (#81): the llama-swap config declares
+# "<name>-local" aliases, but the endpoint's /v1/models advertises only the
+# model keys. #59 assumed the alias was always passable; the qwen3.5-2b run
+# (#79) proved it is not. The config on disk carries the aliases in these
+# fixtures precisely so the resolver is seen ignoring it: resolution reads the
+# advertised list and the catalog, nothing else.
+
+test_a_config_alias_the_endpoint_does_not_advertise_is_refused() {
+  write_cfg >/dev/null    # aliases: ["qwen3.5-4b-local"] exists -- in the config
+  serve_model 6           # /v1/models advertises qwen3.5-4b alone
+  drive "--model qwen3.5-4b-local"
+  assert_fails "a config alias the endpoint does not advertise" || return 1
+  assert_contains "$RUN_OUTPUT" "does not advertise" "refused on the real contract" || return 1
+  assert_contains "$RUN_OUTPUT" "config alias is selectable only when the endpoint advertises it" \
+    "and the contract is stated, not left to be rediscovered" || return 1
+  assert_contains "$RUN_OUTPUT" "qwen3.5-4b" "with the advertised set listed" || return 1
+  assert_not_contains "$(cat "$MOCK_CALLS")" "/v1/messages" "nothing was measured"
+}
+
+test_the_bare_name_resolves_when_its_alias_is_not_advertised() {
+  # The #79 invocation: the bare name is both the served name and the catalog
+  # id, the configured alias is unadvertised, and deduplication makes the bare
+  # name exactly one candidate -- the ambiguity #59 worried about needs the
+  # alias to be advertised before it can exist.
+  write_cfg >/dev/null
+  serve_model 6
+  drive "--model qwen3.5-4b"
+  assert_ok "one candidate, resolved: $RUN_OUTPUT" || return 1
+  assert_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3.5-4b"' \
+    "measured under the advertised name" || return 1
+  assert_not_contains "$(cat "$MOCK_CALLS")" '"model":"qwen3.5-4b-local"' \
+    "the unadvertised alias is never spoken to the endpoint"
 }
 
 test_dry_run_with_a_catalog_id_maps_and_calls_nothing() {

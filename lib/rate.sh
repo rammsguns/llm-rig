@@ -778,6 +778,34 @@ rate_model_candidates() {
   (( found ))
 }
 
+# rate_unique_selectors <candidate> <served-list>
+#
+# The identifiers `--model` could be given to select <candidate> and nothing
+# else, one per line: its served name, and its catalog id if it has one, each
+# kept only if rate_model_candidates resolves it back to exactly this model.
+# Built from the advertised list and the catalog alone -- never the llama-swap
+# config -- so nothing this prints can be refused by the resolver that reads
+# it. That restriction is the point (#81): a config alias is not necessarily
+# advertised by /v1/models, and recommending one the endpoint does not serve
+# sends the operator from one refusal straight into another.
+#
+# Status 1 with nothing printed when no identifier has a single reading; the
+# caller then has to say the serving identity itself must change, because
+# there is no spelling left to suggest.
+rate_unique_selectors() {
+  local candidate="$1" available="$2" id matched found=0
+  local ids="$candidate" cid
+  if cid="$(rate_catalog_id "$candidate")" && [[ "$cid" != "$candidate" ]]; then
+    ids+=$'\n'"$cid"
+  fi
+  while IFS= read -r id; do
+    matched="$(rate_model_candidates "$id" "$available")" || continue
+    [[ "$matched" == "$candidate" ]] || continue
+    printf '%s\n' "$id"; found=1
+  done <<<"$ids"
+  (( found ))
+}
+
 # rate_row <catalog-id> <value> <date> <artifact-basename> <confidence>
 #
 # The line to paste into catalog_ratings(). The source is the artifact's

@@ -413,6 +413,15 @@ serves**, at the quant they are actually served at, and writes the evidence to
 ./61-rate-models.sh --dry-run          # show the plan, call nothing
 ```
 
+`--model` accepts an **advertised** served name or a catalog id — exactly, no
+prefixes — where advertised means listed by the endpoint's `/v1/models`. A
+config alias is selectable only when the endpoint actually advertises it
+(issue #81: llama-swap does not necessarily list aliases there, so the script
+never recommends one it has not seen advertised). When an argument matches
+more than one served model, the refusal names each candidate with the
+advertised identifiers that select only it; if no identifier disambiguates,
+the serving identity itself has to change before that model can be rated.
+
 Read [`lib/rate.sh`](lib/rate.sh) before trusting a number out of it. These
 things about it are deliberate and constrain what it can claim:
 

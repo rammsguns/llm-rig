@@ -21,7 +21,9 @@
 # Usage:
 #   ./61-rate-models.sh                    # every served model, one pass each
 #   ./61-rate-models.sh --repeats 3        # three passes; disagreement -> low
-#   ./61-rate-models.sh --model qwen3.5-4b # one model: served name or catalog id
+#   ./61-rate-models.sh --model qwen3.5-4b # one model: an advertised served
+#                                          # name or a catalog id; a config
+#                                          # alias only if /v1/models lists it
 #   ./61-rate-models.sh --dry-run          # print the plan, call nothing
 #
 # Output -> ~/llm-rating-<date>.txt
@@ -42,7 +44,7 @@ while (( $# )); do
     --model)     shift; ONLY="${1:-}" ;;
     --model=*)   ONLY="${1#--model=}" ;;
     --dry-run)   DRY=1 ;;
-    -h|--help)   sed -n '2,27p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)   sed -n '2,29p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *)           die "unknown argument: $1" ;;
   esac
   shift
@@ -63,15 +65,36 @@ c_info "Rating against $BASE"
 AVAILABLE="$(preflight_check_models "$BASE")" || die \
   "no models served at $BASE -- start the stack first (./40-serve.sh), then re-run"
 
-# --model takes an exact served name or an exact catalog id (#58). The
-# candidate set comes from rate_model_candidates; this block only counts it.
-# One candidate runs. Zero and several both die with the set named, because
-# picking one would decide which weights get measured on a guess.
+# --model takes an exact advertised served name or an exact catalog id (#58).
+# Advertised means listed by /v1/models: a config alias counts only if the
+# endpoint actually serves it under that name (#81). The candidate set comes
+# from rate_model_candidates; this block only counts it. One candidate runs.
+# Zero and several both die with the set named, because picking one would
+# decide which weights get measured on a guess.
 if [[ -n "$ONLY" ]]; then
   MATCHED="$(rate_model_candidates "$ONLY" "$AVAILABLE")" || die \
-    "$BASE does not serve '$ONLY' -- not a served name, and no served model maps to that catalog id. It serves: $(printf '%s' "$AVAILABLE" | tr '\n' ' ')"
+    "$BASE does not advertise '$ONLY' -- not a served name, and no served model maps to that catalog id. A config alias is selectable only when the endpoint advertises it. It serves: $(printf '%s' "$AVAILABLE" | tr '\n' ' ')"
   if (( "$(printf '%s\n' "$MATCHED" | wc -l)" > 1 )); then
-    die "'$ONLY' matches more than one served model: $(printf '%s' "$MATCHED" | tr '\n' ' ')-- it is a served name and a catalog id at once, and precedence cannot resolve that. Give an unambiguous served name, such as the listed alias"
+    # The remediation may only name identifiers this same resolver would
+    # accept. Per candidate: the advertised spellings that resolve to it
+    # alone, or the admission that none does -- never a config alias the
+    # endpoint might not serve (#81).
+    REMEDY=""
+    ANY_SELECTOR=0
+    while IFS= read -r cand; do
+      [[ -n "$cand" ]] || continue
+      if sel="$(rate_unique_selectors "$cand" "$AVAILABLE")"; then
+        REMEDY+=$'\n'"  $cand -- select it with: $(printf '%s' "$sel" | tr '\n' ' ')"
+        ANY_SELECTOR=1
+      else
+        REMEDY+=$'\n'"  $cand -- no advertised identifier selects it alone; its serving identity must change before it can be rated"
+      fi
+    done <<<"$MATCHED"
+    if (( ANY_SELECTOR )); then
+      die "'$ONLY' matches more than one served model -- it is a served name and a catalog id at once, and precedence cannot resolve that. Each candidate, with the advertised identifiers that select only it:$REMEDY"
+    else
+      die "'$ONLY' matches more than one served model, and no advertised identifier selects any single one of them. The serving identity must be changed first -- rename an entry so the endpoint advertises a spelling with one reading:$REMEDY"
+    fi
   fi
   AVAILABLE="$MATCHED"
 fi
