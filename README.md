@@ -117,7 +117,7 @@ kind of number this table accepts. Note the tie: on measured coding quality
 Laguna XS 2.1, Qwen3.8 and Coder-Next are indistinguishable — all three hit
 the suite's ceiling.
 
-Two small models have been run without becoming measured, and both stay
+Three models have been run without becoming measured, and all three stay
 `unknown`. `qwen3-1.7b` hit the boundary first: suite v3 rejected its run as
 incomplete — 10 of 12 tasks answered, the other two truncated at the fixed
 1024-token budget before this small reasoner finished thinking
@@ -127,13 +127,22 @@ no longer served: `qwen3.5-2b` replaced it as the served small default — and
 proved non-recordable under the same terms, harder. 7 of 12 tasks answered,
 five truncated in every one of three repeats, one genuine graded failure
 ([#79](https://github.com/rammsguns/llm-rig/issues/79) records the
-evidence). Each run's artifact records a diagnostic value — 80 and 60
-respectively — computed the way every run is computed: earned weight over
-the suite's full 15 points, with truncated tasks contributing zero. The
-arithmetic is not the problem — the evidence is. A truncated task is
-neither a pass nor a failure, so a value that had to score them as zero is
-not a rating, and this table carries neither. What the rows show instead is
-an explicit coverage gap the
+evidence). The third run shows the boundary is not about model size:
+`qwen3.6-35b-a3b`, a 36B-parameter mixture-of-experts and the largest model
+served here, answered 10 of 12 with two tasks truncated in every repeat
+([#90](https://github.com/rammsguns/llm-rig/issues/90) records the
+evidence). What the three runs share is thinking-style output, not scale —
+each spends the fixed budget reasoning before it answers, where the
+non-thinking `qwen3-coder-next` completed the same suite cleanly. That
+makes this a coverage limitation of the suite's fixed budget, not a rating
+of any of the three. Each run's artifact records a diagnostic value — 80,
+60 and 80 respectively — computed the way every run is computed: earned
+weight over the suite's full 15 points, with truncated tasks
+contributing zero. The arithmetic is not the problem — the evidence is. A
+truncated task is neither a pass nor a failure, so a value that had to
+score them as zero is not a rating, and this table carries none of them.
+What the rows show
+instead is an explicit coverage gap the
 [completeness gate](#a-truncated-response-is-not-a-wrong-answer)
 refuses to disguise.
 
