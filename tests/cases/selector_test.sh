@@ -448,7 +448,7 @@ test_every_unrated_model_reports_low_confidence_on_the_menu() {
       assert_ne "$conf" "low" "a measured rating must show on the menu for $id" || return 1
     fi
   done
-  assert_eq "$rated" 4 "exactly four offered models are measured today"
+  assert_eq "$rated" 5 "exactly five offered models are measured today"
 }
 
 test_devstral_ranks_second_in_medium_on_the_fixture_budget() {
@@ -478,6 +478,21 @@ test_the_laguna_measurement_moves_the_large_pick() {
   picks="$(selector_default_picks | paste -sd' ')"
   assert_eq "$picks" "qwen3.8-27b laguna-xs-2.1 qwen3.5-2b" \
     "large is laguna's, small is qwen3.5-2b's, medium holds"
+}
+
+test_the_codernext_rating_does_not_move_the_default_picks() {
+  # The 2026-08-17 measurement gave qwen3-coder-next a suite-v3 100 and
+  # lifted its composite to 71 -- but on the serving machine's budget the
+  # large class is still headed by the measured laguna-xs-2.1 at 88, so
+  # every default slot holds. Asserted at that budget (15970+14952 free
+  # minus the 7065 KV reserve and 1800 overhead), because a rating that
+  # silently reshuffled the recommendation would have to come through here
+  # and say so.
+  local picks
+  selector_build 22057 "$OFFLOAD" || { _fail "selector_build failed"; return 1; }
+  picks="$(selector_default_picks | paste -sd' ')"
+  assert_eq "$picks" "qwen3.8-27b laguna-xs-2.1 qwen3.5-2b" \
+    "medium, large and small all unchanged by the coder-next rating"
 }
 
 test_the_refresh_flips_the_small_default_to_qwen35_2b() {

@@ -879,6 +879,10 @@ test_the_replacement_rows_match_the_published_facts() {
     assert_eq "$(catalog_get "$id" license)" "apache-2.0" "$id license tag" || return 1
     assert_contains "$(catalog_get "$id" fact_source)" "https://huggingface.co/api/models/Qwen/" \
       "$id cites Qwen's own repo, never a quantizer's mirror" || return 1
+    # Every refresh row ARRIVED unmeasured; qwen3-coder-next has since been
+    # measured (2026-08-17, suite v3) and its row is pinned with the other
+    # measured rows, so the arrival honesty check no longer applies to it.
+    [[ "$id" == "qwen3-coder-next" ]] && continue
     assert_eq "$(catalog_rating_get "$id" rating_value)" "unknown" \
       "$id arrives unmeasured, honestly" || return 1
   done
@@ -1098,23 +1102,27 @@ test_the_measured_rating_rows_are_the_ones_that_were_produced() {
   row="$(catalog_ratings | awk -F';' '$1=="laguna-xs-2.1"')"
   assert_eq "$row" \
     "laguna-xs-2.1;100;2026-08-15;local-benchmark;file:llm-rating-20260815-0859.txt;medium;v3" \
-    "the laguna row: 100, medium, suite v3"
+    "the laguna row: 100, medium, suite v3" || return 1
+  row="$(catalog_ratings | awk -F';' '$1=="qwen3-coder-next"')"
+  assert_eq "$row" \
+    "qwen3-coder-next;100;2026-08-17;local-benchmark;file:llm-rating-20260817-0945.txt;medium;v3" \
+    "the coder-next row: 100, medium, suite v3"
 }
 
-test_exactly_four_rating_rows_are_measured() {
-  # The leaderboard caveat, as a test. Four measured rows against twelve
-  # placeholders means the 100-100-93-80 ordering is a real comparison --
-  # with a real tie at the top that suite v3 cannot break -- and everything
-  # else is still a statement about hardware fit; anything written about the
-  # ranking has to say so. When a fifth model is measured this fails, which
-  # is the reminder to go and update that wording rather than let it quietly
-  # become false.
+test_exactly_five_rating_rows_are_measured() {
+  # The leaderboard caveat, as a test. Five measured rows against eleven
+  # placeholders means the 100-100-100-93-80 ordering is a real comparison
+  # -- with a real three-way tie at the top that suite v3 cannot break --
+  # and everything else is still a statement about hardware fit; anything
+  # written about the ranking has to say so. When a sixth model is measured
+  # this fails, which is the reminder to go and update that wording rather
+  # than let it quietly become false.
   local measured
   measured="$(catalog_ratings | awk -F';' '$4 != "none" { print $1 }' | paste -sd' ')"
-  assert_eq "$measured" "qwen3-coder-30b devstral-small-2 qwen3.8-27b laguna-xs-2.1" \
+  assert_eq "$measured" "qwen3-coder-30b qwen3-coder-next devstral-small-2 qwen3.8-27b laguna-xs-2.1" \
     "the only rows backed by measurements" || return 1
-  assert_eq "$(catalog_ratings | awk -F';' '$4 == "none"' | wc -l)" "12" \
-    "and twelve rows still honestly say unknown"
+  assert_eq "$(catalog_ratings | awk -F';' '$4 == "none"' | wc -l)" "11" \
+    "and eleven rows still honestly say unknown"
 }
 
 test_the_readme_nonrecordable_boundary_cannot_go_silently_stale() {
@@ -1167,8 +1175,8 @@ test_every_local_benchmark_row_is_on_suite_v3() {
   local suites
   suites="$(catalog_ratings | awk -F';' '$4=="local-benchmark" { print $7 }' | sort -u)"
   assert_eq "$suites" "v3" "every measured row ran the same suite, and it is v3" || return 1
-  assert_eq "$(catalog_ratings | awk -F';' '$4=="local-benchmark"' | wc -l)" "4" \
-    "and all four local measurements are on it"
+  assert_eq "$(catalog_ratings | awk -F';' '$4=="local-benchmark"' | wc -l)" "5" \
+    "and all five local measurements are on it"
 }
 
 test_a_partial_qwen38_only_v3_update_would_have_failed() {
@@ -1190,8 +1198,9 @@ test_a_partial_qwen38_only_v3_update_would_have_failed() {
     "the rule" || return 1
   assert_contains "$CATALOG_ERRORS" "qwen3-coder-30b" "one side named" || return 1
   # The other side is the first v3 row after the v2 one in table order --
-  # which, now that devstral is measured, is devstral rather than qwen3.8.
-  assert_contains "$CATALOG_ERRORS" "devstral-small-2" "and the other"
+  # which, now that coder-next is measured and sits directly after the coder
+  # row, is coder-next rather than devstral.
+  assert_contains "$CATALOG_ERRORS" "qwen3-coder-next" "and the other"
 }
 
 run_suite
