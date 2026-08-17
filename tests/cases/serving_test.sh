@@ -1401,6 +1401,69 @@ test_malformed_params_fail_closed() {
   assert_contains "$out" "non-numeric" "the malformation is named"
 }
 
+# --- expert-tail placement across cards (#85) --------------------------------
+# --n-cpu-moe N keeps the experts of the FIRST N layers on the CPU, so the
+# expert layers still on GPU are always the TAIL of the stack -- and the
+# free-memory-proportional split hands the tail to the last card. Every
+# GPU-resident expert layer concentrates on one device, and with ~900 MB
+# expert layers that is a single allocation bigger than the card.
+# serving_moe_split_plan reweights the split so each card's share of the tail
+# fits it, offloads one more layer when a card would overflow, and refuses
+# outright when the offload outgrows the host-RAM budget.
+
+test_the_plan_fits_the_expert_tail_on_uneven_cards() {
+  # The production failure as arithmetic: a 46169 MB MoE over 15970+14952 MB
+  # free with a 7065 MB KV reserve. The proportional split put every resident
+  # expert layer on the smaller card and it OOMed at swap-in. Capacity there
+  # is 14952 - 3416 (KV share) - 900 = 10636 MB: twelve 900 MB layers do not
+  # fit, so the plan must offload one more layer than the budget arithmetic
+  # asked for (28, not 27) and hand that card eleven.
+  run serving_moe_split_plan 46169 15970,14952 7065 49152
+  assert_ok "the production shape must be satisfiable: $RUN_OUTPUT" || return 1
+  assert_eq "$RUN_OUTPUT" "$(printf '28\t40,11')" \
+    "offload raised until the last card's share fits"
+}
+
+test_the_plan_splits_the_tail_across_even_cards() {
+  # Identical cards must share the tail instead of one card taking all of it:
+  # the concentration is a property of the prefix semantics, not of uneven
+  # hardware.
+  run serving_moe_split_plan 24000 12000,12000 7065 49152
+  assert_ok "even cards must be satisfiable: $RUN_OUTPUT" || return 1
+  assert_eq "$RUN_OUTPUT" "$(printf '10\t18,8')" \
+    "eight tail layers per card, prefix steered to card 0"
+}
+
+test_a_card_filled_to_exactly_its_capacity_is_accepted() {
+  # Card 1 here has capacity for exactly two 900 MB layers (2700 free, no KV,
+  # 900 overhead -> 1800). Equality must count as fitting: a `<` where `<=`
+  # belongs would offload a layer that provably fits, and this pair of
+  # assertions is the tripwire for that regression.
+  run serving_moe_split_plan 18000 5400,2700 0 49152
+  assert_ok "the exact fit must be accepted: $RUN_OUTPUT" || return 1
+  assert_eq "$RUN_OUTPUT" "$(printf '14\t18,2')" "1800 MB into 1800 MB fits" || return 1
+  # One MB less capacity and that same share no longer fits: the plan must
+  # move a layer to the CPU, not overcommit the card.
+  run serving_moe_split_plan 18000 5400,2699 0 49152
+  assert_ok "one MB under must still be satisfiable: $RUN_OUTPUT" || return 1
+  assert_eq "$RUN_OUTPUT" "$(printf '15\t19,1')" "and steps to one more CPU layer"
+}
+
+test_an_offload_beyond_the_ram_budget_fails_closed() {
+  # Raising the offload count spends ~900 MB of host RAM per layer. Past the
+  # MoE offload budget the cure is a machine swapping itself to death instead
+  # of a card OOMing -- so past it there is no plan at all.
+  run serving_moe_split_plan 46169 15970,14952 7065 20000
+  assert_fails "an offload above the RAM budget must refuse" || return 1
+  assert_contains "$RUN_OUTPUT" "host RAM" "the RAM budget is named as the reason"
+}
+
+test_a_garbage_free_reading_is_refused_not_planned_around() {
+  run serving_moe_split_plan 5000 abc,123 100 49152
+  assert_fails "non-numeric free memory must refuse" || return 1
+  assert_contains "$RUN_OUTPUT" "non-numeric" "the malformation is named"
+}
+
 # --- the official Qwen3-Coder-Next artifact, end to end ----------------------
 # Four sparse shards at the real byte counts, a du that reads apparent size
 # (a downloaded shard is not sparse; the staged test file is), and a GPU
@@ -1431,11 +1494,13 @@ test_the_four_official_shards_are_one_logical_model() {
 
 test_the_codernext_entry_gets_expert_offload_not_a_dense_warning() {
   # End to end through the generator: sized over all four shards, classified
-  # from the catalog, offloaded to fit -- with the arithmetic the production
-  # pair actually produces. The budget derives from FREE memory (the display
-  # card's consumption must not be overcommitted): 15970+14952 = 30922, minus
-  # the 7065 KV reserve at ctx 131072 and 1800 overhead, is 22057. 46169 MB
-  # is 24112 MB over: --n-cpu-moe 27.
+  # from the catalog, offloaded AND placed to fit -- with the arithmetic the
+  # production pair actually produces. The budget derives from FREE memory:
+  # 15970+14952 = 30922, minus the 7065 KV reserve at ctx 131072 and 1800
+  # overhead, is 22057; 46169 MB is 24112 MB over. The budget alone said
+  # --n-cpu-moe 27, but 27 leaves twelve 900 MB expert layers for the smaller
+  # card's 10636 MB of capacity (#85), so the placement plan offloads one
+  # more and reweights the split: 28 CPU layers, 40:11 across the cards.
   use_gpu dual_a4000_uneven
   stage_codernext_shards
   apparent_size_du
@@ -1444,12 +1509,51 @@ test_the_codernext_entry_gets_expert_offload_not_a_dense_warning() {
   local cfg; cfg="$(cat "$RIG_DIR/etc/llama-swap.yaml")"
   assert_contains "$cfg" '"qwen3-coder-next":' "one entry, under the catalog's key" || return 1
   assert_contains "$cfg" "(~46169 MB)" "sized over all four shards, not the first" || return 1
-  assert_contains "$cfg" "--n-cpu-moe 27" "over budget means expert offload now" || return 1
+  assert_contains "$cfg" "--n-cpu-moe 28" "over budget means expert offload now" || return 1
   assert_not_contains "$cfg" "WARNING dense model" "never the dense warning" || return 1
   assert_contains "$cfg" "-m $MODELS_DIR/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf" \
     "the command names the absolute first-shard path" || return 1
   assert_contains "$cfg" 'aliases: ["qwen3-coder-next-local"]' "with the standard alias" || return 1
-  assert_contains "$cfg" "--tensor-split 15970,14952" "split over the pair's free memory"
+  assert_contains "$cfg" "--tensor-split 40,11" \
+    "the split is reweighted so the expert tail fits each card" || return 1
+  # The proportional split is exactly what OOMed the smaller card in
+  # production. Reverting the placement fix resurrects it and fails here.
+  assert_not_contains "$cfg" "--tensor-split 15970,14952" \
+    "the raw free-memory ratios must not survive on an offloaded entry"
+}
+
+test_an_offloaded_entry_beyond_the_ram_budget_generates_nothing() {
+  # The unsatisfiable case end to end: same four shards, same cards, but a
+  # 32 GB machine, whose MoE offload budget (16384 MB) cannot hold the 28
+  # layers the placement needs. The generator must refuse and change nothing:
+  # a previously installed config survives byte-for-byte, and no half-written
+  # temp file is left beside it.
+  use_gpu dual_a4000_uneven
+  stage_codernext_shards
+  apparent_size_du
+  ram_gb 32
+  printf '# sentinel: the previous config\n' >"$RIG_DIR/etc/llama-swap.yaml"
+  PATH="$SANDBOX/bin:$PATH" run bash "$REPO_ROOT/40-serve.sh"
+  assert_fails "an unsatisfiable placement must refuse to generate" || return 1
+  assert_contains "$RUN_OUTPUT" "host RAM" "the RAM budget is named" || return 1
+  assert_eq "$(cat "$RIG_DIR/etc/llama-swap.yaml")" "# sentinel: the previous config" \
+    "the installed config is untouched" || return 1
+  assert_eq "$(find "$RIG_DIR/etc" -name '.llama-swap.yaml.*' | wc -l)" "0" \
+    "no temp file is left behind"
+}
+
+test_a_moe_that_fits_keeps_the_proportional_split_untouched() {
+  # Entries without --n-cpu-moe must come out byte-for-byte as before the
+  # placement fix: a MoE that overflows the single-card budget but fits the
+  # pair still gets the raw free-memory ratios and no offload flag.
+  stage_solid_gguf Fits-30B-A3B-GGUF Fits-30B-A3B-Q4_K_M.gguf 400M >/dev/null
+  export KV_RESERVE_MB=13100
+  run bash "$REPO_ROOT/40-serve.sh" --config-only
+  assert_ok "generation must succeed: $RUN_OUTPUT" || return 1
+  local entry; entry="$(entry_block fits-30b-a3b)"
+  assert_contains "$entry" "--tensor-split 14104,14955" \
+    "a fitting MoE keeps the proportional split" || return 1
+  assert_not_contains "$entry" "n-cpu-moe" "and gains no offload flag"
 }
 
 run_suite
