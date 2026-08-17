@@ -13,7 +13,14 @@ while [[ "${1:-}" == -* ]]; do
     #   MOCK_SUDO_CRED_USES_FILE=<file> -- cached NOW but expiring: the file
     #     holds how many -n calls succeed before the timestamp runs out, so a
     #     test can pass the preflight and then fail a later privileged call.
-    -n) if [[ -n "${MOCK_SUDO_CRED_USES_FILE:-}" ]]; then
+    #   MOCK_SUDO_FAIL_ON=<substring>   -- cached until the command matches:
+    #     the expiry lands on one SPECIFIC call site, immune to sudo calls
+    #     being added or removed upstream of it (a use-count would silently
+    #     start testing the wrong call).
+    -n) if [[ -n "${MOCK_SUDO_FAIL_ON:-}" && "$*" == *"$MOCK_SUDO_FAIL_ON"* ]]; then
+          printf 'sudo: a password is required\n' >&2
+          exit 1
+        elif [[ -n "${MOCK_SUDO_CRED_USES_FILE:-}" ]]; then
           uses="$(cat "$MOCK_SUDO_CRED_USES_FILE" 2>/dev/null || echo 0)"
           if (( uses <= 0 )); then
             printf 'sudo: a password is required\n' >&2

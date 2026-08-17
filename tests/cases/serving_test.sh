@@ -1273,5 +1273,46 @@ test_the_noninteractive_guard_covers_sourced_helpers() {
   assert_not_called '^systemctl stop' "the stop itself was never reached"
 }
 
+test_a_sudo_failure_at_the_firewall_status_check_stops_the_script() {
+  # The residual risk accepted when the guard merged: `sudo ufw status` sat on
+  # the left side of a pipeline, so the guard's exit died in the pipeline
+  # subshell and the run finished as if the firewall were merely inactive.
+  # Expire the credential at exactly that call -- everything before it works.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  MOCK_SUDO_FAIL_ON="ufw status" SERVE_TTY="$SANDBOX/no-such-tty" \
+    run bash "$REPO_ROOT/40-serve.sh"
+  assert_fails "the whole script must stop, not shrug past the firewall" || return 1
+  assert_contains "$RUN_OUTPUT" "privileged command failed" "the guard's diagnostic" || return 1
+  assert_contains "$RUN_OUTPUT" "ufw status" "naming the exact call" || return 1
+  assert_contains "$RUN_OUTPUT" "firewall state" "and the parent-shell stop" || return 1
+  assert_not_called '^ufw allow' "no rule was touched afterwards" || return 1
+  assert_not_contains "$RUN_OUTPUT" "Endpoint:" "and the run never reached the summary"
+}
+
+test_an_active_firewall_still_gets_lan_rules() {
+  # The refactor moves the status read out of the pipeline; the behavior it
+  # gates must not move: an active firewall still gets the two LAN-only rules.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  MOCK_UFW_STATUS=active SERVE_TTY="$SANDBOX/no-such-tty" \
+    run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "an active firewall is not an error: $RUN_OUTPUT" || return 1
+  assert_called '^ufw allow' "rules are added" || return 1
+  assert_contains "$RUN_OUTPUT" "ufw rules added" "and reported" || return 1
+  assert_contains "$RUN_OUTPUT" "Endpoint:" "run completes"
+}
+
+test_an_inactive_firewall_is_skipped_without_failing() {
+  # The other preserved half: inactive means nothing to open, not an error.
+  synth_gpu 20000 1
+  stage_gguf Phi-4-GGUF Phi-4-Q4_K_M.gguf >/dev/null
+  SERVE_TTY="$SANDBOX/no-such-tty" run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "inactive is a clean skip: $RUN_OUTPUT" || return 1
+  assert_called '^ufw status' "the state was actually read" || return 1
+  assert_not_called '^ufw allow' "no rules for an inactive firewall" || return 1
+  assert_contains "$RUN_OUTPUT" "Endpoint:" "run completes"
+}
+
 run_suite
 suite_exit
