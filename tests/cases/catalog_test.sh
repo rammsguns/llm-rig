@@ -1126,16 +1126,18 @@ test_exactly_five_rating_rows_are_measured() {
 }
 
 test_the_readme_nonrecordable_boundary_cannot_go_silently_stale() {
-  # #63 and #79: two small Qwens are non-recordable under suite v3, and the
+  # #63, #79 and #90: three Qwens are non-recordable under suite v3, and the
   # README says so by name -- qwen3-1.7b as history (preserved, no longer
-  # served), qwen3.5-2b as the served small default. The ways this statement
-  # goes quietly false are all closed here: a row gets measured while the
-  # paragraph still claims it cannot be, or the paragraph is dropped and the
-  # boundary loses its only documentation. Recording a real rating for
-  # either model therefore has to rewrite the README paragraph AND this
-  # test, in the same change.
+  # served), qwen3.5-2b as the served small default, qwen3.6-35b-a3b as the
+  # served large MoE that proved the boundary is about thinking-style
+  # output, not model size. The ways this statement goes quietly false are
+  # all closed here: a row gets measured while the paragraph still claims
+  # it cannot be, or the paragraph is dropped and the boundary loses its
+  # only documentation. Recording a real rating for any of the three
+  # therefore has to rewrite the README paragraph AND this test, in the
+  # same change.
   local para
-  para="$(grep -A20 'run without becoming measured' "$REPO_ROOT/README.md")"
+  para="$(grep -A30 'run without becoming measured' "$REPO_ROOT/README.md")"
   assert_contains "$para" "qwen3-1.7b" "the boundary names the first model" || return 1
   assert_contains "$para" "10 of 12" "and how much of its run answered" || return 1
   assert_contains "$para" "no longer served" \
@@ -1144,17 +1146,22 @@ test_the_readme_nonrecordable_boundary_cannot_go_silently_stale() {
   assert_contains "$para" "qwen3.5-2b" "the boundary names the successor" || return 1
   assert_contains "$para" "small default" "as the served small default" || return 1
   assert_contains "$para" "7 of 12" "and how much of its run answered" || return 1
-  # The diagnostics 80 and 60 are full-denominator arithmetic -- rate_value
-  # over the suite's whole weight, truncated tasks contributing zero -- and
-  # the README must say so. An "answered subset" explanation was the first
-  # wording to ship, and it was wrong.
+  assert_contains "$para" "qwen3.6-35b-a3b" "the boundary names the third model" || return 1
+  assert_contains "$para" "not about model size" \
+    "the third run's point: the boundary is not a size effect" || return 1
+  assert_contains "$para" "coverage limitation" \
+    "and the paragraph frames it as a coverage limitation, not a rating" || return 1
+  # The diagnostics 80, 60 and 80 are full-denominator arithmetic --
+  # rate_value over the suite's whole weight, truncated tasks contributing
+  # zero -- and the README must say so. An "answered subset" explanation was
+  # the first wording to ship, and it was wrong.
   assert_contains "$para" "full 15 points" \
     "the diagnostics are explained over the full suite weight" || return 1
   assert_contains "$para" "contributing zero" \
     "with truncated tasks scored as zero, not skipped" || return 1
   assert_contains "$para" "not a rating" "and disclaims the diagnostic values" || return 1
-  assert_contains "$para" "carries neither" \
-    "the table carries neither diagnostic" || return 1
+  assert_contains "$para" "carries none" \
+    "the table carries none of the diagnostics" || return 1
   assert_contains "$para" "refuses to disguise" \
     "naming the rows an explicit coverage gap" || return 1
   assert_eq "$(catalog_rating_get qwen3-1.7b rating_value)" "unknown" \
@@ -1164,7 +1171,11 @@ test_the_readme_nonrecordable_boundary_cannot_go_silently_stale() {
   assert_eq "$(catalog_rating_get qwen3.5-2b rating_value)" "unknown" \
     "the served successor is still unknown" || return 1
   assert_eq "$(catalog_rating_get qwen3.5-2b rating_method)" "none" \
-    "its diagnostic 60 never became a method claim"
+    "its diagnostic 60 never became a method claim" || return 1
+  assert_eq "$(catalog_rating_get qwen3.6-35b-a3b rating_value)" "unknown" \
+    "the large MoE is still unknown" || return 1
+  assert_eq "$(catalog_rating_get qwen3.6-35b-a3b rating_method)" "none" \
+    "its diagnostic 80 never became a method claim"
 }
 
 test_every_local_benchmark_row_is_on_suite_v3() {
