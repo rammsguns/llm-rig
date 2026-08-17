@@ -109,12 +109,13 @@ cannot be recorded without a method and a source behind it, and a method
 claiming evidence cannot be recorded without a value.
 
 The exceptions are `laguna-xs-2.1` (100), `qwen3.8-27b` (100),
-`qwen3-coder-30b` (93) and `devstral-small-2` (80), measured here with
-[`./61-rate-models.sh`](61-rate-models.sh) under suite v3 on 2026-08-14 and
-2026-08-15 — three repeats each, no disagreement between them, each against a
-named artifact. That is the only kind of number this table accepts. Note the
-tie: on measured coding quality Laguna XS 2.1 and Qwen3.8 are
-indistinguishable — both hit the suite's ceiling.
+`qwen3-coder-next` (100), `qwen3-coder-30b` (93) and `devstral-small-2`
+(80), measured here with [`./61-rate-models.sh`](61-rate-models.sh) under
+suite v3 between 2026-08-14 and 2026-08-17 — three repeats each, no
+disagreement between them, each against a named artifact. That is the only
+kind of number this table accepts. Note the tie: on measured coding quality
+Laguna XS 2.1, Qwen3.8 and Coder-Next are indistinguishable — all three hit
+the suite's ceiling.
 
 Two small models have been run without becoming measured, and both stay
 `unknown`. `qwen3-1.7b` hit the boundary first: suite v3 rejected its run as
