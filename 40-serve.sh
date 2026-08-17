@@ -685,9 +685,28 @@ while IFS=$'\t' read -r name gguf; do
   # MoE run on modest VRAM.
   if (( is_moe && size_mb > FIT_TOTAL_MB )); then
     overflow=$(( size_mb - FIT_TOTAL_MB ))
-    ncpumoe=$(( overflow / 900 + 1 ))
-    extra="$extra --n-cpu-moe $ncpumoe"
-    note="$note; ${overflow}MB over budget -> --n-cpu-moe $ncpumoe (experts on CPU)"
+    if (( MULTI_GPU )); then
+      # --n-cpu-moe N offloads the experts of the FIRST N layers, so the
+      # expert layers still on GPU are the TAIL -- and the proportional
+      # split above hands the tail to the last card. Left as-is, every
+      # GPU-resident expert layer lands on one device and the entry OOMs
+      # at swap-in (#85). Replace the split with one sized so each card's
+      # share of the expert tail fits it, or generate nothing at all.
+      moeplan="$(serving_moe_split_plan "$size_mb" "$TENSOR_SPLIT" \
+                   "$KV_RESERVE_MB" "$MOE_OFFLOAD_MB")" \
+        || { rm -f "$CFG_TMP"
+             die "cannot place $name: see above. An entry that cannot start is
+     worse than no entry -- $CFG is unchanged."; }
+      ncpumoe="${moeplan%%$'\t'*}"
+      moeweights="${moeplan#*$'\t'}"
+      extra="${extra/--tensor-split $TENSOR_SPLIT/--tensor-split $moeweights}"
+      extra="$extra --n-cpu-moe $ncpumoe"
+      note="$note; ${overflow}MB over budget -> --n-cpu-moe $ncpumoe (experts on CPU), split $moeweights fits the expert tail per card"
+    else
+      ncpumoe=$(( overflow / 900 + 1 ))
+      extra="$extra --n-cpu-moe $ncpumoe"
+      note="$note; ${overflow}MB over budget -> --n-cpu-moe $ncpumoe (experts on CPU)"
+    fi
   elif (( ! is_moe && size_mb > FIT_TOTAL_MB )); then
     note="$note; WARNING dense model ${size_mb}MB exceeds ${FIT_TOTAL_MB}MB budget"
   fi

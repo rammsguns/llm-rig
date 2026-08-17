@@ -129,6 +129,115 @@ serving_moe_class() {
   fi
 }
 
+# serving_moe_split_plan <size_mb> <free_csv> <kv_reserve_mb> <moe_offload_mb>
+#   stdout: `<n-cpu-moe>TAB<w0,w1,...>` -- the offload count and a
+#   --tensor-split weighting under which every GPU-resident expert layer fits
+#   the card it lands on. Status 1 with the reason on stderr when no
+#   satisfiable placement exists; the caller must generate nothing.
+#
+# --n-cpu-moe N is a PREFIX, not a quantity: it keeps the experts of the
+# FIRST N layers on the CPU, so the layers whose experts stay GPU-resident
+# are always the TAIL of the stack. A free-memory-proportional tensor split
+# assigns layers in order, which hands that entire tail to the last card --
+# every expert-bearing GPU layer concentrates on one device while the other
+# cards hold only the cheap expert-less prefix. With small expert layers the
+# skew hides inside the last card's slack; with ~900 MB expert layers it is
+# a single allocation larger than the card and the server dies at swap-in
+# (#85).
+#
+# The plan reuses the two quantities the offload arithmetic already trusts
+# and adds nothing new: the ~900 MB/layer expert heuristic, and the per-card
+# free-memory readings behind the proportional split. Estimate the
+# expert-bearing layer count from size/900, give each card a capacity equal
+# to its free memory minus its proportional share of the KV reserve and the
+# per-card overhead, and apportion the GPU-resident tail across the cards by
+# that capacity (largest remainder, so the shares always sum). If some
+# card's share still cannot fit, offload one more layer to the CPU and try
+# again -- the tail only shrinks. The prefix layers hold no GPU experts, so
+# they are steered to card 0 by adding N to its weight; card 0's expert
+# share is checked against the same capacity as everyone else's, and the
+# prefix rides in the slack the 900 MB/layer estimate leaves on a layer's
+# non-expert weights.
+#
+# Fail closed, not open: every extra offloaded layer costs ~900 MB of host
+# RAM, and past MOE_OFFLOAD_MB the "fix" is a machine swapping itself to
+# death instead of a card OOMing. No satisfiable N below that line means no
+# entry.
+serving_moe_split_plan() {
+  local size_mb="$1" free_csv="$2" kv_mb="$3" ram_mb="$4"
+  local e=900
+  local -a f c k base r
+  local i n sum=0 csum=0
+  IFS=',' read -r -a f <<<"$free_csv"
+  n=${#f[@]}
+  for i in "${!f[@]}"; do
+    if [[ ! "${f[i]}" =~ ^[0-9]+$ ]]; then
+      printf 'serving_moe_split_plan: non-numeric free-memory value %s\n' "'${f[i]}'" >&2
+      return 1
+    fi
+    sum=$(( sum + f[i] ))
+  done
+  if (( n < 2 || sum <= 0 )); then
+    printf 'serving_moe_split_plan: needs two or more cards with free memory, got %s\n' "'$free_csv'" >&2
+    return 1
+  fi
+
+  for i in "${!f[@]}"; do
+    c[i]=$(( f[i] - kv_mb * f[i] / sum - e ))
+    (( c[i] < 0 )) && c[i]=0
+    csum=$(( csum + c[i] ))
+  done
+
+  local nhat=$(( size_mb / e ))
+  local fit=$(( sum - kv_mb - n * e ))
+  local N=$(( (size_mb - fit) / e + 1 ))
+  (( N < 1 )) && N=1
+  (( N > nhat )) && N=nhat
+
+  local G assigned best bestr ok w out
+  for (( ; N <= nhat; N++ )); do
+    if (( N * e > ram_mb )); then
+      printf 'expert offload needs ~%sMB of host RAM but only %sMB is budgeted for it\n' \
+        "$(( N * e ))" "$ram_mb" >&2
+      return 1
+    fi
+    G=$(( nhat - N ))
+    if (( csum == 0 )); then
+      (( G == 0 )) || continue
+      for i in "${!f[@]}"; do k[i]=0; done
+    else
+      assigned=0
+      for i in "${!f[@]}"; do
+        base[i]=$(( G * c[i] / csum ))
+        r[i]=$(( G * c[i] % csum ))
+        assigned=$(( assigned + base[i] ))
+      done
+      k=( "${base[@]}" )
+      while (( assigned < G )); do
+        best=-1; bestr=-1
+        for i in "${!f[@]}"; do
+          (( r[i] > bestr )) && { bestr=${r[i]}; best=$i; }
+        done
+        k[best]=$(( k[best] + 1 )); r[best]=-1
+        assigned=$(( assigned + 1 ))
+      done
+    fi
+    ok=1
+    for i in "${!f[@]}"; do
+      (( k[i] * e <= c[i] )) || { ok=0; break; }
+    done
+    (( ok )) || continue
+    w=$(( N + k[0] ))
+    out="$w"
+    for (( i=1; i<n; i++ )); do out+=",${k[i]}"; done
+    printf '%s\t%s\n' "$N" "$out"
+    return 0
+  done
+  # Unreachable in practice: at N = nhat the tail is empty and always fits.
+  printf 'serving_moe_split_plan: no placement found for %sMB across %s\n' "$size_mb" "$free_csv" >&2
+  return 1
+}
+
 # serving_conflicts <candidates> -- keys with more than one candidate.
 serving_conflicts() {
   [[ -n "$1" ]] || return 0
