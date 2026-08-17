@@ -1117,32 +1117,46 @@ test_exactly_four_rating_rows_are_measured() {
     "and twelve rows still honestly say unknown"
 }
 
-test_the_readme_qwen17_boundary_note_cannot_go_silently_stale() {
-  # #63: qwen3-1.7b is served but non-recordable under suite v3, and the
-  # README says so by name. Two ways that statement goes quietly false, both
-  # closed here: the row gets measured while the paragraph still claims it
-  # cannot be, or the paragraph is dropped and the boundary loses its only
-  # documentation. Recording a real qwen3-1.7b rating therefore has to
-  # rewrite the README paragraph AND this test, in the same change.
+test_the_readme_nonrecordable_boundary_cannot_go_silently_stale() {
+  # #63 and #79: two small Qwens are non-recordable under suite v3, and the
+  # README says so by name -- qwen3-1.7b as history (preserved, no longer
+  # served), qwen3.5-2b as the served small default. The ways this statement
+  # goes quietly false are all closed here: a row gets measured while the
+  # paragraph still claims it cannot be, or the paragraph is dropped and the
+  # boundary loses its only documentation. Recording a real rating for
+  # either model therefore has to rewrite the README paragraph AND this
+  # test, in the same change.
   local para
-  para="$(grep -A12 'run without becoming measured' "$REPO_ROOT/README.md")"
-  assert_contains "$para" "qwen3-1.7b" "the boundary names the model" || return 1
-  assert_contains "$para" "10 of 12" "and records how much of the run answered" || return 1
-  # The diagnostic 80 is full-denominator arithmetic -- rate_value over the
-  # suite's whole weight, truncated tasks contributing zero -- and the README
-  # must say so. An "answered subset" explanation was the first wording to
-  # ship, and it was wrong.
+  para="$(grep -A20 'run without becoming measured' "$REPO_ROOT/README.md")"
+  assert_contains "$para" "qwen3-1.7b" "the boundary names the first model" || return 1
+  assert_contains "$para" "10 of 12" "and how much of its run answered" || return 1
+  assert_contains "$para" "no longer served" \
+    "the 1.7B is history, not the served state" || return 1
+  assert_contains "$para" "preserved" "with its weights kept, not deleted" || return 1
+  assert_contains "$para" "qwen3.5-2b" "the boundary names the successor" || return 1
+  assert_contains "$para" "small default" "as the served small default" || return 1
+  assert_contains "$para" "7 of 12" "and how much of its run answered" || return 1
+  # The diagnostics 80 and 60 are full-denominator arithmetic -- rate_value
+  # over the suite's whole weight, truncated tasks contributing zero -- and
+  # the README must say so. An "answered subset" explanation was the first
+  # wording to ship, and it was wrong.
   assert_contains "$para" "full 15 points" \
-    "the 80 is explained over the full suite weight" || return 1
+    "the diagnostics are explained over the full suite weight" || return 1
   assert_contains "$para" "contributing zero" \
     "with truncated tasks scored as zero, not skipped" || return 1
-  assert_contains "$para" "not a rating" "and disclaims the diagnostic value" || return 1
+  assert_contains "$para" "not a rating" "and disclaims the diagnostic values" || return 1
+  assert_contains "$para" "carries neither" \
+    "the table carries neither diagnostic" || return 1
   assert_contains "$para" "refuses to disguise" \
-    "naming the row an explicit coverage gap" || return 1
+    "naming the rows an explicit coverage gap" || return 1
   assert_eq "$(catalog_rating_get qwen3-1.7b rating_value)" "unknown" \
-    "the row the paragraph describes is still unknown" || return 1
+    "the historical row is still unknown" || return 1
   assert_eq "$(catalog_rating_get qwen3-1.7b rating_method)" "none" \
-    "with no method claiming otherwise"
+    "with no method claiming otherwise" || return 1
+  assert_eq "$(catalog_rating_get qwen3.5-2b rating_value)" "unknown" \
+    "the served successor is still unknown" || return 1
+  assert_eq "$(catalog_rating_get qwen3.5-2b rating_method)" "none" \
+    "its diagnostic 60 never became a method claim"
 }
 
 test_every_local_benchmark_row_is_on_suite_v3() {
