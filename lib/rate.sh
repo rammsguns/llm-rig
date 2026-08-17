@@ -849,3 +849,140 @@ rate_latest_artifact() {
   local dir="${1:-$HOME}"
   ls -1t "$dir"/llm-rating-*.txt 2>/dev/null | head -1
 }
+
+# --- rating provenance -------------------------------------------------------
+# A measured catalog row cites its artifact by basename (`file:<name>.txt`),
+# and nothing above this line ever reads the citation back. These functions
+# close that loop: given a row, find the artifact it cites and check that the
+# artifact actually says what the row claims. Strictly read-only, and every
+# message carries basenames only -- the artifact directory is machine identity
+# and never leaves this process.
+
+# Where cited basenames resolve. 61-rate-models.sh writes to $HOME, so that is
+# the default; the seam exists so tests can point it into a sandbox.
+RATE_ARTIFACT_DIR="${RATE_ARTIFACT_DIR:-$HOME}"
+
+# rate_provenance_ids -- catalog ids of every measured row, in table order.
+# Measured means method `local-benchmark`: the only method whose evidence is a
+# machine-local artifact this machine could hold.
+rate_provenance_ids() {
+  catalog_ratings | awk -F"$CATALOG_SEP" '$4 == "local-benchmark" { print $1 }'
+}
+
+# rate_artifact_sampling <file> <key> -- one term from the artifact header's
+# `sampling:` line, or status 1 when the line or the key is absent.
+rate_artifact_sampling() {
+  local file="$1" key="$2"
+  [[ -f "$file" ]] || return 1
+  awk -v key="$key" '
+    $1 == "sampling:" {
+      for (i = 2; i <= NF; i++) {
+        split($i, kv, "=")
+        if (kv[1] == key) { print kv[2]; found = 1 }
+      }
+      exit
+    }
+    END { if (!found) exit 1 }
+  ' "$file"
+}
+
+# rate_provenance_check <catalog-id>
+#
+# Verify one measured row against the artifact it cites. Prints one line per
+# finding: `ok <what>` for each established fact, `fail <why>` for each
+# defect. Status 0 iff nothing failed.
+#
+# Missing, unreadable and malformed artifacts end the check early -- there is
+# nothing left to compare -- while field mismatches accumulate, so one run
+# names every disagreement instead of the first.
+#
+# The terms check re-verifies what rate_row_blocked enforced at row-emission
+# time: the artifact ran at the suite's canonical terms (temperature 0, seed
+# 42, the default budget). Canonical means the constants of the suite, not
+# tonight's environment, so the comparison reads the defaults and ignores any
+# RATE_* override in the caller's environment.
+rate_provenance_check() {
+  local id="$1" value conf suite source base file fails=0
+
+  local method
+  method="$(catalog_rating_get "$id" rating_method)" || {
+    printf 'fail %s has no rating row\n' "$id"; return 1; }
+  [[ "$method" == "local-benchmark" ]] || {
+    printf 'fail %s: method %s never produced a local artifact\n' "$id" "$method"; return 1; }
+  value="$(catalog_rating_get "$id" rating_value)"
+  conf="$(catalog_rating_get "$id" rating_confidence)"
+  suite="$(catalog_rating_get "$id" rating_suite)"
+  source="$(catalog_rating_get "$id" rating_source)"
+
+  # The citation itself, before the file: a source that is not a bare
+  # `file:<basename>.txt` never resolves anywhere trustworthy.
+  if [[ "$source" != file:*.txt || "$source" == *"/"* ]]; then
+    printf 'fail %s: rating_source %s is not file:<basename>.txt\n' "$id" "$source"
+    return 1
+  fi
+  base="${source#file:}"
+  file="$RATE_ARTIFACT_DIR/$base"
+
+  if [[ ! -e "$file" ]]; then
+    printf 'fail %s: cited artifact %s is missing from the artifact directory\n' "$id" "$base"
+    return 1
+  fi
+  if [[ ! -f "$file" || ! -r "$file" ]]; then
+    printf 'fail %s: cited artifact %s exists but is not a readable file\n' "$id" "$base"
+    return 1
+  fi
+
+  local a_value
+  if ! a_value="$(rate_artifact_result "$file" "$id" value)" || [[ -z "$a_value" ]]; then
+    printf 'fail %s: %s carries no RESULT line for this catalog id -- malformed, edited, or another model'"'"'s artifact\n' "$id" "$base"
+    return 1
+  fi
+  printf 'ok %s: RESULT line found in %s\n' "$id" "$base"
+
+  local a_suite a_conf a_prov
+  a_suite="$(rate_artifact_result "$file" "$id" suite || true)"
+  a_conf="$(rate_artifact_result "$file" "$id" confidence || true)"
+  a_prov="$(rate_artifact_result "$file" "$id" provenance || true)"
+
+  if [[ "$a_value" != "$value" ]]; then
+    printf 'fail %s: catalog says value=%s but %s records value=%s\n' "$id" "$value" "$base" "$a_value"
+    fails=1
+  else
+    printf 'ok %s: value %s matches\n' "$id" "$value"
+  fi
+  if [[ "$a_suite" != "$suite" ]]; then
+    printf 'fail %s: catalog says suite %s but %s records suite=%s\n' "$id" "$suite" "$base" "${a_suite:-none}"
+    fails=1
+  else
+    printf 'ok %s: suite %s matches\n' "$id" "$suite"
+  fi
+  if [[ "$a_conf" != "$conf" ]]; then
+    printf 'fail %s: catalog says confidence=%s but %s records confidence=%s\n' "$id" "$conf" "$base" "${a_conf:-none}"
+    fails=1
+  else
+    printf 'ok %s: confidence %s matches\n' "$id" "$conf"
+  fi
+  if [[ "$a_prov" != "complete" ]]; then
+    printf 'fail %s: %s records provenance=%s -- a run whose runtime was not identified is a diagnostic, not evidence\n' \
+      "$id" "$base" "${a_prov:-none}"
+    fails=1
+  else
+    printf 'ok %s: provenance complete\n' "$id"
+  fi
+
+  # Canonical terms, from the header. The defaults are read fresh so an
+  # exported RATE_SEED tonight cannot loosen what "canonical" means.
+  local a_temp a_seed a_max
+  a_temp="$(rate_artifact_sampling "$file" temperature || true)"
+  a_seed="$(rate_artifact_sampling "$file" seed || true)"
+  a_max="$(rate_artifact_sampling "$file" max_tokens || true)"
+  if [[ "$a_temp" == "0" && "$a_seed" == "42" && "$a_max" == "$RATE_MAX_TOKENS_DEFAULT" ]]; then
+    printf 'ok %s: canonical terms (temperature=0 seed=42 max_tokens=%s)\n' "$id" "$RATE_MAX_TOKENS_DEFAULT"
+  else
+    printf 'fail %s: %s records sampling temperature=%s seed=%s max_tokens=%s -- canonical is temperature=0 seed=42 max_tokens=%s\n' \
+      "$id" "$base" "${a_temp:-none}" "${a_seed:-none}" "${a_max:-none}" "$RATE_MAX_TOKENS_DEFAULT"
+    fails=1
+  fi
+
+  return "$fails"
+}

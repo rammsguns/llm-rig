@@ -1711,6 +1711,178 @@ test_two_clean_repeats_reach_medium_confidence() {
   assert_contains "$RUN_OUTPUT" "confidence=medium" "stable across repeats"
 }
 
+# --- rating provenance (#93) -------------------------------------------------
+# A measured catalog row cites a machine-local artifact; rate_provenance_check
+# reads the citation back. These tests fabricate both sides -- a synthetic
+# catalog and a synthetic artifact -- and break one piece at a time.
+
+# A one-row measured catalog pointing at $1, plus an unknown row that must
+# never be checked.
+provenance_catalog() {
+  local src="$1"
+  eval "catalog_ratings() {
+    printf '%s\n' 'model-x;100;2026-08-14;local-benchmark;${src};medium;v3' \
+                  'model-y;unknown;-;none;-;none;-'
+  }"
+  export RATE_ARTIFACT_DIR="$SANDBOX/artifacts"
+  mkdir -p "$RATE_ARTIFACT_DIR"
+}
+
+# write_provenance_artifact <file> [value] [suite] [conf] [prov] [max_tokens]
+# The minimal shape 61-rate-models.sh writes: a sampling header and a RESULT
+# line. Everything else in a real artifact is prose the parser ignores.
+write_provenance_artifact() {
+  local f="$1" value="${2:-100}" suite="${3:-v3}" conf="${4:-medium}"
+  local prov="${5:-complete}" max="${6:-1024}"
+  {
+    echo "llm-rig local coding rating  20260814-0000"
+    echo "suite: $suite (12 tasks, total weight 15)"
+    echo "sampling: temperature=0 seed=42 max_tokens=$max repeats=3"
+    echo
+    echo "RESULT model-x suite=$suite value=$value quant=Q4_K_M weight=15/15 answered=12/12 incomplete=0 flips=0 confidence=$conf provenance=$prov"
+  } >"$f"
+}
+
+test_provenance_ids_lists_only_measured_rows() {
+  provenance_catalog "file:llm-rating-a.txt"
+  local ids; ids="$(rate_provenance_ids)"
+  assert_eq "$ids" "model-x" "unknown rows have no artifact to check"
+}
+
+test_a_matching_artifact_verifies() {
+  provenance_catalog "file:llm-rating-a.txt"
+  write_provenance_artifact "$RATE_ARTIFACT_DIR/llm-rating-a.txt"
+  run rate_provenance_check model-x
+  assert_ok "everything matches: $RUN_OUTPUT" || return 1
+  assert_contains "$RUN_OUTPUT" "value 100 matches" "value compared" || return 1
+  assert_contains "$RUN_OUTPUT" "suite v3 matches" "suite compared" || return 1
+  assert_contains "$RUN_OUTPUT" "confidence medium matches" "confidence compared" || return 1
+  assert_contains "$RUN_OUTPUT" "provenance complete" "provenance compared" || return 1
+  assert_contains "$RUN_OUTPUT" "canonical terms" "terms compared"
+}
+
+test_a_missing_artifact_fails_by_basename_only() {
+  provenance_catalog "file:llm-rating-a.txt"
+  run rate_provenance_check model-x
+  assert_fails "a missing artifact cannot verify" || return 1
+  assert_contains "$RUN_OUTPUT" "llm-rating-a.txt is missing" "names the basename" || return 1
+  assert_not_contains "$RUN_OUTPUT" "$SANDBOX" "never the directory it looked in"
+}
+
+test_an_unreadable_artifact_fails() {
+  # A directory where the file should be: exists, and is not a readable file.
+  # (chmod 000 is not usable here -- root test runners ignore mode bits.)
+  provenance_catalog "file:llm-rating-a.txt"
+  mkdir -p "$RATE_ARTIFACT_DIR/llm-rating-a.txt"
+  run rate_provenance_check model-x
+  assert_fails "a directory is not evidence" || return 1
+  assert_contains "$RUN_OUTPUT" "not a readable file" "says which failure this is"
+}
+
+test_an_artifact_without_a_result_line_for_the_id_is_malformed() {
+  provenance_catalog "file:llm-rating-a.txt"
+  write_provenance_artifact "$RATE_ARTIFACT_DIR/llm-rating-a.txt"
+  sed -i 's/^RESULT model-x/RESULT other-model/' "$RATE_ARTIFACT_DIR/llm-rating-a.txt"
+  run rate_provenance_check model-x
+  assert_fails "another model's artifact cannot back this row" || return 1
+  assert_contains "$RUN_OUTPUT" "no RESULT line for this catalog id" "the defect named"
+}
+
+test_a_value_mismatch_fails() {
+  provenance_catalog "file:llm-rating-a.txt"
+  write_provenance_artifact "$RATE_ARTIFACT_DIR/llm-rating-a.txt" 93
+  run rate_provenance_check model-x
+  assert_fails "catalog 100 vs artifact 93" || return 1
+  assert_contains "$RUN_OUTPUT" "catalog says value=100" "both sides quoted" || return 1
+  assert_contains "$RUN_OUTPUT" "records value=93" "artifact side too"
+}
+
+test_a_suite_mismatch_fails() {
+  provenance_catalog "file:llm-rating-a.txt"
+  write_provenance_artifact "$RATE_ARTIFACT_DIR/llm-rating-a.txt" 100 v2
+  run rate_provenance_check model-x
+  assert_fails "a v2 artifact cannot back a v3 row" || return 1
+  assert_contains "$RUN_OUTPUT" "records suite=v2" "the artifact's version named"
+}
+
+test_a_confidence_mismatch_fails() {
+  provenance_catalog "file:llm-rating-a.txt"
+  write_provenance_artifact "$RATE_ARTIFACT_DIR/llm-rating-a.txt" 100 v3 low
+  run rate_provenance_check model-x
+  assert_fails "catalog medium vs artifact low" || return 1
+  assert_contains "$RUN_OUTPUT" "records confidence=low" "the artifact's confidence named"
+}
+
+test_incomplete_provenance_fails() {
+  provenance_catalog "file:llm-rating-a.txt"
+  write_provenance_artifact "$RATE_ARTIFACT_DIR/llm-rating-a.txt" 100 v3 medium "missing:live-n_ctx"
+  run rate_provenance_check model-x
+  assert_fails "a run whose runtime was not identified is a diagnostic" || return 1
+  assert_contains "$RUN_OUTPUT" "provenance=missing:live-n_ctx" "what the artifact admits"
+}
+
+test_noncanonical_terms_fail() {
+  provenance_catalog "file:llm-rating-a.txt"
+  write_provenance_artifact "$RATE_ARTIFACT_DIR/llm-rating-a.txt" 100 v3 medium complete 4096
+  run rate_provenance_check model-x
+  assert_fails "a diagnostic budget can never back a row" || return 1
+  assert_contains "$RUN_OUTPUT" "max_tokens=4096" "the actual terms quoted" || return 1
+  assert_contains "$RUN_OUTPUT" "canonical is temperature=0 seed=42 max_tokens=1024" "and the canonical ones"
+}
+
+test_an_environment_override_cannot_loosen_canonical_terms() {
+  # RATE_MAX_TOKENS=4096 is the documented diagnostic override for a RUN. It
+  # must not redefine what this CHECK accepts, or exporting it would launder
+  # diagnostic artifacts into evidence.
+  provenance_catalog "file:llm-rating-a.txt"
+  write_provenance_artifact "$RATE_ARTIFACT_DIR/llm-rating-a.txt" 100 v3 medium complete 4096
+  export RATE_MAX_TOKENS=4096
+  run rate_provenance_check model-x
+  assert_fails "the override changes runs, never the canon"
+}
+
+test_a_sourceless_sampling_line_fails_the_terms_check() {
+  provenance_catalog "file:llm-rating-a.txt"
+  write_provenance_artifact "$RATE_ARTIFACT_DIR/llm-rating-a.txt"
+  sed -i '/^sampling:/d' "$RATE_ARTIFACT_DIR/llm-rating-a.txt"
+  run rate_provenance_check model-x
+  assert_fails "no sampling line means the terms cannot be established" || return 1
+  assert_contains "$RUN_OUTPUT" "temperature=none" "absence is reported, not defaulted"
+}
+
+test_a_pathy_source_is_refused_before_any_file_io() {
+  provenance_catalog "file:../outside/llm-rating-a.txt"
+  run rate_provenance_check model-x
+  assert_fails "a source with a path separator never resolves" || return 1
+  assert_contains "$RUN_OUTPUT" "not file:<basename>.txt" "the shape rule named"
+}
+
+test_an_https_source_never_reaches_the_filesystem() {
+  provenance_catalog "https://example.com/rating.txt"
+  run rate_provenance_check model-x
+  assert_fails "a URL is not a machine-local artifact"
+}
+
+test_mismatches_accumulate_rather_than_stopping_at_the_first() {
+  provenance_catalog "file:llm-rating-a.txt"
+  write_provenance_artifact "$RATE_ARTIFACT_DIR/llm-rating-a.txt" 93 v3 low
+  run rate_provenance_check model-x
+  assert_fails "two defects" || return 1
+  assert_contains "$RUN_OUTPUT" "records value=93" "the value defect" || return 1
+  assert_contains "$RUN_OUTPUT" "records confidence=low" "and the confidence defect, same run"
+}
+
+test_every_real_measured_row_cites_a_wellformed_source() {
+  # The real catalog, shape only: every measured row must carry a source the
+  # checker can resolve (file:<basename>.txt). Whether the artifact exists is
+  # a property of the machine, not the repo, and is deliberately not asserted.
+  local id source
+  while IFS= read -r id; do
+    source="$(catalog_rating_get "$id" rating_source)"
+    assert_matches "$source" '^file:[^/]+\.txt$' "$id source must be a bare basename" || return 1
+  done < <(rate_provenance_ids)
+}
+
 test_a_task_erroring_blocks_the_row_but_not_the_report() {
   # A partial run is a report, not evidence. It must still be written down.
   {
