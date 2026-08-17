@@ -116,17 +116,23 @@ named artifact. That is the only kind of number this table accepts. Note the
 tie: on measured coding quality Laguna XS 2.1 and Qwen3.8 are
 indistinguishable — both hit the suite's ceiling.
 
-One served model has been run without becoming measured: `qwen3-1.7b` stays
-`unknown` because suite v3 rejected its run as incomplete — 10 of 12 tasks
-answered, the other two truncated at the fixed 1024-token budget before this
-small reasoner finished thinking
-([#63](https://github.com/rammsguns/llm-rig/issues/63) tracks the gap). The
-run's artifact records a diagnostic value of 80, computed the way every run
-is computed: earned weight over the suite's full 15 points, with the two
-truncated tasks contributing zero. The arithmetic is not the problem — the
-evidence is. A truncated task is neither a pass nor a failure, so a value
-that had to score two of them as zero is not a rating, and this table does
-not carry it. What the row shows instead is an explicit coverage gap the
+Two small models have been run without becoming measured, and both stay
+`unknown`. `qwen3-1.7b` hit the boundary first: suite v3 rejected its run as
+incomplete — 10 of 12 tasks answered, the other two truncated at the fixed
+1024-token budget before this small reasoner finished thinking
+([#63](https://github.com/rammsguns/llm-rig/issues/63) tracks the gap). Its
+weights are preserved outside the scanned models directory, but it is
+no longer served: `qwen3.5-2b` replaced it as the served small default — and
+proved non-recordable under the same terms, harder. 7 of 12 tasks answered,
+five truncated in every one of three repeats, one genuine graded failure
+([#79](https://github.com/rammsguns/llm-rig/issues/79) records the
+evidence). Each run's artifact records a diagnostic value — 80 and 60
+respectively — computed the way every run is computed: earned weight over
+the suite's full 15 points, with truncated tasks contributing zero. The
+arithmetic is not the problem — the evidence is. A truncated task is
+neither a pass nor a failure, so a value that had to score them as zero is
+not a rating, and this table carries neither. What the rows show instead is
+an explicit coverage gap the
 [completeness gate](#a-truncated-response-is-not-a-wrong-answer)
 refuses to disguise.
 
