@@ -67,6 +67,68 @@ serving_candidates() {
   done < <(find "$dir" -name '*.gguf' -size +100M 2>/dev/null | sort)
 }
 
+# serving_moe_class <key> <gguf-basename> -- "moe" or "dense" on stdout.
+#
+# Whether a model is a mixture-of-experts decides whether an over-budget entry
+# gets expert offload or a warning nobody reads, and it is an architectural
+# fact, not a naming convention (#83): Qwen3-Coder-Next's official shards
+# carry neither an A-B marker nor the string "moe", and classifying them by
+# filename generates an entry that asks the pool for more VRAM than exists.
+#
+# So for a catalogued model the catalog decides, by its own invariant: active
+# parameters lower than total parameters is a MoE, equal is dense. The row's
+# arch column is read as a cross-check, not a source -- when the two disagree,
+# or either figure is malformed, or active exceeds total, this returns status
+# 1 with the reason on stderr and the caller must stop before writing any
+# config. A config sized on a guessed classification is worse than no config.
+#
+# The filename heuristic 40-serve.sh always used survives only as the
+# fallback for uncatalogued models, which have no row to consult.
+serving_moe_class() {
+  local key="$1" base="$2"
+  local id repo params active arch p10 a10
+  if ! declare -F catalog_rows >/dev/null; then
+    printf 'serving_moe_class: catalog_rows is not loaded -- source lib/catalog.sh first\n' >&2
+    return 1
+  fi
+  while IFS=';' read -r id repo _ params active arch _; do
+    [[ -n "$id" ]] || continue
+    local rbase="${repo##*/}"
+    [[ "${rbase,,}" == "$key" ]] || continue
+    if ! p10="$(catalog_params_x10 "$params")"; then
+      printf '%s: catalog row %s has non-numeric params_b %s\n' "$key" "$id" "'$params'" >&2
+      return 1
+    fi
+    if ! a10="$(catalog_params_x10 "$active")"; then
+      printf '%s: catalog row %s has non-numeric active_params_b %s\n' "$key" "$id" "'$active'" >&2
+      return 1
+    fi
+    if (( a10 > p10 )); then
+      printf '%s: catalog row %s claims more active params (%s) than total (%s)\n' \
+        "$key" "$id" "$active" "$params" >&2
+      return 1
+    fi
+    if (( a10 < p10 )) && [[ "$arch" == "dense" ]]; then
+      printf '%s: catalog row %s says dense but active %s < total %s\n' \
+        "$key" "$id" "$active" "$params" >&2
+      return 1
+    fi
+    if (( a10 == p10 )) && [[ "$arch" == "moe" ]]; then
+      printf '%s: catalog row %s says moe but active equals total (%s)\n' \
+        "$key" "$id" "$params" >&2
+      return 1
+    fi
+    if (( a10 < p10 )); then printf 'moe'; else printf 'dense'; fi
+    return 0
+  done < <(catalog_rows)
+  # Uncatalogued: no row to consult, so the naming convention is all there is.
+  if [[ "$base" =~ [Aa][0-9]+[Bb]|[Mm]o[Ee] ]]; then
+    printf 'moe'
+  else
+    printf 'dense'
+  fi
+}
+
 # serving_conflicts <candidates> -- keys with more than one candidate.
 serving_conflicts() {
   [[ -n "$1" ]] || return 0

@@ -14,6 +14,9 @@ SUITE_NAME="serving key collisions (#37)"
 
 # shellcheck source=lib/serving.sh
 source "$REPO_ROOT/lib/serving.sh"
+# serving_moe_class reads the catalog's parameter columns (#83).
+# shellcheck source=lib/catalog.sh
+source "$REPO_ROOT/lib/catalog.sh"
 
 setup_test() { mock_init; }
 
@@ -1312,6 +1315,141 @@ test_an_inactive_firewall_is_skipped_without_failing() {
   assert_called '^ufw status' "the state was actually read" || return 1
   assert_not_called '^ufw allow' "no rules for an inactive firewall" || return 1
   assert_contains "$RUN_OUTPUT" "Endpoint:" "run completes"
+}
+
+# --- MoE classification (#83) ------------------------------------------------
+# Whether an over-budget model gets expert offload is decided by what the
+# model IS, not what its file is called. A catalogued model classifies from
+# the catalog's own invariant -- active parameters lower than total is a MoE,
+# equal is dense -- and the filename convention survives only as the fallback
+# for uncatalogued models, which have no row to consult. The defect these pin:
+# Qwen3-Coder-Next's official shard names carry neither an A-B marker nor
+# "moe", and filename-only detection generated a 46 GiB "dense" entry that
+# could never load.
+
+test_a_catalogued_moe_with_a_neutral_filename_classifies_as_moe() {
+  # Filename-only detection reads this exact name as dense. The catalog knows
+  # better, and reverting to the filename must fail here.
+  assert_eq "$(serving_moe_class qwen3-coder-next \
+      Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf)" "moe" \
+    "the catalog invariant decides, not the neutral official filename"
+}
+
+test_a_catalogued_a3b_model_keeps_classifying_as_moe() {
+  # The models the old heuristic got right must get the same answer from the
+  # catalog path.
+  assert_eq "$(serving_moe_class qwen3-coder-30b-a3b-instruct \
+      Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf)" "moe" "A3B behavior unchanged"
+}
+
+test_a_catalogued_dense_model_stays_dense() {
+  assert_eq "$(serving_moe_class devstral-small-2-24b-instruct-2512 \
+      Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf)" "dense" \
+    "active equal to total is dense"
+}
+
+test_an_uncatalogued_model_falls_back_to_the_filename() {
+  assert_eq "$(serving_moe_class some-finetune-nobody-catalogued \
+      Some-Finetune-30B-A3B-Q4_K_M.gguf)" "moe" \
+    "the A-B marker still counts when there is no row" || return 1
+  assert_eq "$(serving_moe_class another-finetune \
+      Another-Finetune-Q4_K_M.gguf)" "dense" \
+    "and no marker still reads dense when there is no row"
+}
+
+test_a_contradictory_dense_row_fails_closed() {
+  local out
+  if out="$(
+    catalog_rows() { printf 'weird;org/Weird-Model;2026-01-01;30.0;3.0;dense;4096;mit;coding;Q4_K_M;hf-api;u;2026-01-01\n'; }
+    serving_moe_class weird-model Weird-Model-Q4_K_M.gguf 2>&1
+  )"; then
+    _fail "a dense row with active < total must refuse, not classify"; return 1
+  fi
+  assert_contains "$out" "says dense but active" "the contradiction is named"
+}
+
+test_a_contradictory_moe_row_fails_closed() {
+  local out
+  if out="$(
+    catalog_rows() { printf 'weird;org/Weird-Model;2026-01-01;30.0;30.0;moe;4096;mit;coding;Q4_K_M;hf-api;u;2026-01-01\n'; }
+    serving_moe_class weird-model Weird-Model-Q4_K_M.gguf 2>&1
+  )"; then
+    _fail "a moe row with active == total must refuse, not classify"; return 1
+  fi
+  assert_contains "$out" "says moe but active equals total" "the contradiction is named"
+}
+
+test_active_params_exceeding_total_fails_closed() {
+  local out
+  if out="$(
+    catalog_rows() { printf 'weird;org/Weird-Model;2026-01-01;3.0;30.0;moe;4096;mit;coding;Q4_K_M;hf-api;u;2026-01-01\n'; }
+    serving_moe_class weird-model Weird-Model-Q4_K_M.gguf 2>&1
+  )"; then
+    _fail "active above total is not a classification, it is a broken row"; return 1
+  fi
+  assert_contains "$out" "more active params" "the impossibility is named"
+}
+
+test_malformed_params_fail_closed() {
+  local out
+  if out="$(
+    catalog_rows() { printf 'weird;org/Weird-Model;2026-01-01;lots;3.0;moe;4096;mit;coding;Q4_K_M;hf-api;u;2026-01-01\n'; }
+    serving_moe_class weird-model Weird-Model-Q4_K_M.gguf 2>&1
+  )"; then
+    _fail "a non-numeric figure must refuse, not default to anything"; return 1
+  fi
+  assert_contains "$out" "non-numeric" "the malformation is named"
+}
+
+# --- the official Qwen3-Coder-Next artifact, end to end ----------------------
+# Four sparse shards at the real byte counts, a du that reads apparent size
+# (a downloaded shard is not sparse; the staged test file is), and a GPU
+# fixture with the production pair's exact totals and free memory.
+
+stage_codernext_shards() {
+  local dir="$MODELS_DIR/Qwen3-Coder-Next-GGUF"
+  mkdir -p "$dir"
+  truncate -s 15524827040 "$dir/Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf"
+  truncate -s 14872168352 "$dir/Qwen3-Coder-Next-Q4_K_M-00002-of-00004.gguf"
+  truncate -s 14503294496 "$dir/Qwen3-Coder-Next-Q4_K_M-00003-of-00004.gguf"
+  truncate -s  3510702144 "$dir/Qwen3-Coder-Next-Q4_K_M-00004-of-00004.gguf"
+}
+
+apparent_size_du() {
+  mkdir -p "$SANDBOX/bin"
+  printf '#!/usr/bin/env bash\nexec /usr/bin/du --apparent-size "$@"\n' >"$SANDBOX/bin/du"
+  chmod +x "$SANDBOX/bin/du"
+}
+
+test_the_four_official_shards_are_one_logical_model() {
+  stage_codernext_shards
+  run serving_candidates "$MODELS_DIR"
+  assert_eq "$(wc -l <<<"$RUN_OUTPUT")" "1" "one candidate, not four" || return 1
+  assert_contains "$RUN_OUTPUT" "qwen3-coder-next" "keyed by the directory" || return 1
+  assert_contains "$RUN_OUTPUT" "00001-of-00004" "and the first shard is the file named"
+}
+
+test_the_codernext_entry_gets_expert_offload_not_a_dense_warning() {
+  # End to end through the generator: sized over all four shards, classified
+  # from the catalog, offloaded to fit -- with the arithmetic the production
+  # pair actually produces. The budget derives from FREE memory (the display
+  # card's consumption must not be overcommitted): 15970+14952 = 30922, minus
+  # the 7065 KV reserve at ctx 131072 and 1800 overhead, is 22057. 46169 MB
+  # is 24112 MB over: --n-cpu-moe 27.
+  use_gpu dual_a4000_uneven
+  stage_codernext_shards
+  apparent_size_du
+  PATH="$SANDBOX/bin:$PATH" run bash "$REPO_ROOT/40-serve.sh"
+  assert_ok "generation succeeds: $RUN_OUTPUT" || return 1
+  local cfg; cfg="$(cat "$RIG_DIR/etc/llama-swap.yaml")"
+  assert_contains "$cfg" '"qwen3-coder-next":' "one entry, under the catalog's key" || return 1
+  assert_contains "$cfg" "(~46169 MB)" "sized over all four shards, not the first" || return 1
+  assert_contains "$cfg" "--n-cpu-moe 27" "over budget means expert offload now" || return 1
+  assert_not_contains "$cfg" "WARNING dense model" "never the dense warning" || return 1
+  assert_contains "$cfg" "-m $MODELS_DIR/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf" \
+    "the command names the absolute first-shard path" || return 1
+  assert_contains "$cfg" 'aliases: ["qwen3-coder-next-local"]' "with the standard alias" || return 1
+  assert_contains "$cfg" "--tensor-split 15970,14952" "split over the pair's free memory"
 }
 
 run_suite
