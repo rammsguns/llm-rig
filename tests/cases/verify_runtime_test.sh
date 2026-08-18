@@ -685,6 +685,124 @@ test_require_swap_pin_gates_what_require_pin_always_gated() {
   assert_fails "swap drift fails the new name too"
 }
 
+# --- the rating-provenance gate (#93) ----------------------------------------
+# Measured catalog rows cite machine-local artifacts; the [rating] section
+# reads every citation back. These tests run the real script against the real
+# catalog, fabricating the artifacts its rows cite in the sandboxed home --
+# then breaking one at a time.
+
+# Fabricate a matching artifact in $HOME for every measured row the real
+# catalog carries, from the row's own claims -- so the fixture never goes
+# stale when a rating lands or changes.
+write_rating_artifacts() {
+  # shellcheck source=lib/rate.sh
+  source "$REPO_ROOT/lib/rate.sh"
+  local id value suite conf base
+  while IFS= read -r id; do
+    value="$(catalog_rating_get "$id" rating_value)"
+    suite="$(catalog_rating_get "$id" rating_suite)"
+    conf="$(catalog_rating_get "$id" rating_confidence)"
+    base="$(catalog_rating_get "$id" rating_source)"; base="${base#file:}"
+    {
+      echo "llm-rig local coding rating  fixture"
+      echo "suite: $suite (12 tasks, total weight 15)"
+      echo "sampling: temperature=0 seed=42 max_tokens=1024 repeats=3"
+      echo "RESULT $id suite=$suite value=$value quant=Q4_K_M weight=15/15 answered=12/12 incomplete=0 flips=0 confidence=$conf provenance=complete"
+    } >"$HOME/$base"
+  done < <(rate_provenance_ids)
+}
+
+# The first measured row's id and cited basename, for targeted corruption.
+first_measured() {
+  # shellcheck source=lib/rate.sh
+  source "$REPO_ROOT/lib/rate.sh"
+  FM_ID="$(rate_provenance_ids | head -1)"
+  FM_BASE="$(catalog_rating_get "$FM_ID" rating_source)"; FM_BASE="${FM_BASE#file:}"
+}
+
+test_rating_provenance_established_when_every_row_verifies() {
+  write_config
+  write_rating_artifacts
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require rating-provenance
+  assert_ok "all rows match their artifacts: $RUN_OUTPUT" || return 1
+  assert_contains "$RUN_OUTPUT" "measured rows match the artifacts they cite" "the evidence line" || return 1
+  assert_contains "$RUN_OUTPUT" "required 'rating-provenance' established" "and the gate"
+}
+
+test_rating_provenance_fails_on_a_missing_artifact() {
+  write_config
+  write_rating_artifacts
+  first_measured
+  rm "$HOME/$FM_BASE"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require rating-provenance
+  assert_fails "one missing artifact fails the gate" || return 1
+  assert_contains "$RUN_OUTPUT" "$FM_BASE is missing" "names the basename" || return 1
+  assert_contains "$RUN_OUTPUT" "could NOT be established" "and gates"
+}
+
+test_rating_provenance_fails_on_a_value_mismatch() {
+  write_config
+  write_rating_artifacts
+  first_measured
+  sed -i 's/value=[0-9]*/value=1/' "$HOME/$FM_BASE"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify --require rating-provenance
+  assert_fails "an artifact recording another value cannot verify" || return 1
+  assert_contains "$RUN_OUTPUT" "records value=1" "both sides reported"
+}
+
+test_rating_provenance_stays_nonfatal_on_a_fresh_clone() {
+  # No artifacts at all -- the state every fresh clone is in. The report says
+  # so and exits zero; only --require turns absence into a failure.
+  write_config
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify
+  assert_ok "reporting mode must survive a machine with no artifacts" || return 1
+  assert_contains "$RUN_OUTPUT" "could not be verified" "but says so" || return 1
+  assert_contains "$RUN_OUTPUT" "fresh clone" "and why that can be expected" || return 1
+  assert_contains "$RUN_OUTPUT" "not established" "in the summary too"
+}
+
+test_rating_provenance_never_prints_a_full_path() {
+  # Basenames only, in both the verified and the failing shapes: the report
+  # may be pasted into a public issue, and the artifact directory is machine
+  # identity.
+  write_config
+  write_rating_artifacts
+  first_measured
+  rm "$HOME/$FM_BASE"
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  run_verify
+  assert_not_contains "$RUN_OUTPUT" "$HOME/llm-rating" "no artifact path in the failing shape" || return 1
+  write_rating_artifacts
+  run_verify
+  assert_not_contains "$RUN_OUTPUT" "$HOME/llm-rating" "no artifact path in the verified shape"
+}
+
+test_rating_provenance_is_strictly_read_only() {
+  write_config
+  write_rating_artifacts
+  first_measured
+  sed -i 's/provenance=complete/provenance=missing:weights/' "$HOME/$FM_BASE"
+  run_verify --require rating-provenance
+  assert_fails "incomplete provenance fails" || return 1
+  assert_not_called 'systemctl (restart|stop|start|daemon-reload)' "no service mutation" || return 1
+  assert_not_called '40-serve' "no regeneration" || return 1
+  assert_not_called '61-rate-models' "and no rerun of the suite"
+}
+
+test_rating_provenance_failure_does_not_disturb_the_other_gates() {
+  # A machine with no artifacts must still establish everything else it can:
+  # the gates are separate claims and fail separately.
+  write_config
+  mock_route_file GET "/v1/models" 200 "$API/models_ok.json"
+  mock_route "*" "/props" 200 "$(props_json true)"
+  run_verify --require props
+  assert_ok "props is its own claim: $RUN_OUTPUT"
+}
+
 test_require_pin_remains_an_alias_for_the_swap_pin() {
   # Backward compatibility: 'pin' predates the llama.cpp pin and must keep
   # gating exactly what it always gated -- the swap side -- even when the

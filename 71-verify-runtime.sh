@@ -16,6 +16,9 @@
 #   [pool]       the declared compute pool, the allowlist the generated unit
 #                carries, and where live llama-server processes actually hold
 #                VRAM -- checked against each other, not trusted one by one.
+#   [rating]     every measured catalog row, cross-checked against the
+#                machine-local artifact it cites: id, value, confidence,
+#                suite, canonical terms and complete provenance must match.
 #
 # Usage:
 #   ./71-verify-runtime.sh
@@ -24,6 +27,7 @@
 #   ./71-verify-runtime.sh --require swap-pin      # llama-swap matches its pin
 #   ./71-verify-runtime.sh --require llamacpp-pin  # llama-server matches llamacpp.ref
 #   ./71-verify-runtime.sh --require gpu-pool      # pool, unit and placement conform
+#   ./71-verify-runtime.sh --require rating-provenance  # measured rows match artifacts
 #   ./71-verify-runtime.sh --require flash-attn --require props
 #
 # --require pin is the older name for swap-pin and stays as an alias.
@@ -39,6 +43,8 @@ source "$RIG_SRC_DIR/lib/detect.sh"
 source "$RIG_SRC_DIR/lib/bench.sh"
 source "$RIG_SRC_DIR/lib/swap.sh"
 source "$RIG_SRC_DIR/lib/llamasrc.sh"
+# rate_provenance_check and the catalog accessors behind the rating section.
+source "$RIG_SRC_DIR/lib/rate.sh"
 
 CFG="$RIG_DIR/etc/llama-swap.yaml"
 MEASURE=0
@@ -49,7 +55,7 @@ while (( $# )); do
     --measure)   MEASURE=1 ;;
     --require)   shift; REQUIRE+=("${1:-}") ;;
     --require=*) REQUIRE+=("${1#--require=}") ;;
-    -h|--help)   sed -n '2,35p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)   sed -n '2,39p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *)           die "unknown argument: $1" ;;
   esac
   shift
@@ -62,6 +68,7 @@ EV_BENCH=""
 EV_SWAP_PIN=""
 EV_LLAMACPP_PIN=""
 EV_GPU_POOL=""
+EV_RATING_PROV=""
 
 # --- 0. which router binary is installed ------------------------------------
 # Before any question about flags, the question of which llama-swap is
@@ -433,6 +440,51 @@ else
   echo "       ./71-verify-runtime.sh --measure" >&2
 fi
 
+# --- 5. rating provenance ----------------------------------------------------
+# The catalog's measured rows each cite a machine-local artifact; this reads
+# every citation back and compares what the artifact says with what the row
+# claims. Strictly read-only, and it prints basenames only: the artifact
+# directory is machine identity, and this report may be pasted anywhere.
+#
+# A fresh clone has measured rows and no artifacts -- expected, reported, and
+# non-fatal. Only --require rating-provenance turns absence into an exit code.
+echo
+c_info "[rating] measured catalog rows vs the artifacts they cite"
+RP_TOTAL=0
+RP_BAD=0
+while IFS= read -r rp_id; do
+  [[ -n "$rp_id" ]] || continue
+  RP_TOTAL=$(( RP_TOTAL + 1 ))
+  rp_out="$(rate_provenance_check "$rp_id")" && rp_rc=0 || rp_rc=$?
+  if (( rp_rc == 0 )); then
+    printf '    %-18s %s/%s verified against %s\n' "$rp_id" \
+      "$(catalog_rating_get "$rp_id" rating_value)" \
+      "$(catalog_rating_get "$rp_id" rating_suite)" \
+      "$(catalog_rating_get "$rp_id" rating_source | sed 's/^file://')" >&2
+  else
+    RP_BAD=$(( RP_BAD + 1 ))
+    # Only the failures are worth the reader's attention; the ok lines exist
+    # for callers of the function, not for this report.
+    printf '%s\n' "$rp_out" | awk '$1 == "fail" { sub(/^fail /, ""); print "        " $0 }' >&2
+  fi
+done < <(rate_provenance_ids)
+
+if (( RP_TOTAL == 0 )); then
+  # No measured rows means nothing to misquote: vacuously conformant, and the
+  # report says which kind of pass this is.
+  EV_RATING_PROV="no measured rows in the catalog; nothing to verify"
+  c_ok "[rating] $EV_RATING_PROV"
+elif (( RP_BAD == 0 )); then
+  EV_RATING_PROV="all $RP_TOTAL measured rows match the artifacts they cite"
+  c_ok "[rating] $EV_RATING_PROV"
+else
+  c_warn "[rating] $RP_BAD of $RP_TOTAL measured rows could not be verified.
+     On the measurement machine that is drift between the catalog and its
+     evidence. On a fresh clone it is expected: the artifacts live in the
+     measurer's home directory and are never committed, so this stays a
+     report unless --require rating-provenance asks for the gate."
+fi
+
 # --- summary ----------------------------------------------------------------
 echo
 c_info "Evidence summary"
@@ -442,6 +494,7 @@ printf '    %-14s %s\n' "props"        "${EV_PROPS:-not established}" >&2
 printf '    %-14s %s\n' "flash-attn"   "${EV_FLASH_ATTN:-not established}" >&2
 printf '    %-14s %s\n' "benchmark"    "${EV_BENCH:-not established}" >&2
 printf '    %-14s %s\n' "gpu-pool"     "${EV_GPU_POOL:-not established}" >&2
+printf '    %-14s %s\n' "rating-prov"  "${EV_RATING_PROV:-not established}" >&2
 
 # --- requested assertions ---------------------------------------------------
 STATUS=0
@@ -461,7 +514,8 @@ for want in "${REQUIRE[@]}"; do
     swap-pin|pin) ev="$EV_SWAP_PIN" ;;
     llamacpp-pin) ev="$EV_LLAMACPP_PIN" ;;
     gpu-pool)    ev="$EV_GPU_POOL" ;;
-    *)           die "unknown assertion: $want (known: props, flash-attn, bench, swap-pin, llamacpp-pin, gpu-pool; pin = swap-pin)" ;;
+    rating-provenance) ev="$EV_RATING_PROV" ;;
+    *)           die "unknown assertion: $want (known: props, flash-attn, bench, swap-pin, llamacpp-pin, gpu-pool, rating-provenance; pin = swap-pin)" ;;
   esac
   if [[ -n "$ev" ]]; then
     c_ok "required '$want' established -- $ev"
