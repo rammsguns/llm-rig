@@ -21,6 +21,14 @@
 # deliberately no signing -- a key stored on the same disk adds ceremony,
 # not trust.
 #
+# One class sits deliberately outside that anchor. legacy-evidence (schema 2)
+# is an artifact from a superseded rating suite: real bytes worth a digest,
+# cited by no catalog row, and excluded from the provenance comparison so it
+# can neither satisfy nor contradict one. The alternative was leaving such
+# files unrecorded, where every scan reported them and no digest protected
+# them -- a gate that cannot pass on an honest machine gets ignored, which is
+# how a benchmark came to run past one (#97). Enrollment is explicit only.
+#
 # Everything here is pure parsing and verification against the filesystem;
 # the only function that writes anything is recovery_update, and the only
 # thing it ever writes is the manifest file itself.
@@ -31,17 +39,38 @@ source "$(dirname "${BASH_SOURCE[0]}")/rate.sh"
 # public and this file carries full digests, which are machine identity.
 RECOVERY_DIR="${RECOVERY_DIR:-$HOME/llm-rig-recovery}"
 RECOVERY_MANIFEST="${RECOVERY_MANIFEST:-$RECOVERY_DIR/MANIFEST.tsv}"
-RECOVERY_SCHEMA=1
+# What this version writes, and the oldest it can still read. A manifest is a
+# machine's only record of its own weights: raising the writer must never
+# strand a manifest an older run wrote, so every schema from _MIN up is
+# readable and only the future fails closed.
+RECOVERY_SCHEMA=2
+RECOVERY_SCHEMA_MIN=1
 
 # The classes a file row may carry, mapped to the gate area each answers to.
 # download-manifest rows answer to `weights`: they are the upstream's own
 # claim about weight bytes, and a tampered one is a weights problem.
+#
+# legacy-evidence (schema 2) is evidence the catalog no longer cites: an
+# artifact from a superseded rating suite, still real, still worth a digest,
+# but deliberately outside catalog provenance. It answers to `evidence`
+# because losing one is an evidence loss; what it does NOT do is take part in
+# the catalog cross-check below. See recovery_class_schema.
 recovery_area_of() {
   case "$1" in
-    weights|download-manifest) printf 'weights' ;;
-    evidence)                  printf 'evidence' ;;
-    config)                    printf 'config' ;;
-    *)                         return 1 ;;
+    weights|download-manifest)  printf 'weights' ;;
+    evidence|legacy-evidence)   printf 'evidence' ;;
+    config)                     printf 'config' ;;
+    *)                          return 1 ;;
+  esac
+}
+
+# The schema a class first became legal in. A class the manifest's own schema
+# line does not cover is malformed, not silently accepted: a schema-1 manifest
+# means exactly what schema 1 meant when it was written.
+recovery_class_schema() {
+  case "$1" in
+    legacy-evidence) printf '2' ;;
+    *)               printf '1' ;;
   esac
 }
 
@@ -149,6 +178,7 @@ recovery_setsum() {
 # them: a manifest that cannot be fully parsed cannot vouch for anything.
 #
 #   R_SCHEMA_OK       1 unless the schema line is missing or from the future
+#   R_SCHEMA          the declared schema number, 0 until one is accepted
 #   R_UPDATED         the updated timestamp, verbatim
 #   R_ROOT_BASE[name] declared base per root
 #   R_FILES[]         class \t key \t root \t rel \t bytes \t sha
@@ -158,7 +188,9 @@ recovery_setsum() {
 
 recovery_load() {
   local file="$1" lineno=0 kind f1 f2 f3 f4 f5
+  local -a late_class=()
   R_SCHEMA_OK=0
+  R_SCHEMA=0
   R_UPDATED=""
   declare -gA R_ROOT_BASE=()
   R_FILES=(); R_SETS=(); R_RECIPE=(); R_MALFORMED=()
@@ -172,10 +204,12 @@ recovery_load() {
       schema)
         if (( R_SCHEMA_OK )); then
           R_MALFORMED+=("line $lineno: schema declared twice")
-        elif [[ "$f1" == "$RECOVERY_SCHEMA" ]]; then
+        elif [[ "$f1" =~ ^[0-9]+$ ]] \
+          && (( 10#$f1 >= RECOVERY_SCHEMA_MIN && 10#$f1 <= RECOVERY_SCHEMA )); then
           R_SCHEMA_OK=1
+          R_SCHEMA=$(( 10#$f1 ))
         else
-          R_MALFORMED+=("line $lineno: schema ${f1:-?} is not $RECOVERY_SCHEMA -- written by a newer llm-rig?")
+          R_MALFORMED+=("line $lineno: schema ${f1:-?} is not $RECOVERY_SCHEMA_MIN-$RECOVERY_SCHEMA -- written by a newer llm-rig?")
         fi ;;
       updated)
         R_UPDATED="$f1" ;;
@@ -203,6 +237,10 @@ recovery_load() {
           R_MALFORMED+=("line $lineno: digest is not 64 hex characters")
         else
           R_FILES+=("$f1"$'\t'"$f2"$'\t'"$REPLY_ROOT"$'\t'"$REPLY_REL"$'\t'"$f4"$'\t'"$f5")
+          # A class newer than schema 1 is judged after the whole file is
+          # read, so where the schema line happens to sit cannot decide it.
+          [[ "$(recovery_class_schema "$f1")" == 1 ]] \
+            || late_class+=("$(( ${#R_FILES[@]} - 1 ))"$'\t'"$lineno"$'\t'"$f1")
         fi ;;
       set)
         if [[ "${f1:-}" != "weights" || ! "${f3:-}" =~ ^[0-9]+$ || \
@@ -222,6 +260,21 @@ recovery_load() {
     esac
   done < "$file"
 
+  # A class from a later schema inside an earlier manifest is malformed, and
+  # the row is dropped rather than half-honoured: an old manifest means
+  # exactly what it meant when it was written.
+  local lc lidx lline lcls need decl
+  for lc in "${late_class[@]}"; do
+    IFS=$'\t' read -r lidx lline lcls <<<"$lc"
+    need="$(recovery_class_schema "$lcls")"
+    decl="$R_SCHEMA"; (( R_SCHEMA )) || decl="no schema"
+    if (( R_SCHEMA < need )); then
+      R_MALFORMED+=("line $lline: file class $lcls needs schema $need, this manifest declares $decl")
+      unset "R_FILES[$lidx]"
+    fi
+  done
+  (( ${#R_FILES[@]} )) && R_FILES=("${R_FILES[@]}")
+
   (( R_SCHEMA_OK )) || R_MALFORMED+=("no supported schema line -- not a recovery manifest, or written by a newer llm-rig")
   return 0
 }
@@ -232,7 +285,8 @@ recovery_load() {
 # no subshell to read it and the counters survive). The vocabulary is closed
 # -- missing,
 # unreadable, changed, escaped, set-broken, duplicate, unexpected,
-# unresolvable-root, malformed, citation-mismatch, recipe-unresolved -- and
+# unresolvable-root, malformed, citation-mismatch, legacy-cited,
+# recipe-unresolved -- and
 # every printed location is `root:rel` with digests truncated to 12 hex, so
 # any report can be pasted into a public issue.
 #
@@ -258,7 +312,7 @@ recovery_verify() {
   RV_REPORT=""
   declare -gA RV_BAD=()
   declare -A resolved_dir=() seen_target=() member_state=()
-  declare -A set_rows=() known=() weights_roots=() evidence_roots=()
+  declare -A set_rows=() known=() weights_roots=() evidence_roots=() legacy_base=()
   local row cls key root rel bytes sha dir path m name
 
   # A manifest that did not parse cleanly fails closed on every area: the
@@ -298,9 +352,11 @@ recovery_verify() {
     RV_CHECKED=$(( RV_CHECKED + 1 ))
     known[$loc]=1
     case "$cls" in
-      weights|download-manifest) weights_roots[$root]=1 ;;
-      evidence)                  evidence_roots[$root]=1 ;;
+      weights|download-manifest)  weights_roots[$root]=1 ;;
+      evidence|legacy-evidence)   evidence_roots[$root]=1 ;;
     esac
+    # Legacy basenames, for the catalog contradiction check further down.
+    [[ "$cls" == "legacy-evidence" ]] && legacy_base["$(basename -- "$rel")"]="$loc"
 
     dir="${resolved_dir[$root]:-}"
     if [[ -z "$dir" ]]; then
@@ -367,6 +423,11 @@ recovery_verify() {
     # the very artifact the committed catalog row cites. Two records of one
     # claim, checked against each other -- the same basename comparison
     # rate_provenance_check makes from the catalog side.
+    #
+    # legacy-evidence is deliberately not matched here: its key is descriptive
+    # and the catalog knows nothing about it, so it can neither satisfy nor
+    # contradict a citation. The contradiction that IS possible -- the catalog
+    # citing a file this manifest calls legacy -- is checked once, below.
     if [[ "$cls" == "evidence" ]]; then
       local cited
       cited="$(catalog_rating_get "$key" rating_source 2>/dev/null)" || cited=""
@@ -376,6 +437,26 @@ recovery_verify() {
       fi
     fi
   done
+
+  # The other half of the legacy contract. A legacy row sits outside catalog
+  # provenance, so the one contradiction still possible is the catalog citing
+  # a file this manifest calls legacy -- the manifest and the catalog then
+  # disagree about what that artifact IS, and demoting something the catalog
+  # depends on must fail loudly rather than pass quietly. Matched on the
+  # basename the catalog cites, deliberately regardless of the legacy row's
+  # own key: that key is descriptive for this class and vouches for nothing.
+  if (( ${#legacy_base[@]} )); then
+    local cid cited cbase
+    while IFS= read -r cid; do
+      [[ -n "$cid" ]] || continue
+      cited="$(catalog_rating_get "$cid" rating_source 2>/dev/null)" || cited=""
+      [[ "$cited" == file:* ]] || continue
+      cbase="${cited#file:}"
+      [[ -n "${legacy_base[$cbase]:-}" ]] || continue
+      rv_finding evidence legacy-cited "${legacy_base[$cbase]}" \
+        "the catalog row for $cid cites this artifact, which the manifest records as legacy"
+    done < <(rate_provenance_ids 2>/dev/null)
+  fi
 
   # Weights members per key, for the set checks and the recipe check.
   declare -A weights_entry=()
@@ -820,7 +901,7 @@ recovery_print_backup_list() {
   for row in "${R_FILES[@]}"; do
     IFS=$'\t' read -r cls key root rel _b _s <<<"$row"
     case "$cls" in
-      evidence|download-manifest|config) printf '%s:%s\n' "$root" "$rel" ;;
+      evidence|legacy-evidence|download-manifest|config) printf '%s:%s\n' "$root" "$rel" ;;
     esac
   done
 }
