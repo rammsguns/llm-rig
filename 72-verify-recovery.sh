@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Verify this machine's recoverable state against its machine-local recovery
-# manifest: weight sets, evidence artifacts, download manifests, the
-# generated config, and the selection recipe, all recorded by digest in
+# manifest: weight sets, evidence artifacts (including superseded ones, as
+# legacy-evidence: digest-verified, outside catalog provenance), download
+# manifests, the generated config, and the selection recipe, recorded in
 # $HOME/llm-rig-recovery/MANIFEST.tsv (never committed -- see lib/recovery.sh
 # for the schema and the trust model).
 #
@@ -52,7 +53,8 @@ parse_add() {
   key="${rest%%:*}"; rest="${rest#*:}"
   root="${rest%%:*}"; rel="${rest#*:}"
   [[ "$spec" == *:*:*:* ]] || die "--add needs CLASS:KEY:ROOT:RELPATH, got: $spec"
-  recovery_area_of "$cls" >/dev/null || die "--add: unknown class $cls (weights, evidence, download-manifest, config)"
+  recovery_area_of "$cls" >/dev/null \
+    || die "--add: unknown class $cls (weights, evidence, legacy-evidence, download-manifest, config)"
   [[ -n "$key" ]] || die "--add: empty key in $spec"
   recovery_valid_root_name "$root" || die "--add: invalid root name in $spec"
   recovery_valid_relpath "$rel" || die "--add: invalid relative path in $spec"

@@ -13,6 +13,11 @@
 #      renamed -> missing+unexpected; count/bytes/setsum independent)
 #   6. an unchanged --update writes nothing and keeps `updated`
 #   7. the evidence cross-check reuses lib/rate.sh, not a reimplementation
+#
+# The legacy-evidence class (#98) adds its own block near the end: schema-1
+# compatibility, schema-2 parsing, digest drift, loss, unexpected-file
+# elimination, catalog exclusion, legacy-cited, explicit-only enrollment and
+# idempotence.
 set -uo pipefail
 
 TEST_ROOT="${TEST_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -136,7 +141,7 @@ test_first_update_records_config_weights_recipe_and_roots() {
   single_model_manifest || return 1
   [[ -f "$RECOVERY_MANIFEST" ]] || { _fail "no manifest written"; return 1; }
   local body; body="$(cat "$RECOVERY_MANIFEST")"
-  assert_contains "$body" $'schema\t1' "schema line" || return 1
+  assert_contains "$body" $'schema\t2' "schema line" || return 1
   assert_contains "$body" $'root\tmodels\tllm-models' "models root row" || return 1
   assert_contains "$body" "models:Model-A-GGUF/model-a.gguf" "weights entry" || return 1
   assert_contains "$body" "$(sha_of "$MODELS_DIR/Model-A-GGUF/model-a.gguf")" "full digest inside the manifest" || return 1
@@ -420,7 +425,7 @@ test_malformed_lines_fail_closed_with_their_line_number() {
 
 test_a_newer_schema_is_refused_with_guidance() {
   mkdir -p "$RECOVERY_DIR"
-  printf 'schema\t2\nupdated\tnow\n' >"$RECOVERY_MANIFEST"
+  printf 'schema\t3\nupdated\tnow\n' >"$RECOVERY_MANIFEST"
   run_recovery
   assert_ok "still a report" || return 1
   assert_contains "$RUN_OUTPUT" "newer llm-rig" "guidance names the likely cause" || return 1
@@ -462,6 +467,186 @@ test_the_cross_check_reuses_the_rating_library() {
   assert_contains "$body" '/rate.sh"' "lib/rate.sh is sourced" || return 1
   assert_contains "$body" "catalog_rating_get" "the catalog accessor is the one comparison source" || return 1
   assert_not_contains "$body" "local-benchmark" "no reimplemented provenance vocabulary" || return 1
+}
+
+# --- legacy evidence, schema 2 (#98) -----------------------------------------
+# A superseded rating artifact is real evidence the catalog no longer cites.
+# It must be digest-protected, must not be scanned as unexpected, and must
+# stay out of catalog provenance -- without any of that weakening the checks
+# ordinary evidence gets.
+
+# A manifest holding one served model, one ordinary evidence row, and one
+# superseded artifact enlisted as legacy. `stale` is deliberately not named
+# by any catalog row.
+legacy_manifest() {
+  single_model_manifest || return 1
+  printf 'current' >"$HOME/llm-rating-current.txt"
+  printf 'stale'   >"$HOME/llm-rating-stale.txt"
+  run_recovery --update --add evidence:model-a:artifacts:llm-rating-current.txt \
+                        --add legacy-evidence:suite-old:artifacts:llm-rating-stale.txt
+  assert_ok "update enlisting one evidence and one legacy row" || return 1
+}
+
+# schema-1 manifests keep working, and keep meaning what they meant.
+test_a_schema_1_manifest_still_verifies_and_stays_schema_1() {
+  single_model_manifest || return 1
+  sed -i $'s/^schema\t2$/schema\t1/' "$RECOVERY_MANIFEST"
+  run_recovery
+  assert_ok "schema 1 verifies" || return 1
+  assert_contains "$RUN_OUTPUT" "everything the manifest records verifies" "green on schema 1" || return 1
+  run_recovery --require recovery
+  assert_ok "the gate passes on a schema-1 manifest" || return 1
+  run_recovery --update
+  assert_ok "update on a schema-1 manifest" || return 1
+  assert_contains "$RUN_OUTPUT" "manifest unchanged" "no content change means no rewrite" || return 1
+  assert_contains "$(cat "$RECOVERY_MANIFEST")" $'schema\t1' "an idempotent update does not bump the schema" || return 1
+}
+
+test_a_legacy_row_in_a_schema_1_manifest_is_malformed_and_dropped() {
+  single_model_manifest || return 1
+  sed -i $'s/^schema\t2$/schema\t1/' "$RECOVERY_MANIFEST"
+  printf 'file\tlegacy-evidence\tsuite-old\tartifacts:llm-rating-ghost.txt\t5\t%064d\n' 0 \
+    >>"$RECOVERY_MANIFEST"
+  local lineno; lineno="$(wc -l <"$RECOVERY_MANIFEST")"
+  run_recovery
+  assert_ok "report mode still completes" || return 1
+  assert_contains "$RUN_OUTPUT" "line $lineno: file class legacy-evidence needs schema 2" \
+    "the class is refused by name and line" || return 1
+  assert_not_contains "$RUN_OUTPUT" "missing artifacts:llm-rating-ghost.txt" \
+    "the refused row is dropped, not half-honoured" || return 1
+  run_recovery --require recovery
+  assert_fails "a manifest that did not parse cleanly cannot establish anything" || return 1
+}
+
+test_a_legacy_row_writes_schema_2_and_parses_back() {
+  legacy_manifest || return 1
+  local body; body="$(cat "$RECOVERY_MANIFEST")"
+  assert_contains "$body" $'schema\t2' "the schema bumped on a real write" || return 1
+  assert_contains "$body" $'file\tlegacy-evidence\tsuite-old\tartifacts:llm-rating-stale.txt' \
+    "the legacy row round-trips" || return 1
+  run_recovery
+  assert_ok "verify" || return 1
+  assert_contains "$RUN_OUTPUT" "everything the manifest records verifies" "green with a legacy row" || return 1
+  run_recovery --require recovery
+  assert_ok "the full gate passes" || return 1
+}
+
+test_a_legacy_row_is_digest_verified_exactly_like_evidence() {
+  legacy_manifest || return 1
+  printf 'stale' >"$HOME/llm-rating-stale.txt"      # same bytes
+  run_recovery
+  assert_contains "$RUN_OUTPUT" "everything the manifest records verifies" "identical rewrite is not drift" || return 1
+  printf 'stalf' >"$HOME/llm-rating-stale.txt"      # same size, new bytes
+  run_recovery
+  assert_contains "$RUN_OUTPUT" "changed artifacts:llm-rating-stale.txt -- digest" \
+    "digest drift on a legacy row is caught" || return 1
+  run_recovery --require evidence
+  assert_fails "demoted evidence is still gated evidence" || return 1
+}
+
+test_a_missing_legacy_file_is_a_finding_in_the_evidence_area() {
+  legacy_manifest || return 1
+  rm "$HOME/llm-rating-stale.txt"
+  run_recovery
+  assert_ok "default stays a report" || return 1
+  assert_contains "$RUN_OUTPUT" "missing artifacts:llm-rating-stale.txt" "loss is named" || return 1
+  run_recovery --require evidence
+  assert_fails "--require evidence gates on a lost legacy artifact" || return 1
+  run_recovery --require weights
+  assert_ok "an unrelated area stays establishable" || return 1
+}
+
+test_enrolling_a_superseded_artifact_eliminates_its_unexpected_finding() {
+  # The defect this class exists for: an uncited artifact the scan reports
+  # forever, on a machine with no drift at all.
+  single_model_manifest || return 1
+  printf 'current' >"$HOME/llm-rating-current.txt"
+  printf 'stale'   >"$HOME/llm-rating-stale.txt"
+  run_recovery --update --add evidence:model-a:artifacts:llm-rating-current.txt
+  assert_ok "enlist the cited artifact only" || return 1
+  run_recovery
+  assert_contains "$RUN_OUTPUT" "unexpected artifacts:llm-rating-stale.txt" "the superseded file is reported" || return 1
+  run_recovery --require recovery
+  assert_fails "one report-only finding is enough to fail the full gate" || return 1
+  run_recovery --update --add legacy-evidence:suite-old:artifacts:llm-rating-stale.txt
+  assert_ok "enlist it as legacy" || return 1
+  run_recovery
+  assert_not_contains "$RUN_OUTPUT" "unexpected artifacts:llm-rating-stale.txt" "no longer unexpected" || return 1
+  run_recovery --require recovery
+  assert_ok "the full gate now passes with nothing moved or deleted" || return 1
+  [[ -f "$HOME/llm-rating-stale.txt" ]] || { _fail "the artifact was not left alone"; return 1; }
+}
+
+test_a_legacy_row_is_excluded_from_catalog_matching() {
+  # The same shape that makes an evidence row raise citation-mismatch must
+  # raise nothing at all for a legacy row: the catalog knows nothing about it.
+  single_model_manifest || return 1
+  local id
+  id="$(rate_provenance_ids | head -1)"
+  [[ -n "$id" ]] || { _fail "the real catalog has no measured rows to test against"; return 1; }
+  printf 'zzz' >"$HOME/llm-rating-not-the-cited-one.txt"
+  run_recovery --update --add "legacy-evidence:$id:artifacts:llm-rating-not-the-cited-one.txt"
+  assert_ok "add under a measured id, as legacy" || return 1
+  run_recovery
+  assert_not_contains "$RUN_OUTPUT" "citation-mismatch" "the cross-check must not fire for legacy" || return 1
+  run_recovery --require evidence
+  assert_ok "and the evidence gate stays establishable" || return 1
+}
+
+test_a_catalog_citation_of_a_legacy_basename_is_legacy_cited() {
+  # The one contradiction that must still fail loudly: demoting an artifact
+  # the catalog actually depends on. Keyed on the basename, and the legacy
+  # row's own key is deliberately unrelated to the citing row.
+  single_model_manifest || return 1
+  local id cited
+  id="$(rate_provenance_ids | head -1)"
+  [[ -n "$id" ]] || { _fail "the real catalog has no measured rows to test against"; return 1; }
+  cited="$(catalog_rating_get "$id" rating_source)"; cited="${cited#file:}"
+  printf 'the artifact the catalog cites' >"$HOME/$cited"
+  run_recovery --update --add "legacy-evidence:suite-old:artifacts:$cited"
+  assert_ok "demote a cited artifact" || return 1
+  run_recovery
+  assert_contains "$RUN_OUTPUT" "legacy-cited artifacts:$cited" "the contradiction is named" || return 1
+  assert_contains "$RUN_OUTPUT" "the catalog row for $id cites this artifact" "the citing row is named" || return 1
+  run_recovery --require evidence
+  assert_fails "--require evidence gates on the contradiction" || return 1
+}
+
+test_legacy_enrollment_is_explicit_only() {
+  # Correction 2 again, for the new class: an artifact sitting in the root is
+  # never promoted into it by a scan, whatever it is named.
+  single_model_manifest || return 1
+  printf 'current' >"$HOME/llm-rating-current.txt"
+  printf 'stale'   >"$HOME/llm-rating-stale.txt"
+  run_recovery --update --add evidence:model-a:artifacts:llm-rating-current.txt
+  assert_ok "enlist the cited artifact" || return 1
+  run_recovery --update
+  assert_ok "a later update with the superseded file present" || return 1
+  assert_not_contains "$(cat "$RECOVERY_MANIFEST")" "llm-rating-stale.txt" \
+    "scanning must never enlist, into this class least of all" || return 1
+  run_recovery --update --add "legacy-evidence:suite-old:artifacts:llm-rating-nowhere.txt"
+  assert_fails "--add refuses a file that is not there" || return 1
+  run_recovery --update --add "legacy-evidence:suite-old:artifacts:/abs/path.txt"
+  assert_fails "--add validates the legacy spec closed" || return 1
+}
+
+test_legacy_rows_survive_updates_and_reach_the_backup_list() {
+  legacy_manifest || return 1
+  local prev_before; prev_before="$(cat "$RECOVERY_MANIFEST.prev")"
+  run env RECOVERY_NOW="2026-08-19T09:09:09Z" bash "$REPO_ROOT/72-verify-recovery.sh" --update
+  assert_ok "unchanged update" || return 1
+  assert_contains "$RUN_OUTPUT" "manifest unchanged" "idempotent with a legacy row present" || return 1
+  assert_contains "$(cat "$RECOVERY_MANIFEST")" $'updated\t2026-08-18T00:00:00Z' "updated kept" || return 1
+  assert_eq "$(cat "$RECOVERY_MANIFEST.prev")" "$prev_before" ".prev not rotated by an unchanged update" || return 1
+  # A real change elsewhere must carry the legacy row through untouched.
+  make_model "Model-B-GGUF/model-b.gguf" "bbbb"
+  write_config model-a "Model-A-GGUF/model-a.gguf" model-b "Model-B-GGUF/model-b.gguf"
+  run_recovery --update
+  assert_ok "later update" || return 1
+  assert_contains "$(cat "$RECOVERY_MANIFEST")" "artifacts:llm-rating-stale.txt" "legacy row carried forward" || return 1
+  run_recovery --print-backup-list
+  assert_ok "backup list prints" || return 1
+  assert_contains "$RUN_OUTPUT" "artifacts:llm-rating-stale.txt" "legacy evidence is worth backing up" || return 1
 }
 
 # --- quick mode ---------------------------------------------------------------
