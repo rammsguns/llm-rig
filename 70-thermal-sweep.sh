@@ -66,6 +66,17 @@ gpu_effective_power_limits() {
         END { if (out) print out; else exit 1 }'
 }
 
+display_effective_power_limits() {
+  local limits="$1"
+  # Keep indexes for multi-GPU read-back, where each limit needs an owner. A
+  # one-card table is clearer as the value alone (for example, "140.00W").
+  if [[ "$limits" != *,* ]]; then
+    printf '%s\n' "${limits#*=}"
+  else
+    printf '%s\n' "$limits"
+  fi
+}
+
 power_limits_match() {
   local requested="$1" limits="$2" entry effective
   local -a entries
@@ -82,7 +93,7 @@ power_limits_match() {
 # not be set, and 2 when it was set but read back as a different value.  A
 # mismatched run is not useful evidence, so the caller excludes it.
 set_power_limit() {
-  local requested="$1" actual
+  local requested="$1" actual displayed
   EFFECTIVE_LIMITS="unavailable"
   POWER_LIMIT_STATE="unverified"
   if ! sudo nvidia-smi -pl "$requested" >/dev/null 2>&1; then
@@ -93,14 +104,15 @@ set_power_limit() {
     c_warn "${requested}W requested but the effective limit is unavailable; continuing unverified"
     return 0
   fi
-  EFFECTIVE_LIMITS="$actual"
+  displayed="$(display_effective_power_limits "$actual")"
+  EFFECTIVE_LIMITS="$displayed"
   if power_limits_match "$requested" "$actual"; then
     POWER_LIMIT_STATE="verified"
-    c_info "${requested}W requested; effective limit ${actual}"
+    c_info "${requested}W requested; effective limit ${displayed}"
     return 0
   fi
   POWER_LIMIT_STATE="mismatch"
-  c_warn "${requested}W requested but effective limit is ${actual}; excluding this run"
+  c_warn "${requested}W requested but effective limit is ${displayed}; excluding this run"
   return 2
 }
 
@@ -187,7 +199,8 @@ for pct in 100 85 72 60; do
 
   # Score on generation, which is what you feel token-by-token in an agent loop,
   # but require the run to have actually produced numbers.
-  if [[ -n "${TG:-}" ]] && awk "BEGIN{exit !($TG > $BEST_SCORE)}"; then
+  if [[ -n "${TG:-}" ]] \
+      && awk -v score="$TG" -v best="$BEST_SCORE" 'BEGIN { exit (score > best) ? 0 : 1 }'; then
     BEST_SCORE="$TG"; BEST_W="$w"
   fi
   ROWS[$w]="effective=${EFFECTIVE_LIMITS} pp=${PP:-fail} tg=${TG:-fail} draw=${AVG_P}W peak=${PEAK_T}C clocks=${MIN_C}/${AVG_C}/${MAX_C}MHz verdict=${verdict} samples=${SAMPLES}"
