@@ -26,6 +26,34 @@ c_err()   { printf '\033[1;31m  XX\033[0m %s\n' "$*" >&2; }
 die()     { c_err "$*"; exit 1; }
 need()    { command -v "$1" >/dev/null 2>&1; }
 
+# Read the effective NVIDIA power limit rather than inferring it from a
+# requested percentage. The indexed form keeps multi-GPU reports unambiguous.
+# Output: "0=140.00W,1=140.00W". Returns non-zero when no numeric values exist.
+gpu_effective_power_limits() {
+  need nvidia-smi || return 1
+  nvidia-smi --query-gpu=index,power.limit --format=csv,noheader,nounits 2>/dev/null \
+    | awk -F',' '
+        NF >= 2 {
+          idx=$1; value=$2
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", idx)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+          if (value ~ /^[0-9]+([.][0-9]+)?$/)
+            out = out (out ? "," : "") idx "=" value "W"
+        }
+        END { if (out) print out; else exit 1 }'
+}
+
+display_effective_power_limits() {
+  local limits="$1"
+  # A one-card report is clearer as the value alone; retain indexes when
+  # several cards report values so operators can distinguish their limits.
+  if [[ "$limits" != *,* ]]; then
+    printf '%s\n' "${limits#*=}"
+  else
+    printf '%s\n' "$limits"
+  fi
+}
+
 # --- the compute pool --------------------------------------------------------
 # Which GPUs are eligible for inference. On most machines: all of them, and
 # nothing below changes. On a machine that also carries a display-only card,

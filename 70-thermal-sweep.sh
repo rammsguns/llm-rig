@@ -52,31 +52,6 @@ echo "  Method: per power level, one discarded heat-soak pass then one measured"
 echo "          pass at steady state. No cooldowns between levels, by design."
 echo
 
-# "index=watts" values for every GPU that reports a numeric effective limit.
-gpu_effective_power_limits() {
-  nvidia-smi --query-gpu=index,power.limit --format=csv,noheader,nounits 2>/dev/null \
-    | awk -F',' '
-        NF >= 2 {
-          idx=$1; value=$2
-          gsub(/^[[:space:]]+|[[:space:]]+$/, "", idx)
-          gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-          if (value ~ /^[0-9]+([.][0-9]+)?$/)
-            out = out (out ? "," : "") idx "=" value "W"
-        }
-        END { if (out) print out; else exit 1 }'
-}
-
-display_effective_power_limits() {
-  local limits="$1"
-  # Keep indexes for multi-GPU read-back, where each limit needs an owner. A
-  # one-card table is clearer as the value alone (for example, "140.00W").
-  if [[ "$limits" != *,* ]]; then
-    printf '%s\n' "${limits#*=}"
-  else
-    printf '%s\n' "$limits"
-  fi
-}
-
 power_limits_match() {
   local requested="$1" limits="$2" entry effective
   local -a entries

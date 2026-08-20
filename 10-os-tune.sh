@@ -63,29 +63,19 @@ if [[ -n "${MAXW:-}" && -n "${MINW:-}" ]]; then
   TGT=$(( MAXW * POWER_PCT / 100 )); (( TGT < MINW )) && TGT=$MINW
 fi
 
-# Read back the actual limit rather than assuming that a successful `-pl`
-# request took effect.  Some drivers round the requested value and some GPUs
-# expose power controls but refuse a change because of VBIOS or policy.
-gpu_effective_power_limits() {
-  need nvidia-smi || return 1
-  nvidia-smi --query-gpu=index,power.limit --format=csv,noheader,nounits 2>/dev/null \
-    | awk -F',' '
-        NF >= 2 {
-          idx=$1; value=$2
-          gsub(/^[[:space:]]+|[[:space:]]+$/, "", idx)
-          gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-          if (value ~ /^[0-9]+([.][0-9]+)?$/) print idx "\t" value
-        }'
-}
-
 report_effective_power_limits() {
-  local requested="$1" rows idx effective
-  if ! rows="$(gpu_effective_power_limits)" || [[ -z "$rows" ]]; then
+  local requested="$1" limits entry idx effective
+  local -a entries
+  if ! limits="$(gpu_effective_power_limits)" || [[ -z "$limits" ]]; then
     c_warn "could not read back the effective GPU power limit after requesting ${requested}W"
     return 0
   fi
 
-  while IFS=$'\t' read -r idx effective; do
+  IFS=',' read -ra entries <<<"$limits"
+  for entry in "${entries[@]}"; do
+    idx="${entry%%=*}"
+    effective="${entry#*=}"
+    effective="${effective%W}"
     [[ -n "$idx" && -n "$effective" ]] || continue
     if awk -v requested="$requested" -v effective="$effective" \
         'BEGIN { exit !(effective - requested < 0.01 && requested - effective < 0.01) }'; then
@@ -93,7 +83,7 @@ report_effective_power_limits() {
     else
       c_warn "GPU $idx power limit differs: requested ${requested}W, effective ${effective}W"
     fi
-  done <<<"$rows"
+  done
 }
 
 WANT_GOVERNOR=performance

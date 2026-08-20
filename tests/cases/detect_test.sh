@@ -15,6 +15,25 @@ SUITE_NAME="lib/detect.sh"
 
 setup_test() { mock_init; }
 
+test_effective_power_limits_are_indexed_for_multiple_gpus() {
+  use_gpu dual_a4000
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/lib/detect.sh"
+  local limits
+  limits="$(gpu_effective_power_limits)"
+  assert_eq "$limits" "0=140W,1=140W" "indexed effective limits" || return 1
+  assert_eq "$(display_effective_power_limits "$limits")" "$limits" \
+    "multi-GPU display keeps indexes"
+}
+
+test_effective_power_limit_readback_can_be_unavailable() {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/lib/detect.sh"
+  nvidia-smi() { return 1; }
+  run gpu_effective_power_limits
+  assert_fails "unreadable effective limits must be reportable" || return 1
+}
+
 # Run detect_hw in this shell so the exported variables are assertable.
 load_detect() {
   # shellcheck source=/dev/null
