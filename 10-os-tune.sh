@@ -63,6 +63,39 @@ if [[ -n "${MAXW:-}" && -n "${MINW:-}" ]]; then
   TGT=$(( MAXW * POWER_PCT / 100 )); (( TGT < MINW )) && TGT=$MINW
 fi
 
+# Read back the actual limit rather than assuming that a successful `-pl`
+# request took effect.  Some drivers round the requested value and some GPUs
+# expose power controls but refuse a change because of VBIOS or policy.
+gpu_effective_power_limits() {
+  need nvidia-smi || return 1
+  nvidia-smi --query-gpu=index,power.limit --format=csv,noheader,nounits 2>/dev/null \
+    | awk -F',' '
+        NF >= 2 {
+          idx=$1; value=$2
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", idx)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+          if (value ~ /^[0-9]+([.][0-9]+)?$/) print idx "\t" value
+        }'
+}
+
+report_effective_power_limits() {
+  local requested="$1" rows idx effective
+  if ! rows="$(gpu_effective_power_limits)" || [[ -z "$rows" ]]; then
+    c_warn "could not read back the effective GPU power limit after requesting ${requested}W"
+    return 0
+  fi
+
+  while IFS=$'\t' read -r idx effective; do
+    [[ -n "$idx" && -n "$effective" ]] || continue
+    if awk -v requested="$requested" -v effective="$effective" \
+        'BEGIN { exit !(effective - requested < 0.01 && requested - effective < 0.01) }'; then
+      c_ok "GPU $idx power limit: requested ${requested}W, effective ${effective}W"
+    else
+      c_warn "GPU $idx power limit differs: requested ${requested}W, effective ${effective}W"
+    fi
+  done <<<"$rows"
+}
+
 WANT_GOVERNOR=performance
 WANT_S76=performance
 WANT_THP=always
@@ -190,8 +223,12 @@ fi
 
 if [[ -n "$TGT" ]]; then
   c_info "Power limit: max ${MAXW}W -> setting ${TGT}W (${POWER_PCT}%)"
-  ostune_priv nvidia-smi -pl "$TGT" >/dev/null 2>&1 && c_ok "power limit ${TGT}W" \
-    || c_warn "could not set power limit (locked VBIOS?) -- harmless, skipping"
+  if ostune_priv nvidia-smi -pl "$TGT" >/dev/null 2>&1; then
+    c_ok "power limit ${TGT}W requested"
+    report_effective_power_limits "$TGT"
+  else
+    c_warn "could not set power limit (locked VBIOS?) -- harmless, skipping"
+  fi
 else
   c_warn "no GPU power limits reported -- skipping power tuning"
 fi
@@ -271,7 +308,7 @@ if (( fail )); then
 fi
 
 c_info "Post-tune state"
-nvidia-smi --query-gpu=name,persistence_mode,power.limit,temperature.gpu,clocks.max.sm \
+nvidia-smi --query-gpu=name,persistence_mode,power.limit,power.draw,temperature.gpu,clocks.max.sm \
   --format=csv 2>/dev/null
 echo "Governor: $(cat "$OSTUNE_ROOT/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor" 2>/dev/null || echo "$OSTUNE_UNKNOWN")"
 echo "THP:      $(cat "$OSTUNE_THP_ENABLED" 2>/dev/null || echo "$OSTUNE_UNKNOWN")"
