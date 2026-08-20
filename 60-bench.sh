@@ -158,8 +158,13 @@ done
 # 0% util, which means nothing). Drive actual generation through the endpoint --
 # not llama-bench, which would compete for the VRAM llama-swap now holds.
 c_info "Phase 4: thermals under sustained generation (~60s)"
-echo "  Clocks falling while utilisation stays high = thermal throttling, which is"
-echo "  what the 85% power limit from 10-os-tune.sh exists to prevent."
+if EFFECTIVE_LIMITS="$(gpu_effective_power_limits)"; then
+  echo "  Effective NVIDIA power limit: $(display_effective_power_limits "$EFFECTIVE_LIMITS")"
+else
+  echo "  Effective NVIDIA power limit: unavailable"
+fi
+echo "  Clocks falling while utilisation stays high = thermal throttling. A verified"
+echo "  power limit constrains draw but does not guarantee that cooling avoids it."
 echo "  Utilisation at 0% means the load generator failed -- ignore such a run."
 
 PRIMARY=$(echo "$MODELS" | grep -i coder | head -1)
