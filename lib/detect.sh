@@ -68,7 +68,9 @@ load_gpu_pool() {
     if ! grep -qxF "$uuid" <<<"$present"; then
       pool_fail "compute pool $POOL_FILE names a GPU this machine does not have: $uuid
      Present GPUs:
-$(nvidia-smi --query-gpu=uuid,name --format=csv,noheader | sed 's/^/       /')"
+$(nvidia-smi --query-gpu=uuid,name --format=csv,noheader | sed 's/^/       /')
+     If this follows a card replacement, update the stale UUID in
+     $POOL_FILE from the list above, then re-run."
       return $?
     fi
     if grep -qxF "$uuid" <<<"$seen"; then

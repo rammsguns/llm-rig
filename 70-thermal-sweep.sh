@@ -13,6 +13,15 @@
 set -uo pipefail
 source "$(dirname "$0")/lib/detect.sh"
 
+ORIG_W=""
+restore_power() {
+  # Nothing can have changed the limit until after its value is captured below.
+  # Keep the EXIT trap safe for preflight failures such as a stale compute-pool
+  # UUID, while restoring the captured value on every later exit path.
+  [[ -n "${ORIG_W:-}" ]] || return 0
+  sudo nvidia-smi -pl "$ORIG_W" >/dev/null 2>&1 || true
+}
+
 ensure_gpus_idle
 trap 'restore_power; restore_llama_swap' EXIT
 detect_hw
@@ -24,7 +33,6 @@ MODEL=$(find "$MODELS_DIR" -name '*.gguf' -size +100M | grep -i 'a3b\|coder' | h
 MAXW=$(nvidia-smi --query-gpu=power.max_limit --format=csv,noheader,nounits | head -1 | cut -d. -f1)
 MINW=$(nvidia-smi --query-gpu=power.min_limit --format=csv,noheader,nounits | head -1 | cut -d. -f1)
 ORIG_W=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits | head -1 | cut -d. -f1)
-restore_power() { sudo nvidia-smi -pl "$ORIG_W" >/dev/null 2>&1 || true; }
 
 REPS="${REPS:-8}"     # per pass; 8x pp16384 is roughly 90s of continuous load
 # These are reporting thresholds, not hardware requirements. Override them
