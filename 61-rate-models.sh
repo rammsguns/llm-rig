@@ -166,7 +166,7 @@ while IFS= read -r served; do
     printf '  serving flags: %s\n' "$flags"
   } >> "$ARTIFACT"
 
-  got_w=0; answered=0; flips=0; n_incomplete=0
+  got_w=0; answered=0; flips=0; n_incomplete=0; n_errors_total=0
 
   while IFS= read -r task; do
     [[ -n "$task" ]] || continue
@@ -194,7 +194,7 @@ while IFS= read -r served; do
                "$RATE_MAX_TOKENS" >> "$ARTIFACT" ;;
         esac
       else
-        errors=$(( errors + 1 ))
+        errors=$(( errors + 1 )); n_errors_total=$(( n_errors_total + 1 ))
         printf '  task %-20s error: %s\n' "$tid" \
           "$(head -1 "$ERRFILE" 2>/dev/null || printf 'unknown')" >> "$ARTIFACT"
       fi
@@ -251,7 +251,18 @@ while IFS= read -r served; do
   # Measured is not the same as recordable. A run can complete every task and
   # still be unable to say what it ran against, and a row whose runtime nobody
   # can reconstruct is a number attached to an alias.
-  if blocked="$(rate_row_blocked "$cid" "$answered" "$NTASKS" "$missing")"; then
+  #
+  # When every unanswered task was truncated -- none errored -- name the gap a
+  # coverage limitation of the suite's fixed budget rather than a bare
+  # "incomplete run" (issues #63, #79, #90: thinking-style models whose
+  # reasoning exhausts the budget before they answer). Still no row; a
+  # different diagnosis.
+  blocked="$(rate_row_blocked "$cid" "$answered" "$NTASKS" "$missing")"
+  if (( n_incomplete > 0 && n_errors_total == 0 )); then
+    coverage="$(RATE_TRUNCATION_ONLY=1 rate_row_blocked "$cid" "$answered" "$NTASKS" "$missing")"
+    [[ "$coverage" == 'coverage gap'* ]] && blocked="$coverage"
+  fi
+  if [[ -n "$blocked" ]]; then
     c_warn "$served: no catalog row -- $blocked"
     printf '  no catalog row: %s\n' "$blocked" >> "$ARTIFACT"
   else

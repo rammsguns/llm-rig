@@ -527,7 +527,14 @@ model that reasons its way to `6` without ever saying `6` has not answered.
 
 An incomplete task does not count as answered, so it blocks the pasteable row
 through the same gate an HTTP error goes through, and the `RESULT` line carries
-`incomplete=<n>`. **Raising the budget is a diagnostic, not a fix:**
+`incomplete=<n>`. When **every** unanswered task was truncated — none errored —
+the gate names the shortfall a *coverage gap*: evidence about the suite's fixed
+budget against this model's thinking style, not about the model's competence.
+That is the classification behind [#63](https://github.com/rammsguns/llm-rig/issues/63),
+[#79](https://github.com/rammsguns/llm-rig/issues/79) and
+[#90](https://github.com/rammsguns/llm-rig/issues/90). It is still no row; a
+different diagnosis, not a softer gate. **Raising the budget is a diagnostic,
+not a fix:**
 
 ```bash
 RATE_MAX_TOKENS=4096 ./61-rate-models.sh --model qwen3.8-27b

@@ -573,6 +573,33 @@ test_the_default_budget_does_not_block_the_row() {
   assert_fails "the suite budget is not a deviation"
 }
 
+test_a_truncation_only_gap_is_named_a_coverage_limitation() {
+  # Issues #63/#79/#90: thinking-style models whose reasoning exhausts the
+  # fixed budget. When every unanswered task was truncated -- none errored --
+  # the diagnosis is a coverage gap, not a bare "incomplete run": still no
+  # row, but the artifact names what actually happened.
+  local out
+  out="$(RATE_TRUNCATION_ONLY=1 rate_row_blocked qwen3-1-7b 10 12 "")"
+  assert_contains "$out" "coverage gap" "named for what it is" || return 1
+  assert_contains "$out" "10 of 12" "with the shape of the shortfall" || return 1
+  assert_contains "$out" "$RATE_TRUNCATED_REASON" \
+    "and the budget that caused it" || return 1
+}
+
+test_an_erroring_gap_is_not_reclassified_as_coverage() {
+  # An HTTP failure is not a budget problem; without the flag set (the
+  # driver's own condition) an incomplete run keeps its ordinary name.
+  run rate_row_blocked qwen3-1-7b 10 12 ""
+  assert_contains "$RUN_OUTPUT" "incomplete run" "the unclassified spelling" || return 1
+}
+
+test_coverage_classification_still_blocks_the_row() {
+  # Naming the gap must never soften the gate into recording one.
+  run env RATE_TRUNCATION_ONLY=1 bash -c \
+    'source "'"$REPO_ROOT"'/lib/rate.sh"; rate_row_blocked qwen3-1-7b 10 12 ""'
+  assert_ok "a coverage gap is still no catalog row" || return 1
+}
+
 test_every_documented_flag_is_one_the_script_accepts() {
   # This shipped in review as `--only <model>`, which does not exist: the
   # parser dies on an unknown argument, so the one command the truncation
