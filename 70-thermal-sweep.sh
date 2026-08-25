@@ -166,7 +166,6 @@ for pct in 100 85 72 60; do
   # temperature under the threshold, means the row is still throttled. This is
   # the gap issue #100 reported -- a 100W row read "hot" at 87C while the
   # heat-soaked clock sat at 628 MHz.
-  CLOCK_STATE="ok"
   # SAMPLES guards the awk sentinels: with no valid load samples the parser
   # emits minc=999999/maxc=0, which must not read as a collapsed clock.
   if [[ -n "$CLOCK_MAX_SM" ]] \
@@ -174,7 +173,6 @@ for pct in 100 85 72 60; do
       && awk -v min="$MIN_C" -v avg="$AVG_C" -v maxclk="$CLOCK_MAX_SM" \
               -v pct="$CLOCK_COLLAPSE_PCT" \
         'BEGIN { exit !((min < maxclk * pct / 100) || (avg < maxclk * pct / 100)) }'; then
-    CLOCK_STATE="collapsed"
     CLOCK_COLLAPSE_RUNS=$(( CLOCK_COLLAPSE_RUNS + 1 ))
     c_warn "${w}W: sustained clock ${AVG_C}MHz (min ${MIN_C}) is below ${CLOCK_COLLAPSE_PCT}% of ${CLOCK_MAX_SM}MHz -- throttled despite ${PEAK_T}C"
   fi
