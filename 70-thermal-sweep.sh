@@ -33,6 +33,10 @@ MODEL=$(find "$MODELS_DIR" -name '*.gguf' -size +100M | grep -i 'a3b\|coder' | h
 MAXW=$(nvidia-smi --query-gpu=power.max_limit --format=csv,noheader,nounits | head -1 | cut -d. -f1)
 MINW=$(nvidia-smi --query-gpu=power.min_limit --format=csv,noheader,nounits | head -1 | cut -d. -f1)
 ORIG_W=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits | head -1 | cut -d. -f1)
+# Reference ceiling for clock-collapse detection: the pool's highest boost clock.
+CLOCK_MAX_SM=$(nvidia-smi --query-gpu=clocks.max.sm --format=csv,noheader,nounits \
+  | cut -d. -f1 | sort -rn | head -1)
+[[ "$CLOCK_MAX_SM" =~ ^[0-9]+$ ]] || CLOCK_MAX_SM=""   # unknown ceiling disables the check
 
 REPS="${REPS:-8}"     # per pass; 8x pp16384 is roughly 90s of continuous load
 # These are reporting thresholds, not hardware requirements. Override them
@@ -40,8 +44,13 @@ REPS="${REPS:-8}"     # per pass; 8x pp16384 is roughly 90s of continuous load
 # chassis has a known sustained target.
 THERMAL_TEMP_C="${THERMAL_TEMP_C:-85}"
 POWER_NEAR_CAP_PCT="${POWER_NEAR_CAP_PCT:-95}"
+# A sustained SM clock below this share of the fixture's clocks.max.sm is clock
+# collapse -- the failure mode where a row passes the temperature threshold yet
+# is still throttled (issue #100: 87C at 628 MHz sustained on an A4000).
+CLOCK_COLLAPSE_PCT="${CLOCK_COLLAPSE_PCT:-60}"
 [[ "$THERMAL_TEMP_C" =~ ^[0-9]+$ ]] || die "THERMAL_TEMP_C must be an integer"
 [[ "$POWER_NEAR_CAP_PCT" =~ ^[0-9]+$ ]] || die "POWER_NEAR_CAP_PCT must be an integer"
+[[ "$CLOCK_COLLAPSE_PCT" =~ ^[0-9]+$ ]] || die "CLOCK_COLLAPSE_PCT must be an integer"
 
 STAMP=$(date +%Y%m%d-%H%M)
 OUT="$HOME/llm-thermal-$STAMP.txt"
@@ -114,8 +123,8 @@ printf '%-7s %-16s %-12s %-11s %-13s %-8s %-19s %s\n' \
   "reqW" "effectiveW" "pp16384" "tg128" "draw(avg)" "peakT" "clk(min/avg/max)" "verdict"
 printf '%s\n' "----------------------------------------------------------------------------------------------------------------"
 
-BEST_W=""; BEST_SCORE=0
-MEASURED_RUNS=0; THERMAL_RUNS=0
+BEST_W="" ; BEST_SCORE=0
+MEASURED_RUNS=0; THERMAL_RUNS=0; CLOCK_COLLAPSE_RUNS=0
 declare -A ROWS
 
 for pct in 100 85 72 60; do
@@ -153,6 +162,20 @@ for pct in 100 85 72 60; do
   rm -f "$SAMPLE"
 
   MEASURED_RUNS=$(( MEASURED_RUNS + 1 ))
+  # Clock collapse: sustained SM clock far below the card's maximum, even with
+  # temperature under the threshold, means the row is still throttled. This is
+  # the gap issue #100 reported -- a 100W row read "hot" at 87C while the
+  # heat-soaked clock sat at 628 MHz.
+  # SAMPLES guards the awk sentinels: with no valid load samples the parser
+  # emits minc=999999/maxc=0, which must not read as a collapsed clock.
+  if [[ -n "$CLOCK_MAX_SM" ]] \
+      && (( SAMPLES > 0 )) && (( MAX_C > 0 )) && (( MIN_C > 300 )) && (( MIN_C <= MAX_C )) \
+      && awk -v min="$MIN_C" -v avg="$AVG_C" -v maxclk="$CLOCK_MAX_SM" \
+              -v pct="$CLOCK_COLLAPSE_PCT" \
+        'BEGIN { exit !((min < maxclk * pct / 100) || (avg < maxclk * pct / 100)) }'; then
+    CLOCK_COLLAPSE_RUNS=$(( CLOCK_COLLAPSE_RUNS + 1 ))
+    c_warn "${w}W: sustained clock ${AVG_C}MHz (min ${MIN_C}) is below ${CLOCK_COLLAPSE_PCT}% of ${CLOCK_MAX_SM}MHz -- throttled despite ${PEAK_T}C"
+  fi
   if (( PEAK_T >= THERMAL_TEMP_C )); then
     verdict="THERMAL"
     THERMAL_RUNS=$(( THERMAL_RUNS + 1 ))
@@ -199,6 +222,9 @@ fi
 if (( MEASURED_RUNS > 0 && THERMAL_RUNS == MEASURED_RUNS )); then
   c_warn "Every measured limit reached ${THERMAL_TEMP_C}C or higher under load: airflow/cooling is the constraint."
   c_warn "Improve the cooling path before selecting a lower default cap: leave card spacing, add intake airflow, and move display work off the compute GPU where possible."
+elif (( MEASURED_RUNS > 0 && THERMAL_RUNS < MEASURED_RUNS && CLOCK_COLLAPSE_RUNS > 0 )); then
+  c_warn "${CLOCK_COLLAPSE_RUNS} of ${MEASURED_RUNS} measured rows held sustained clocks below ${CLOCK_COLLAPSE_PCT}% of the boost ceiling while staying under ${THERMAL_TEMP_C}C:"
+  c_warn "temperature alone under-reports throttling here -- treat those rows as constrained too, not as healthy tradeoffs (issue #100)."
 fi
 
 cat <<EOF
@@ -210,6 +236,9 @@ Reading the table:
   means average draw was near the verified cap while temperature stayed below it.
   UNVERIFIED means the driver did not expose a readable effective cap, so do not
   compare that row with verified rows.
+  A row whose sustained clock sits far below the boost ceiling is throttled even
+  when its temperature passes the threshold -- clock collapse is reported
+  separately (override CLOCK_COLLAPSE_PCT; an unreadable ceiling disables it).
   If every measured row is THERMAL, the constraint is airflow, not power:
     1. Leave an empty slot between the cards if the board allows it.
     2. Add a case fan blowing across the GPU intake.
