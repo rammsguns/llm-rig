@@ -366,12 +366,23 @@ rate_provenance_missing() {
 # threading it through every caller would invite passing a value the run did
 # not actually use. A run at a non-default budget is a diagnostic -- v2
 # documented that and relied on nobody recording one; this makes it a gate.
+#
+# RATE_TRUNCATION_ONLY, when non-empty, reclassifies a partial run: if every
+# unanswered task was truncated (none errored), the shortfall is evidence about
+# the suite's fixed budget against this model's thinking style, not about the
+# model. That is a named coverage limitation -- still no row, but a different
+# diagnosis than an incomplete run whose cause is unknown.
 rate_row_blocked() {
   local cid="$1" answered="$2" total="$3" missing="$4"
   if [[ -z "$cid" ]]; then
     printf 'not in the catalog'
   elif (( answered != total )); then
-    printf 'incomplete run: %s of %s tasks answered' "$answered" "$total"
+    if [[ -n "${RATE_TRUNCATION_ONLY:-}" ]]; then
+      printf 'coverage gap: %s of %s tasks answered; every gap is budget truncation (%s), not a wrong answer' \
+        "$answered" "$total" "$RATE_TRUNCATED_REASON"
+    else
+      printf 'incomplete run: %s of %s tasks answered' "$answered" "$total"
+    fi
   elif [[ -n "$missing" ]]; then
     printf 'incomplete runtime provenance: %s' "$missing"
   elif [[ "$RATE_MAX_TOKENS" != "$RATE_MAX_TOKENS_DEFAULT" ]]; then
