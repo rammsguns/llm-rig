@@ -69,7 +69,7 @@ claude
 | `./71-verify-runtime.sh` | Query the **running** server's `/props` — confirms live `n_ctx`, flash-attn, KV cache types. Trust this over the config file. Grades its evidence; see below. |
 | `./72-verify-recovery.sh` | Verify weights, rating evidence and the generated config against a **machine-local recovery manifest** (digests recorded outside the repo, locations as `root:relative` — never machine identity). Read-only by default and non-fatal on a fresh clone; `--update` is the only writing mode and refuses to silently re-baseline drift. |
 | `./61-rate-models.sh` | Rate the models you serve on a fixed coding suite, and print rows for `catalog_ratings()`. Nothing it grades is executed; see [Rating the models you serve](#rating-the-models-you-serve). |
-| `./70-thermal-sweep.sh` | Re-derive the best power limit for your chassis under a heat-soaked load. |
+| `./70-thermal-sweep.sh` | Re-derive the best power limit for your chassis under a heat-soaked load. Rows whose sustained SM clock collapses below `CLOCK_COLLAPSE_PCT` (default 60%) of the boost ceiling are flagged as throttled even when peak temperature passes the threshold — temperature alone under-reports throttling (issue #100). |
 | `./80-try-bigger.sh <hf-repo> [quant]` | Assess, download, auto-tune `--n-cpu-moe` and benchmark a model **larger than VRAM**. Empirically finds the lowest working offload level. `--list` sizes it without downloading. |
 | `./19-os-revert.sh` | Undo `10-os-tune.sh`, restoring the values captured before it ran — not assumed defaults. See [Rollback](#what-reversible-means). |
 
