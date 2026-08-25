@@ -8,6 +8,9 @@ claude-code-local.env
 # Machine-local configuration -- it names this host's silicon and must never
 # be committed. Format and rationale: README "The compute pool".
 etc/inference-gpus
+# Operator-saved variants of the above (e.g. a single-GPU config kept aside):
+# same machine-local status, same rule.
+etc/*.single-*
 
 # What llm-rig installed on THIS machine: version, digest, timestamp. Machine
 # state, not configuration -- the deliberate pin lives in lib/swap.sh.
