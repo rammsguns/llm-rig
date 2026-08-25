@@ -141,17 +141,15 @@ for pct in 100 85 72 60; do
   PP=${RES%%|*}; TG=${RES##*|}
   # Only samples under real load count. Init from a sentinel, never from
   # element 1 -- that was the v1 bug that reported 210MHz idle clock everywhere.
-  read -r PEAK_T MIN_C AVG_C MAX_C MIN_P AVG_P MAX_P SAMPLES < <(awk -F', *' '
-    BEGIN{peak=0; minc=999999; maxc=0; minp=999999; maxp=0; sump=0; sumc=0; n=0}
+  read -r PEAK_T MIN_C AVG_C MAX_C AVG_P SAMPLES < <(awk -F', *' '
+    BEGIN{peak=0; minc=999999; maxc=0; sump=0; sumc=0; n=0}
     $5 >= 30 && $4 > 300 {
       if ($3 > peak) peak = $3
       if ($4 < minc) minc = $4
       if ($4 > maxc) maxc = $4
-      if ($2 < minp) minp = $2
-      if ($2 > maxp) maxp = $2
       sump += $2; sumc += $4; n++
     }
-    END{ printf "%d %d %d %d %.1f %.1f %.1f %d", peak, (n?minc:0), (n?sumc/n:0), maxc, (n?minp:0), (n?sump/n:0), maxp, n }' "$SAMPLE")
+    END{ printf "%d %d %d %d %.1f %d", peak, (n?minc:0), (n?sumc/n:0), maxc, (n?sump/n:0), n }' "$SAMPLE")
   rm -f "$SAMPLE"
 
   MEASURED_RUNS=$(( MEASURED_RUNS + 1 ))
