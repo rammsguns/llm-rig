@@ -18,10 +18,21 @@ echo "llm-rig benchmark  $STAMP"
 # ORDER MATTERS. llama-bench allocates its own VRAM, so the GPUs must be idle
 # before we either measure free memory or start benching. Doing this after
 # detect_hw (as v2.2 did) measures ~3GB free and computes a negative budget.
+# Load the pool before checking holders: a display card can have permanent
+# desktop contexts, while only declared compute cards need to be made idle.
+load_gpu_pool
 ensure_gpus_idle
 trap restore_llama_swap EXIT
 detect_hw
 print_hw
+resolve_cuda_device_set
+c_info "llama-bench CUDA devices: $CUDA_DEVICE_SET"
+
+# Keep any caller-supplied GGML_CUDA_P2P (and all other CUDA settings) intact;
+# this assignment constrains only the device list for direct bench processes.
+bench_llama() {
+  CUDA_VISIBLE_DEVICES="$CUDA_DEVICE_SET" llama-bench "$@"
+}
 
 # Where Claude Code actually points. 50-claude-code.sh may have bypassed LiteLLM
 # and pointed straight at llama-swap, in which case PROXY_PORT is dead.
@@ -41,7 +52,7 @@ PROBE_M=$(find "$MODELS_DIR" -name '*.gguf' -size +100M | head -1)
 if [[ -n "$PROBE_M" ]]; then
   for cand in "-fa 1" "--flash-attn 1" "-fa on" "--flash-attn on"; do
     # shellcheck disable=SC2086
-    if llama-bench -m "$PROBE_M" -p 8 -n 1 -ngl 999 $cand >/dev/null 2>&1; then
+    if bench_llama -m "$PROBE_M" -p 8 -n 1 -ngl 999 $cand >/dev/null 2>&1; then
       FA_FLAG="$cand"; break
     fi
   done
@@ -75,7 +86,7 @@ for gguf in "${GGUFS[@]}"; do
   echo
   echo "### $(basename "$gguf")"
   # shellcheck disable=SC2086
-  llama-bench -m "$gguf" -p 512,4096,16384,32768 -n 128 -ngl 999 \
+  bench_llama -m "$gguf" -p 512,4096,16384,32768 -n 128 -ngl 999 \
     $FA_FLAG -ctk q8_0 -ctv q8_0 -r 2 2>&1 \
     | grep -Ev '^(ggml_|load_|llama_model_load|build:|main:)' \
     || c_warn "bench failed for $(basename "$gguf")"
@@ -92,7 +103,7 @@ if (( MULTI_GPU )); then
     echo
     echo "### split-mode=$sm  $(basename "$BIG")"
     # shellcheck disable=SC2086
-    llama-bench -m "$BIG" -p 4096,16384 -n 128 -ngl 999 -sm "$sm" \
+    bench_llama -m "$BIG" -p 4096,16384 -n 128 -ngl 999 -sm "$sm" \
       $FA_FLAG -ctk q8_0 -ctv q8_0 -r 2 2>&1 \
       | grep -Ev '^(ggml_|load_|llama_model_load|build:|main:)' \
       || c_warn "split-mode=$sm failed (row needs working P2P; layer is the safe default)"
@@ -158,8 +169,13 @@ done
 # 0% util, which means nothing). Drive actual generation through the endpoint --
 # not llama-bench, which would compete for the VRAM llama-swap now holds.
 c_info "Phase 4: thermals under sustained generation (~60s)"
-echo "  Clocks falling while utilisation stays high = thermal throttling, which is"
-echo "  what the 85% power limit from 10-os-tune.sh exists to prevent."
+if EFFECTIVE_LIMITS="$(gpu_effective_power_limits)"; then
+  echo "  Effective NVIDIA power limit: $(display_effective_power_limits "$EFFECTIVE_LIMITS")"
+else
+  echo "  Effective NVIDIA power limit: unavailable"
+fi
+echo "  Clocks falling while utilisation stays high = thermal throttling. A verified"
+echo "  power limit constrains draw but does not guarantee that cooling avoids it."
 echo "  Utilisation at 0% means the load generator failed -- ignore such a run."
 
 PRIMARY=$(echo "$MODELS" | grep -i coder | head -1)
@@ -176,8 +192,8 @@ LOADPID=$!
 sleep 8   # let it get past prefill and into generation
 
 for i in $(seq 1 11); do
-  nvidia-smi --query-gpu=index,temperature.gpu,clocks.sm,power.draw,utilization.gpu,memory.used \
-    --format=csv,noheader | sed "s/^/  $((i*5+5))s  /"
+  gpu_query index,temperature.gpu,clocks.sm,power.draw,utilization.gpu,memory.used \
+    | sed "s/^/  $((i*5+5))s  /"
   sleep 5
 done
 kill $LOADPID 2>/dev/null; wait $LOADPID 2>/dev/null || true

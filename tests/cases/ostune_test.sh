@@ -167,6 +167,20 @@ test_the_gpu_power_limit_is_restored_to_the_captured_watts() {
   assert_not_contains "$(cat "$MOCK_CALLS")" "-pm 0" "persistence is restored by value, not switched off"
 }
 
+test_tune_reports_the_effective_gpu_power_limit_after_setting_it() {
+  tune
+  assert_ok "tune must complete: $RUN_OUTPUT" || return 1
+  assert_contains "$RUN_OUTPUT" "GPU 0 power limit: requested 140W, effective 140W" \
+    "reads back the requested limit"
+}
+
+test_tune_warns_when_the_effective_gpu_power_limit_differs() {
+  run bash -c "cd '$REPO_ROOT' && OSTUNE_ROOT='$OSTUNE_ROOT' OSTUNE_SUDO='' HOME='$HOME' PATH='$PATH' POWER_PCT=85 bash ./10-os-tune.sh"
+  assert_ok "a power-limit mismatch is reported but does not make unrelated tuning fail: $RUN_OUTPUT" || return 1
+  assert_contains "$RUN_OUTPUT" "GPU 0 power limit differs: requested 119W, effective 140W" \
+    "names both requested and effective values"
+}
+
 test_persistence_is_restored_to_its_captured_mode() {
   tune
   revert

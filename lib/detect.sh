@@ -26,6 +26,91 @@ c_err()   { printf '\033[1;31m  XX\033[0m %s\n' "$*" >&2; }
 die()     { c_err "$*"; exit 1; }
 need()    { command -v "$1" >/dev/null 2>&1; }
 
+# Read the effective NVIDIA power limit rather than inferring it from a
+# requested percentage. The indexed form keeps multi-GPU reports unambiguous.
+# Output: "0=140.00W,1=140.00W". Returns non-zero when no numeric values exist.
+gpu_effective_power_limits() {
+  need nvidia-smi || return 1
+  gpu_query index,power.limit nounits 2>/dev/null \
+    | awk -F',' '
+        NF >= 2 {
+          idx=$1; value=$2
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", idx)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+          if (value ~ /^[0-9]+([.][0-9]+)?$/)
+            out = out (out ? "," : "") idx "=" value "W"
+        }
+        END { if (out) print out; else exit 1 }'
+}
+
+# Resolve the declared compute pool to CUDA's physical device ordinals.  CUDA
+# accepts UUIDs too, but using the nvidia-smi-resolved ordinals keeps the
+# benchmark invocation easy to inspect and matches the direct llama-bench
+# command operators commonly use.  With no declaration, every present GPU is
+# the pool.
+#
+# If the caller already supplied CUDA_VISIBLE_DEVICES, it is an assertion about
+# the devices this run may use.  Accept it only when it names exactly the same
+# UUID set as the pool; otherwise a benchmark could silently measure a display
+# card or only part of the configured inference hardware.
+resolve_cuda_device_set() {
+  need nvidia-smi || die "nvidia-smi not found; cannot resolve the CUDA device set"
+
+  local rows index uuid token supplied_uuids target_uuids="" target_indices=""
+  rows="$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader)"
+  while IFS=',' read -r index uuid; do
+    index="$(xargs <<<"$index")"
+    uuid="$(xargs <<<"$uuid")"
+    [[ -n "$index" && -n "$uuid" ]] || continue
+    if [[ -z "$GPU_POOL" ]] || grep -qxF "$uuid" <(tr ',' '\n' <<<"$GPU_POOL"); then
+      target_indices+="${target_indices:+,}$index"
+      target_uuids+="$uuid"$'\n'
+    fi
+  done <<<"$rows"
+
+  [[ -n "$target_indices" ]] || die "the declared compute pool resolves to no CUDA devices"
+
+  if [[ -v CUDA_VISIBLE_DEVICES ]]; then
+    [[ -n "$CUDA_VISIBLE_DEVICES" ]] || die "CUDA_VISIBLE_DEVICES is empty; it must resolve to exactly the declared compute pool ($target_indices)."
+    while IFS= read -r token; do
+      token="$(xargs <<<"$token")"
+      [[ -n "$token" ]] || die "CUDA_VISIBLE_DEVICES contains an empty device entry; it must resolve to exactly the declared compute pool ($target_indices)."
+      if [[ "$token" =~ ^[0-9]+$ ]]; then
+        uuid="$(awk -F',' -v wanted="$token" '
+          { i=$1; u=$2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", i); gsub(/^[[:space:]]+|[[:space:]]+$/, "", u) }
+          i == wanted { print u; exit }' <<<"$rows")"
+      else
+        uuid="$token"
+        grep -qE "^[[:space:]]*[0-9]+,[[:space:]]*${uuid//-/\\-}[[:space:]]*$" <<<"$rows" \
+          || die "CUDA_VISIBLE_DEVICES names an unknown GPU: $token"
+      fi
+      [[ -n "$uuid" ]] || die "CUDA_VISIBLE_DEVICES names an unknown GPU index: $token"
+      if grep -qxF "$uuid" <<<"$supplied_uuids"; then
+        die "CUDA_VISIBLE_DEVICES names GPU $token more than once; it must resolve to exactly the declared compute pool."
+      fi
+      supplied_uuids+="$uuid"$'\n'
+    done < <(tr ',' '\n' <<<"$CUDA_VISIBLE_DEVICES")
+
+    if [[ "$(sort <<<"$supplied_uuids")" != "$(sort <<<"$target_uuids")" ]]; then
+      die "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES does not resolve to exactly the declared compute pool. Expected CUDA devices: $target_indices"
+    fi
+  fi
+
+  CUDA_DEVICE_SET="$target_indices"
+  export CUDA_DEVICE_SET
+}
+
+display_effective_power_limits() {
+  local limits="$1"
+  # A one-card report is clearer as the value alone; retain indexes when
+  # several cards report values so operators can distinguish their limits.
+  if [[ "$limits" != *,* ]]; then
+    printf '%s\n' "${limits#*=}"
+  else
+    printf '%s\n' "$limits"
+  fi
+}
+
 # --- the compute pool --------------------------------------------------------
 # Which GPUs are eligible for inference. On most machines: all of them, and
 # nothing below changes. On a machine that also carries a display-only card,
@@ -68,7 +153,9 @@ load_gpu_pool() {
     if ! grep -qxF "$uuid" <<<"$present"; then
       pool_fail "compute pool $POOL_FILE names a GPU this machine does not have: $uuid
      Present GPUs:
-$(nvidia-smi --query-gpu=uuid,name --format=csv,noheader | sed 's/^/       /')"
+$(nvidia-smi --query-gpu=uuid,name --format=csv,noheader | sed 's/^/       /')
+     If this follows a card replacement, update the stale UUID in
+     $POOL_FILE from the list above, then re-run."
       return $?
     fi
     if grep -qxF "$uuid" <<<"$seen"; then
