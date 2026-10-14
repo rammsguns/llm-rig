@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "web_search": {
+      "type": "remote",
+      "url": "http://192.168.3.36:8091/mcp",
+      "oauth": false,
+      "headers": {"Authorization": "Bearer {env:SEARCH_API_KEY}"},
+      "enabled": true,
+      "timeout": 30000
+    }
+  }
+}

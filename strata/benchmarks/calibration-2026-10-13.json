@@ -1,0 +1,17 @@
+{
+  "date": "2026-10-13",
+  "model": "qwen3.8-flash-next-iq3_s",
+  "context_tokens": 131072,
+  "status": "completed",
+  "reported_tokens_per_second": 79.4,
+  "settings": {
+    "--pcie-frac": "0.20",
+    "--spec-min-p": "0.70",
+    "--adapt-every": "1",
+    "--adapt-swaps": "80",
+    "--adapt-decay": "0.97"
+  },
+  "cpu_worker_override": null,
+  "source_log": "logs/tuning.log",
+  "scope": "short-prompt calibration; full-128K performance not measured"
+}

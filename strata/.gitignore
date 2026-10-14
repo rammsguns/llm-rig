@@ -1,0 +1,10 @@
+engine/
+models/
+data/
+.config/
+.cache/
+logs/
+benchmarks/
+*.log
+.venv/
+__pycache__/

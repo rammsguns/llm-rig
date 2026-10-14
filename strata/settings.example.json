@@ -1,0 +1,10 @@
+{
+  "model_config_overrides": {
+    "fit_max_tokens": true,
+    "reasoning_budget_tokens": 2048,
+    "reasoning_loop_recovery": "recover"
+  },
+  "shared_settings": {
+    "max_tokens": 8192
+  }
+}
